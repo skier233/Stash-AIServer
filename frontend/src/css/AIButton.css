@@ -1,0 +1,105 @@
+/* =============================================================================
+   Minimal AI Button CSS - Refactored (context-aware only)
+   ============================================================================= */
+
+:root {
+  --ai-btn-transition: 0.18s ease;
+  --ai-btn-radius: 8px;
+  --ai-btn-size: 48px;
+  --ai-color-default: #374151;
+  --ai-color-scenes: #3b82f6;
+  --ai-color-galleries: #8b5cf6;
+  --ai-color-images: #f59e0b;
+  --ai-color-performers: #ef4444;
+  --ai-color-studios: #0ea5e9;
+  --ai-color-tags: #6366f1;
+  --ai-color-markers: #f472b6;
+  --ai-color-home: #6b7280;
+  --ai-color-detail: #10b981;
+}
+
+.minimal-ai-button {
+  position: relative;
+  display: inline-block;
+  font-family: inherit;
+}
+
+.ai-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: var(--ai-btn-size);
+  height: var(--ai-btn-size);
+  background: transparent;
+  border: 2px solid var(--ai-color-default);
+  color: var(--ai-color-default);
+  border-radius: var(--ai-btn-radius);
+  cursor: pointer;
+  transition: transform var(--ai-btn-transition), box-shadow var(--ai-btn-transition), background-color var(--ai-btn-transition), color var(--ai-btn-transition), border-color var(--ai-btn-transition);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 4px;
+  user-select: none;
+  position: relative;
+}
+
+.ai-btn__icon {
+  font-size: 16px;
+  line-height: 1;
+  margin-bottom: 2px;
+}
+
+.ai-btn__label {
+  font-size: 8px;
+  line-height: 1;
+  text-align: center;
+  letter-spacing: 0.5px;
+}
+
+/* Context color variants */
+.ai-btn--scenes { border-color: var(--ai-color-scenes); color: var(--ai-color-scenes); }
+.ai-btn--galleries { border-color: var(--ai-color-galleries); color: var(--ai-color-galleries); }
+.ai-btn--images { border-color: var(--ai-color-images); color: var(--ai-color-images); }
+.ai-btn--performers { border-color: var(--ai-color-performers); color: var(--ai-color-performers); }
+.ai-btn--studios { border-color: var(--ai-color-studios); color: var(--ai-color-studios); }
+.ai-btn--tags { border-color: var(--ai-color-tags); color: var(--ai-color-tags); }
+.ai-btn--markers { border-color: var(--ai-color-markers); color: var(--ai-color-markers); }
+.ai-btn--home { border-color: var(--ai-color-home); color: var(--ai-color-home); }
+.ai-btn--detail { border-color: var(--ai-color-detail); color: var(--ai-color-detail); }
+
+.ai-btn:hover {
+  transform: scale(1.05);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  background-color: currentColor;
+  color: #ffffff;
+}
+
+.ai-btn:active {
+  transform: scale(0.94);
+}
+
+.ai-btn__tooltip {
+  position: absolute;
+  top: -64px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1f2937;
+  color: #ffffff;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+  z-index: 1000;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+  border: 1px solid #374151;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  pointer-events: none;
+}
+
+.ai-btn__tooltip-main { font-weight: 600; }
+.ai-btn__tooltip-detail { font-size: 10px; opacity: 0.85; }
+.ai-btn__tooltip-id { font-size: 10px; opacity: 0.6; }
+.ai-btn__tooltip-sel { font-size: 10px; opacity: 0.75; color: #93c5fd; }

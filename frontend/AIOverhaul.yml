@@ -1,0 +1,11 @@
+name: AIOverhaulMinimal
+description: Minimal reset state - context-aware AI button only
+version: 0.2.0-reset
+ui:
+  javascript:
+    - dist/pageContext.js
+    - dist/AIButton.js
+    - dist/AIButtonIntegration.js
+  css:
+    - src/css/AIButton.css
+interface: raw

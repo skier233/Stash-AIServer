@@ -1,0 +1,14 @@
+{
+  "name": "ai-overhaul-minimal",
+  "version": "0.2.0-reset",
+  "private": true,
+  "description": "Minimal reset of AI Overhaul plugin frontend (context-aware button only)",
+  "scripts": {
+    "build": "node build.js",
+    "clean": "rimraf dist || rmdir /s /q dist"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.9",
+    "typescript": "^5.9.2"
+  }
+}
