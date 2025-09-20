@@ -22,29 +22,23 @@ class ContextInput(BaseModel):
 
 class ContextRule(BaseModel):
     pages: List[str] = Field(default_factory=list, description="Allowed page keys (empty = any)")
-    allow_detail: Optional[bool] = Field(None, description="If set, require detail (True) or list (False)")
-    selection: SelectionMode = 'both'  # how selection list is treated
-    min_selected: int = 0
-    max_selected: Optional[int] = None
+    selection: SelectionMode = 'both'
 
+    # Simplified semantics per user request:
+    #   We ignore actual selection counts entirely.
+    #   Library (list) view => "bulk" mode, Detail view => "single" mode.
+    #   Mapping of existing field 'selection':
+    #       'single' -> only matches detail view
+    #       'multi'  -> only matches library view
+    #       'both'   -> only matches library view (acts as bulk)
+    #   (Selection count constraints removed for simplicity.)
     def matches(self, ctx: ContextInput) -> bool:
-        # Page match
         if self.pages and ctx.page not in self.pages:
             return False
-        # Detail / list constraint
-        if self.allow_detail is not None and ctx.is_detail_view != self.allow_detail:
-            return False
-        # Selection constraints
-        sel_count = len(ctx.selected_ids or [])
-        if self.selection == 'single' and sel_count > 1:
-            return False
-        if self.selection == 'multi' and sel_count <= 1:
-            return False
-        if sel_count < self.min_selected:
-            return False
-        if self.max_selected is not None and sel_count > self.max_selected:
-            return False
-        return True
+        if self.selection == 'single':
+            return ctx.is_detail_view
+        # multi or both => library (non-detail) view
+        return not ctx.is_detail_view
 
 
 class ActionDefinition(BaseModel):
@@ -61,6 +55,22 @@ class ActionDefinition(BaseModel):
         if not self.contexts:
             return True
         return any(rule.matches(ctx) for rule in self.contexts)
+
+    # Derived variant classification (not user-specified) used by registry for multi-variant resolution.
+    # If any rule has selection='single' and no rule has selection='both' -> single
+    # If any rule has selection='both' and no rule has selection='single' -> bulk
+    # If both present treat as distinct variants; registry will store two separate defs under same id.
+    # If neither (empty contexts) => generic.
+    def derived_variant_key(self) -> str:
+        if not self.contexts:
+            return 'generic'
+        selections = {r.selection for r in self.contexts}
+        if selections == {'single'}:
+            return 'single'
+        if selections == {'both'} or selections == {'multi'}:
+            return 'bulk'
+        # mixed or other => generic (could extend for multi-specific in future)
+        return 'generic'
 
 
 # Type alias for action handlers (first argument is the raw context payload + params)

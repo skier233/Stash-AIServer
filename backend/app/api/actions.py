@@ -8,6 +8,7 @@ router = APIRouter(prefix='/actions', tags=['actions'])
 
 
 class ActionsAvailableResponse(ActionDefinition):
+    # When listing available actions we present the context-resolved variant only.
     pass
 
 
@@ -17,8 +18,14 @@ async def list_available_actions(context: ContextInput = Body(..., embed=True)):
 
     Body shape: { "context": { ...pageContextFields }}
     """
-    applicable = [a for a in action_registry.list() if a.is_applicable(context)]
-    return applicable
+    # Simplified: just collect all registered action definitions whose own context rules match.
+    # This naturally yields only the single variant on detail pages and only the bulk variant on library pages
+    # because their ContextRule.matches() are mutually exclusive (detail vs non-detail).
+    results: list[ActionDefinition] = []
+    for definition in action_registry.list_all():
+        if definition.is_applicable(context):
+            results.append(definition)
+    return results
 
 
 class ExecuteActionRequest(BaseModel):
@@ -33,15 +40,16 @@ class ExecuteActionResponse(BaseModel):
 
 @router.post('/execute', response_model=ExecuteActionResponse)
 async def execute_action(payload: ExecuteActionRequest):
-    definition = action_registry.get(payload.action_id)
-    if not definition:
+    ctx = payload.context
+    resolved = action_registry.resolve(payload.action_id, ctx)
+    if not resolved:
         raise HTTPException(status_code=404, detail='Action not found')
-    if not definition.is_applicable(payload.context):
+    definition, handler = resolved
+    if not definition.is_applicable(ctx):
         raise HTTPException(status_code=400, detail='Action not applicable to provided context')
-    handler = action_registry.handler_for(payload.action_id)
-    if not handler:
-        raise HTTPException(status_code=500, detail='Handler missing for action')
-    # Execute directly (stub synchronous execution). Later will enqueue task.
-    result = await handler(payload.context, payload.params)  # type: ignore
-    # Normalize raw result if handler returned plain value
-    return ExecuteActionResponse(action_id=definition.id, result_kind=definition.result_kind, result=result)
+    result = await handler(ctx, payload.params)  # type: ignore
+    return ExecuteActionResponse(
+        action_id=definition.id,
+        result_kind=definition.result_kind,
+        result=result
+    )

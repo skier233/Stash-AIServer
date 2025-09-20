@@ -9,17 +9,18 @@ class AIService(ServiceBase):
     name = 'ai'
     description = 'AI tagging and analysis service'
     server_url = 'http://ai-service:9000'  # placeholder external host
-
+    # ------------------------------------------------------------------
+    # Image Tagging (single + bulk variants under one logical id)
+    # ------------------------------------------------------------------
     @action(
-        id='ai.tag.images',
-        label='AI Tag Images',
-        description='Generate tag suggestions for selected images',
+        id='ai.tag.image',
+        label='AI Tag Image',
+        description='Generate tag suggestions for an image',
         service='ai',
         result_kind='dialog',
-        contexts=[ContextRule(pages=['images'], selection='both', min_selected=0)],
+        contexts=[ContextRule(pages=['images'], selection='single')],  # detail view
     )
-    async def tag_images(self, ctx: ContextInput, params: dict) -> Any:
-        # Stub simulated logic returning mock tags
+    async def tag_image_single(self, ctx: ContextInput, params: dict) -> Any:
         selected = ctx.selected_ids or ([ctx.entity_id] if ctx.entity_id else [])
         return {
             'targets': selected,
@@ -30,19 +31,39 @@ class AIService(ServiceBase):
         }
 
     @action(
-        id='ai.tag.scenes',
-        label='AI Tag Scenes',
-        description='Analyze scenes for tag segments',
+        id='ai.tag.image',
+        label='AI Tag Images',  # bulk label
+        description='Generate tag suggestions for images',
         service='ai',
-        # Previously 'none' so frontend ignored the returned payload. Use 'dialog' so user sees structured output.
         result_kind='dialog',
-        contexts=[ContextRule(pages=['scenes'], selection='both', min_selected=0)],
+        contexts=[ContextRule(pages=['images'], selection='multi')],  # library view
     )
-    async def tag_scenes(self, ctx: ContextInput, params: dict) -> Any:
-        # Stub enhanced: pretend we analyzed scenes and found candidate tags per scene.
+    async def tag_image_bulk(self, ctx: ContextInput, params: dict) -> Any:
         selected = ctx.selected_ids or ([ctx.entity_id] if ctx.entity_id else [])
+        return {
+            'targets': selected,
+            'tags': [
+                {'name': 'outdoor', 'confidence': 0.92},
+                {'name': 'portrait', 'confidence': 0.81}
+            ]
+        }
+
+    # ------------------------------------------------------------------
+    # Scene Tagging (single + bulk variants under one logical id)
+    # ------------------------------------------------------------------
+    @action(
+        id='ai.tag.scenes',
+        label='AI Tag Scene',
+        description='Analyze a scene for tag segments',
+        service='ai',
+        result_kind='dialog',
+        contexts=[ContextRule(pages=['scenes'], selection='single')],  # detail view
+    )
+    async def tag_scene_single(self, ctx: ContextInput, params: dict) -> Any:
+        selected = ctx.selected_ids or ([ctx.entity_id] if ctx.entity_id else [])
+        if not selected and ctx.entity_id:
+            selected = [ctx.entity_id]
         if not selected:
-            # Provide a default demonstration scene id placeholder
             selected = ['demo-scene-1']
         per_scene = []
         for sid in selected:
@@ -57,7 +78,35 @@ class AIService(ServiceBase):
         return {
             'targets': selected,
             'scenes': per_scene,
-            'summary': f'{len(selected)} scene(s) processed (stub)' 
+            'summary': f'{len(selected)} scene(s) processed (stub single)'
+        }
+
+    @action(
+        id='ai.tag.scenes',
+        label='AI Tag Scenes',
+        description='Analyze scenes for tag segments',
+        service='ai',
+        result_kind='dialog',
+        contexts=[ContextRule(pages=['scenes'], selection='multi')],  # library view
+    )
+    async def tag_scene_bulk(self, ctx: ContextInput, params: dict) -> Any:
+        selected = ctx.selected_ids or ([ctx.entity_id] if ctx.entity_id else [])
+        if not selected:
+            selected = ['demo-scene-1']
+        per_scene = []
+        for sid in selected:
+            per_scene.append({
+                'scene_id': sid,
+                'suggested_tags': [
+                    {'name': 'hard-light', 'confidence': 0.74},
+                    {'name': 'dialogue-heavy', 'confidence': 0.63}
+                ],
+                'notes': 'Mock inference data – replace with real model output.'
+            })
+        return {
+            'targets': selected,
+            'scenes': per_scene,
+            'summary': f'{len(selected)} scene(s) processed (stub)'
         }
 
 
