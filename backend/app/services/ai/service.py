@@ -34,12 +34,31 @@ class AIService(ServiceBase):
         label='AI Tag Scenes',
         description='Analyze scenes for tag segments',
         service='ai',
-        result_kind='none',
+        # Previously 'none' so frontend ignored the returned payload. Use 'dialog' so user sees structured output.
+        result_kind='dialog',
         contexts=[ContextRule(pages=['scenes'], selection='both', min_selected=0)],
     )
     async def tag_scenes(self, ctx: ContextInput, params: dict) -> Any:
-        # Stub: would enqueue long-running segmentation job later
-        return {'message': 'scene tagging queued (stub)'}
+        # Stub enhanced: pretend we analyzed scenes and found candidate tags per scene.
+        selected = ctx.selected_ids or ([ctx.entity_id] if ctx.entity_id else [])
+        if not selected:
+            # Provide a default demonstration scene id placeholder
+            selected = ['demo-scene-1']
+        per_scene = []
+        for sid in selected:
+            per_scene.append({
+                'scene_id': sid,
+                'suggested_tags': [
+                    {'name': 'hard-light', 'confidence': 0.74},
+                    {'name': 'dialogue-heavy', 'confidence': 0.63}
+                ],
+                'notes': 'Mock inference data – replace with real model output.'
+            })
+        return {
+            'targets': selected,
+            'scenes': per_scene,
+            'summary': f'{len(selected)} scene(s) processed (stub)' 
+        }
 
 
 def register():

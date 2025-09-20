@@ -68,6 +68,11 @@ const MinimalAIButton = () => {
             if (data.result_kind === 'dialog' || data.result_kind === 'notification') {
                 alert(`Action ${actionId} result:\n` + JSON.stringify(data.result, null, 2));
             }
+            else if (data.result && data.result_kind === 'none') {
+                // Fallback debug visibility so we can see stub payloads while iterating
+                console.warn('[AIButton] Received result with result_kind "none"; showing fallback alert');
+                alert(`(Debug) Action ${actionId} payload (result_kind=none):\n` + JSON.stringify(data.result, null, 2));
+            }
         }
         catch (e) {
             alert(`Action ${actionId} failed: ${e.message}`);
