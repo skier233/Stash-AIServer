@@ -34,7 +34,21 @@ const MinimalAIButton = () => {
                 throw new Error('Failed to load actions');
             const data = await res.json();
             const prev = actionsRef.current;
-            const changed = !prev || prev.length !== data.length || prev.some((p, i) => p.id !== data[i].id);
+            // Detect changes not only by id list length but also by label or result_kind (different variants same id).
+            let changed = false;
+            if (!prev || prev.length !== data.length) {
+                changed = true;
+            }
+            else {
+                for (let i = 0; i < data.length; i++) {
+                    const p = prev[i];
+                    const n = data[i];
+                    if (p.id !== n.id || p.label !== n.label || p.result_kind !== n.result_kind) {
+                        changed = true;
+                        break;
+                    }
+                }
+            }
             if (changed) {
                 actionsRef.current = data;
                 setActions(data);
@@ -52,19 +66,18 @@ const MinimalAIButton = () => {
     React.useEffect(() => { refetchActions(context); }, [context, refetchActions]);
     // Websocket singleton with listener registry + cache
     const wsInitRef = React.useRef(false);
-    const debug = true; // enable verbose
+    const debug = !!window.AIDebug; // enable by setting window.AIDebug = true in console
+    const dlog = (...a) => { if (debug)
+        console.log('[AIButton]', ...a); };
     const ensureWS = React.useCallback(() => {
         const g = window;
-        if (debug)
-            console.log('[AIButton] ensureWS invoked');
+        dlog('ensureWS invoked');
         if (g.__AI_TASK_WS__ && g.__AI_TASK_WS__.readyState === 1) {
-            if (debug)
-                console.log('[AIButton] Reusing existing open WS');
+            dlog('Reusing existing open WS');
             return g.__AI_TASK_WS__;
         }
         if (wsInitRef.current) {
-            if (debug)
-                console.log('[AIButton] Init already in progress or socket placeholder present');
+            dlog('Init already in progress or socket placeholder present');
             return g.__AI_TASK_WS__;
         }
         wsInitRef.current = true;
@@ -73,8 +86,7 @@ const MinimalAIButton = () => {
         let sock = null;
         for (const url of paths) {
             try {
-                if (debug)
-                    console.log('[AIButton] Attempt WS connect', url);
+                dlog('Attempt WS connect', url);
                 sock = new WebSocket(url);
                 window.__AI_TASK_WS__ = sock;
                 break;
@@ -93,24 +105,20 @@ const MinimalAIButton = () => {
             glob.__AI_TASK_WS_LISTENERS__ = {};
         if (!glob.__AI_TASK_CACHE__)
             glob.__AI_TASK_CACHE__ = {};
-        sock.onopen = () => { if (debug)
-            console.log('[AIButton] WS open', sock === null || sock === void 0 ? void 0 : sock.url); };
+        sock.onopen = () => { dlog('WS open', sock === null || sock === void 0 ? void 0 : sock.url); };
         sock.onmessage = (evt) => {
             var _a;
-            if (debug)
-                console.log('[AIButton] WS raw message', evt.data);
+            dlog('WS raw message', evt.data);
             try {
                 const m = JSON.parse(evt.data);
                 const task = m.task || ((_a = m.data) === null || _a === void 0 ? void 0 : _a.task) || m.data || m;
                 if (!(task === null || task === void 0 ? void 0 : task.id)) {
-                    if (debug)
-                        console.log('[AIButton] Message without task id ignored', m);
+                    dlog('Message without task id ignored', m);
                     return;
                 }
                 glob.__AI_TASK_CACHE__[task.id] = task;
                 const ls = glob.__AI_TASK_WS_LISTENERS__[task.id];
-                if (debug)
-                    console.log('[AIButton] Task event', task.id, task.status, 'listeners:', ls ? ls.length : 0);
+                dlog('Task event', task.id, task.status, 'listeners:', ls ? ls.length : 0);
                 if (ls)
                     ls.forEach((fn) => fn(task));
             }
@@ -132,8 +140,7 @@ const MinimalAIButton = () => {
     React.useEffect(() => { ensureWS(); }, [ensureWS]);
     const handleExecute = async (actionId) => {
         var _a;
-        if (debug)
-            console.log('[AIButton] Execute action', actionId, 'context', context);
+        dlog('Execute action', actionId, 'context', context);
         setExecuting(actionId);
         try {
             ensureWS();
@@ -146,8 +153,7 @@ const MinimalAIButton = () => {
                 g.__AI_TASK_WS_LISTENERS__ = {};
             if (!g.__AI_TASK_WS_LISTENERS__[taskId])
                 g.__AI_TASK_WS_LISTENERS__[taskId] = [];
-            if (debug)
-                console.log('[AIButton] Registered task listener', taskId);
+            dlog('Registered task listener', taskId);
             const finalize = (t) => { if (t.status === 'completed') {
                 if (t.result_kind === 'dialog' || t.result_kind === 'notification') {
                     alert(`Action ${actionId} result:\n` + JSON.stringify(t.result, null, 2));
@@ -159,19 +165,16 @@ const MinimalAIButton = () => {
             const listener = (t) => {
                 if (t.id !== taskId)
                     return;
-                if (debug)
-                    console.log('[AIButton] Listener got task event', t.id, t.status);
+                dlog('Listener got task event', t.id, t.status);
                 if (["completed", "failed", "cancelled"].includes(t.status)) {
-                    if (debug)
-                        console.log('[AIButton] Finalizing task', t.id, t.status);
+                    dlog('Finalizing task', t.id, t.status);
                     finalize(t);
                     g.__AI_TASK_WS_LISTENERS__[taskId] = (g.__AI_TASK_WS_LISTENERS__[taskId] || []).filter((fn) => fn !== listener);
                 }
             };
             g.__AI_TASK_WS_LISTENERS__[taskId].push(listener);
             if ((_a = g.__AI_TASK_CACHE__) === null || _a === void 0 ? void 0 : _a[taskId]) {
-                if (debug)
-                    console.log('[AIButton] Immediate cache hit for task', taskId, g.__AI_TASK_CACHE__[taskId]);
+                dlog('Immediate cache hit for task', taskId, g.__AI_TASK_CACHE__[taskId]);
                 listener(g.__AI_TASK_CACHE__[taskId]);
             }
         }
