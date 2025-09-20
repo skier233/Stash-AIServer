@@ -35,6 +35,8 @@ class TaskRecord(BaseModel):
     error: str | None = None
     cancel_requested: bool = False
     chunks: List[Any] = []  # for streaming accumulation (optional)
+    group_id: str | None = None  # logical parent grouping (e.g., batch parent task id)
+    skip_concurrency: bool = False  # controller/coordination tasks that shouldn't consume a slot
 
     class Config:
         arbitrary_types_allowed = True
@@ -53,6 +55,7 @@ class TaskRecord(BaseModel):
             'error': self.error,
             'cancel_requested': self.cancel_requested,
             'result': self.result if self.status == TaskStatus.completed else None,
+            'group_id': self.group_id,
         }
 
 class CancelToken:

@@ -83,6 +83,36 @@ class AIService(ServiceBase):
             'summary': f'{len(selected)} scene(s) processed (stub single)'
         }
 
+    # ------------------------------------------------------------------
+    # Batch parent that spawns child tasks (demonstration of group cancellation)
+    # ------------------------------------------------------------------
+    @action(
+        id='ai.batch.spawn.scenes',
+        label='AI Batch Spawn Scenes',
+        description='Spawn individual tagging subtasks for each selected scene',
+        service='ai',
+        result_kind='dialog',
+        contexts=[ContextRule(pages=['scenes'], selection='multi')],
+        controller=True,
+    )
+    async def batch_spawn_scenes(self, ctx: ContextInput, params: dict, task_record):
+        selected = ctx.selected_ids or []
+        if not selected:
+            return {'message': 'No scenes selected'}
+        from app.actions.registry import registry as reg
+        from app.tasks.manager import manager as task_manager
+        from app.tasks.models import TaskPriority
+        spawned: list[str] = []
+        for sid in selected:
+            detail_ctx = ContextInput(page='scenes', entityId=sid, isDetailView=True, selectedIds=[])
+            resolved = reg.resolve('ai.tag.scenes', detail_ctx)
+            if not resolved:
+                continue
+            definition, handler = resolved
+            child = task_manager.submit(definition, handler, detail_ctx, {}, TaskPriority.high, group_id=task_record.id)
+            spawned.append(child.id)
+        return {'spawned': spawned, 'count': len(spawned)}
+
     @action(
         id='ai.tag.scenes',
         label='AI Tag Scenes',

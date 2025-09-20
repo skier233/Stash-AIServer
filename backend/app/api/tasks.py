@@ -43,6 +43,9 @@ class TaskResponse(BaseModel):
     result_kind: str
     error: str | None
     result: Any | None
+    group_id: str | None
+    started_at: float | None = None
+    finished_at: float | None = None
 
 @router.get('/{task_id}', response_model=TaskResponse)
 async def get_task(task_id: str):
@@ -58,6 +61,9 @@ async def get_task(task_id: str):
         result_kind=task.result_kind,
         error=task.error,
         result=task.result,
+        group_id=task.group_id,
+        started_at=task.started_at,
+        finished_at=task.finished_at,
     )
 
 @router.post('/{task_id}/cancel')
@@ -83,4 +89,7 @@ async def list_tasks(service: str | None = None, status: str | None = None):
         result_kind=t.result_kind,
         error=t.error,
         result=t.result,
+        group_id=t.group_id,
+        started_at=t.started_at,
+        finished_at=t.finished_at,
     ) for t in tasks])

@@ -2,6 +2,8 @@ from __future__ import annotations
 import asyncio
 import heapq
 from typing import Dict, List, Tuple, Optional, Any, Callable
+import os
+import logging
 from app.tasks.models import TaskRecord, TaskStatus, TaskPriority, CancelToken
 from app.actions.registry import registry as action_registry
 from app.actions.models import ContextInput
@@ -34,6 +36,16 @@ class TaskManager:
         self._service_locks: Dict[str, asyncio.Lock] = {}
         self._listeners: List[Callable[[str, TaskRecord, dict | None], None]] = []
         self._runner_started = False
+        # Allow tests to accelerate loop via TASK_LOOP_INTERVAL env var
+        try:
+            self._loop_interval = float(os.getenv('TASK_LOOP_INTERVAL', '0.05'))
+        except ValueError:
+            self._loop_interval = 0.05
+        # Debug logging toggle
+        self._debug = os.getenv('TASK_DEBUG', '0') in ('1', 'true', 'True')
+        if self._debug:
+            logging.basicConfig(level=logging.DEBUG, format='[TASK] %(message)s')
+        self._log = logging.getLogger('task_manager')
 
     def configure_service(self, service: str, max_concurrent: int, base_url: str | None):
         cfg = SERVICE_CONFIG.setdefault(service, {})
@@ -51,7 +63,7 @@ class TaskManager:
             except Exception:
                 pass
 
-    def submit(self, definition, handler, ctx: ContextInput, params: dict, priority: TaskPriority) -> TaskRecord:
+    def submit(self, definition, handler, ctx: ContextInput, params: dict, priority: TaskPriority, *, group_id: str | None = None) -> TaskRecord:
         service = definition.service
         task = TaskRecord(
             id=__import__('uuid').uuid4().hex,
@@ -63,6 +75,8 @@ class TaskManager:
             submitted_at=__import__('time').time(),
             context=ctx,
             params=params,
+            group_id=group_id,
+            skip_concurrency=getattr(definition, 'controller', False),
         )
         self.tasks[task.id] = task
         self.cancel_tokens[task.id] = CancelToken()
@@ -70,21 +84,28 @@ class TaskManager:
         self.running_counts.setdefault(service, 0)
         self._service_locks.setdefault(service, asyncio.Lock())
         self._emit('queued', task, None)
+        if self._debug:
+            self._log.debug(f"SUBMIT service={service} id={task.id} priority={priority.name} skip_concurrency={task.skip_concurrency} group={group_id}")
         return task
 
     async def start(self):
         if self._runner_started:
             return
         self._runner_started = True
+        if self._debug:
+            self._log.debug("START main loop")
         asyncio.create_task(self._main_loop())
 
     async def _main_loop(self):
         while True:
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(self._loop_interval)
             for service, queue in self.queues.items():
                 cfg = SERVICE_CONFIG.get(service, {})
                 limit = cfg.get('max_concurrent', 1)
+                # Only block if next queued task would consume concurrency (skip_concurrency tasks bypass)
                 if self.running_counts.get(service, 0) >= limit:
+                    if self._debug and len(queue):
+                        self._log.debug(f"SKIP service={service} busy running={self.running_counts.get(service)} limit={limit} queued={len(queue)}")
                     continue
                 task_id = queue.pop()
                 if not task_id:
@@ -92,14 +113,19 @@ class TaskManager:
                 task = self.tasks.get(task_id)
                 if not task or task.status != TaskStatus.queued:
                     continue
+                if self._debug:
+                    self._log.debug(f"DISPATCH service={service} task={task.id} skip_concurrency={task.skip_concurrency} running={self.running_counts.get(service)} limit={limit}")
                 asyncio.create_task(self._run_task(task))
 
     async def _run_task(self, task: TaskRecord):
         service = task.service
-        self.running_counts[service] = self.running_counts.get(service, 0) + 1
+        if not task.skip_concurrency:
+            self.running_counts[service] = self.running_counts.get(service, 0) + 1
         task.started_at = __import__('time').time()
         task.status = TaskStatus.running
         self._emit('started', task, None)
+        if self._debug:
+            self._log.debug(f"STARTED task={task.id} service={service}")
         try:
             # Removed external connectivity HEAD check to simplify initial testing and avoid httpx dependency.
             # Resolve handler again (action could have changed though unlikely)
@@ -112,23 +138,37 @@ class TaskManager:
                 return
             definition, handler = resolved
             token = self.cancel_tokens.get(task.id)
-            result = await handler(task.context, task.params)  # type: ignore
+            import inspect
+            sig = inspect.signature(handler)
+            if len(sig.parameters) >= 3:
+                result = await handler(task.context, task.params, task)  # type: ignore
+            else:
+                result = await handler(task.context, task.params)  # type: ignore
             if token and token.is_cancelled():
                 task.status = TaskStatus.cancelled
                 task.finished_at = __import__('time').time()
                 self._emit('cancelled', task, None)
+                if self._debug:
+                    self._log.debug(f"CANCELLED task={task.id}")
                 return
             task.result = result
             task.status = TaskStatus.completed
             task.finished_at = __import__('time').time()
             self._emit('completed', task, None)
+            if self._debug:
+                self._log.debug(f"COMPLETED task={task.id}")
         except Exception as e:  # pragma: no cover
             task.status = TaskStatus.failed
             task.error = f'{e.__class__.__name__}: {e}'
             task.finished_at = __import__('time').time()
             self._emit('failed', task, None)
+            if self._debug:
+                self._log.debug(f"FAILED task={task.id} error={task.error}")
         finally:
-            self.running_counts[service] = max(0, self.running_counts.get(service, 1) - 1)
+            if not task.skip_concurrency:
+                self.running_counts[service] = max(0, self.running_counts.get(service, 1) - 1)
+            if self._debug:
+                self._log.debug(f"RELEASE service={service} running={self.running_counts.get(service)}")
 
     def get(self, task_id: str) -> Optional[TaskRecord]:
         return self.tasks.get(task_id)
@@ -145,6 +185,8 @@ class TaskManager:
         task = self.tasks.get(task_id)
         if not task:
             return False
+        # Cascade: if this task has children (tasks whose group_id == task.id), cancel them too.
+        children = [t for t in self.tasks.values() if t.group_id == task_id]
         if task.status == TaskStatus.queued:
             # remove from queue
             q = self.queues.get(task.service)
@@ -152,13 +194,23 @@ class TaskManager:
                 q.remove(task_id)
             task.status = TaskStatus.cancelled
             task.finished_at = __import__('time').time()
+            task.cancel_requested = True
             self._emit('cancelled', task, None)
+            if self._debug:
+                self._log.debug(f"CANCEL immediate task={task.id}")
+            for c in children:
+                self.cancel(c.id)
             return True
         if task.status == TaskStatus.running:
             token = self.cancel_tokens.get(task_id)
             if token:
                 token.request()
+            task.cancel_requested = True
             # Running task will mark itself cancelled when it checks token
+            for c in children:
+                self.cancel(c.id)
+            if self._debug:
+                self._log.debug(f"CANCEL requested task={task.id}")
             return True
         return False
 

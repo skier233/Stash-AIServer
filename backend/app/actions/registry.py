@@ -59,6 +59,7 @@ def action(
     result_kind: str = 'none',
     contexts: Optional[list[ContextRule]] = None,
     input_schema: dict | None = None,
+    controller: bool = False,
 ):
     """Decorator to declare an action on a service class method.
 
@@ -73,6 +74,7 @@ def action(
             result_kind=result_kind,
             contexts=contexts or [],
             input_schema=input_schema,
+            controller=controller,
         )
         # Attach metadata for later collection when service registers
         setattr(fn, '_action_definition', definition)
