@@ -56,20 +56,18 @@ class ActionDefinition(BaseModel):
             return True
         return any(rule.matches(ctx) for rule in self.contexts)
 
-    # Derived variant classification (not user-specified) used by registry for multi-variant resolution.
-    # If any rule has selection='single' and no rule has selection='both' -> single
-    # If any rule has selection='both' and no rule has selection='single' -> bulk
-    # If both present treat as distinct variants; registry will store two separate defs under same id.
-    # If neither (empty contexts) => generic.
-    def derived_variant_key(self) -> str:
+    # Variant derivation removed; registry now stores plain lists per action id.
+    def variant_kind(self) -> str:
+        # Lightweight helper if needed by clients; not used in registry logic.
         if not self.contexts:
             return 'generic'
         selections = {r.selection for r in self.contexts}
+        # Map exactly one mode; treat 'both' as generic (since it's ambiguous under simplified semantics).
         if selections == {'single'}:
             return 'single'
-        if selections == {'both'} or selections == {'multi'}:
+        if selections == {'multi'}:
             return 'bulk'
-        # mixed or other => generic (could extend for multi-specific in future)
+        # Any presence of 'both', or mixed combinations => generic
         return 'generic'
 
 

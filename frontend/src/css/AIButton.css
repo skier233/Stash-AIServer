@@ -103,3 +103,43 @@
 .ai-btn__tooltip-detail { font-size: 10px; opacity: 0.85; }
 .ai-btn__tooltip-id { font-size: 10px; opacity: 0.6; }
 .ai-btn__tooltip-sel { font-size: 10px; opacity: 0.75; color: #93c5fd; }
+
+/* Dropdown menu */
+.ai-actions-menu {
+  position: absolute;
+  top: 56px;
+  right: 0;
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 8px;
+  padding: 6px 0;
+  min-width: 220px;
+  z-index: 1000;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+
+.ai-actions-menu__status {
+  padding: 8px 12px;
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.ai-actions-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  color: #e5e7eb;
+  font-size: 13px;
+  cursor: pointer;
+}
+.ai-actions-menu__item:hover { background: #374151; }
+.ai-actions-menu__item:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.ai-actions-menu__svc { opacity: 0.5; font-size: 11px; letter-spacing: 0.5px; }
+.ai-actions-menu__rk { font-size: 10px; color: #93c5fd; }
+.ai-actions-menu__exec { font-size: 10px; }

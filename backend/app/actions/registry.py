@@ -4,63 +4,47 @@ from .models import ActionDefinition, ActionHandler, ContextRule, ContextInput
 
 
 class ActionRegistry:
-    """Central store supporting multiple variants per logical action id.
-
-    Data shape:
-      _actions[id][variant] = ActionDefinition
-      _handlers[id][variant] = ActionHandler
-    """
+    """Simplified registry: actions stored as flat lists per logical id."""
     def __init__(self):
-        self._actions: Dict[str, Dict[str, ActionDefinition]] = {}
-        self._handlers: Dict[str, Dict[str, ActionHandler]] = {}
+        self._actions: Dict[str, List[ActionDefinition]] = {}
+        self._handlers: Dict[str, List[ActionHandler]] = {}
 
     def register(self, definition: ActionDefinition, handler: ActionHandler):
-        self._actions.setdefault(definition.id, {})
-        self._handlers.setdefault(definition.id, {})
-        variant_key = definition.derived_variant_key()
-        if variant_key in self._actions[definition.id]:
-            raise ValueError(f"Duplicate registration for {definition.id} variant={variant_key}")
-        self._actions[definition.id][variant_key] = definition
-        self._handlers[definition.id][variant_key] = handler
+        self._actions.setdefault(definition.id, [])
+        self._handlers.setdefault(definition.id, [])
+        self._actions[definition.id].append(definition)
+        self._handlers[definition.id].append(handler)
 
     def list_all(self) -> List[ActionDefinition]:
         out: List[ActionDefinition] = []
-        for variants in self._actions.values():
-            out.extend(variants.values())
+        for defs in self._actions.values():
+            out.extend(defs)
         return out
 
-    def list(self) -> List[ActionDefinition]:
-        """Return the canonical representative (preferring generic, else single, else bulk)."""
-        reps: List[ActionDefinition] = []
-        for vid, variants in self._actions.items():
-            if 'generic' in variants:
-                reps.append(variants['generic'])
-            elif 'single' in variants:
-                reps.append(variants['single'])
-            elif 'bulk' in variants:
-                reps.append(variants['bulk'])
-        return reps
+    def list_ids(self) -> List[str]:
+        return list(self._actions.keys())
 
     def resolve(self, action_id: str, ctx: ContextInput) -> Optional[tuple[ActionDefinition, ActionHandler]]:
-        variants = self._actions.get(action_id)
-        if not variants:
+        defs = self._actions.get(action_id)
+        handlers = self._handlers.get(action_id)
+        if not defs or not handlers:
             return None
-        # Simplified resolution: detail view => single variant; library view => bulk variant.
-        if ctx.is_detail_view and 'single' in variants:
-            return variants['single'], self._handlers[action_id]['single']
-        if not ctx.is_detail_view and 'bulk' in variants:
-            return variants['bulk'], self._handlers[action_id]['bulk']
-        if 'generic' in variants:
-            return variants['generic'], self._handlers[action_id]['generic']
-        # Fallback: take any deterministic variant
-        first_variant_key = sorted(variants.keys())[0]
-        return variants[first_variant_key], self._handlers[action_id][first_variant_key]
+        # Choose first applicable definition; prefer detail-view-specific when on detail, else non-detail.
+        preferred_kind = 'detail' if ctx.is_detail_view else 'library'
+        chosen: Optional[int] = None
+        for idx, d in enumerate(defs):
+            if d.is_applicable(ctx):
+                kind = 'detail' if any(r.selection == 'single' for r in d.contexts) else 'library'
+                if kind == preferred_kind:
+                    return d, handlers[idx]
+                if chosen is None:
+                    chosen = idx
+        if chosen is not None:
+            return defs[chosen], handlers[chosen]
+        return None
 
-    def get_variant(self, action_id: str, variant: str) -> Optional[ActionDefinition]:
-        return self._actions.get(action_id, {}).get(variant)
-
-    def handler_for(self, action_id: str, variant: str) -> Optional[ActionHandler]:
-        return self._handlers.get(action_id, {}).get(variant)
+    def all_for_id(self, action_id: str) -> List[ActionDefinition]:
+        return self._actions.get(action_id, [])
 
 
 registry = ActionRegistry()
