@@ -8,7 +8,9 @@ from app.actions.models import ContextRule, ContextInput
 class AIService(ServiceBase):
     name = 'ai'
     description = 'AI tagging and analysis service'
-    server_url = 'http://ai-service:9000'  # placeholder external host
+    # Removed external server_url placeholder to avoid unnecessary connectivity failures in isolated environments.
+    server_url = None  # No outbound health check required for mock handlers
+    max_concurrency = 2
     # ------------------------------------------------------------------
     # Image Tagging (single + bulk variants under one logical id)
     # ------------------------------------------------------------------

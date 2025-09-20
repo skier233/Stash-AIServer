@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Body, HTTPException
 from app.actions.registry import registry as action_registry
 from app.actions.models import ContextInput, ActionDefinition
+from app.tasks.manager import manager as task_manager
+from app.tasks.models import TaskPriority
 from pydantic import BaseModel
 from typing import Any, Optional, Dict
 
@@ -28,18 +30,19 @@ async def list_available_actions(context: ContextInput = Body(..., embed=True)):
     return results
 
 
-class ExecuteActionRequest(BaseModel):
+class SubmitActionRequest(BaseModel):
     action_id: str
     context: ContextInput
     params: Dict[str, Any] = {}
+    priority: str | None = None  # optional override
 
-class ExecuteActionResponse(BaseModel):
-    action_id: str
-    result_kind: str
-    result: Any | None = None
+class SubmitActionResponse(BaseModel):
+    task_id: str
+    status: str
+    inferred_priority: str
 
-@router.post('/execute', response_model=ExecuteActionResponse)
-async def execute_action(payload: ExecuteActionRequest):
+@router.post('/submit', response_model=SubmitActionResponse)
+async def submit_action(payload: SubmitActionRequest):
     ctx = payload.context
     resolved = action_registry.resolve(payload.action_id, ctx)
     if not resolved:
@@ -47,9 +50,13 @@ async def execute_action(payload: ExecuteActionRequest):
     definition, handler = resolved
     if not definition.is_applicable(ctx):
         raise HTTPException(status_code=400, detail='Action not applicable to provided context')
-    result = await handler(ctx, payload.params)  # type: ignore
-    return ExecuteActionResponse(
-        action_id=definition.id,
-        result_kind=definition.result_kind,
-        result=result
-    )
+    # Infer priority: detail(single) => high, library(bulk) => low unless overridden.
+    inferred = 'high' if ctx.is_detail_view else 'low'
+    if payload.priority in ('high', 'normal', 'low'):
+        inferred = payload.priority
+    prio_map = {'high': TaskPriority.high, 'normal': TaskPriority.normal, 'low': TaskPriority.low}
+    task = task_manager.submit(definition, handler, ctx, payload.params, prio_map[inferred])
+    return SubmitActionResponse(task_id=task.id, status=task.status.value, inferred_priority=inferred)
+
+
+"""Synchronous execution removed: all actions must be enqueued via /tasks/submit (or future /actions/submit wrapper)."""

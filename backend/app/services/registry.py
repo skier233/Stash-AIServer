@@ -7,6 +7,10 @@ class ServiceBase:
     name: str = 'unnamed'
     description: str = ''
     server_url: str | None = None  # external server backing this logical service
+    max_concurrency: int = 1
+    # Optional default priorities (could be used later for auto-priority decisions)
+    default_single_priority: str = 'high'
+    default_bulk_priority: str = 'low'
 
     def connectivity(self) -> str:
         # Placeholder: later implement health ping / handshake
@@ -27,6 +31,13 @@ class ServiceRegistry:
             if not definition.service:
                 definition.service = service.name
             action_registry.register(definition, handler)
+        # Configure task manager (if present) dynamically
+        try:
+            from app.tasks.manager import manager as task_manager
+            task_manager.configure_service(service.name, service.max_concurrency, service.server_url)
+        except Exception:
+            # Task system optional at this stage
+            pass
 
     def list(self) -> List[ServiceBase]:
         return list(self._services.values())
