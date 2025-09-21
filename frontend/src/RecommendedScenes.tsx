@@ -30,22 +30,14 @@
     }, [target, callback]);
   }
   
-  function calculateCardWidth(containerWidth:number, preferredWidth:number, marginPerCard:number) {
-    // Native scenes page replication:
-    // effectiveWidth = containerWidth - 30 (assumed total horizontal padding) 
-    // columns = ceil( (effective + marginPerCard) / (preferredWidth + marginPerCard) )
-    // width = (effective - columns * marginPerCard) / columns
-    // This allows shrinking below preferred when needed to fit an extra column (matching observed native widths).
-    const PADDING_TOTAL = 30; // 15px each side assumed from native layout
-    const safeMargin = marginPerCard || 10; // fallback if detection fails
-    const effective = Math.max(0, containerWidth - PADDING_TOTAL);
-    if (effective <= 0) return preferredWidth;
-    let columns = Math.ceil( (effective + safeMargin) / (preferredWidth + safeMargin) );
-    if (columns < 1) columns = 1;
-    let width = (effective - columns * safeMargin) / columns;
-    width = Math.round(width * 1000) / 1000; // keep 3 decimals for closer parity (native values observed)
-    const leftover = Math.round( (effective - (width + safeMargin) * columns) * 1000 ) / 1000;
-    (calculateCardWidth as any)._last = { columns, preferredWidth, width, effective, containerWidth, marginPerCard: safeMargin, leftover, padding: PADDING_TOTAL };
+  function calculateCardWidth(containerWidth:number, preferredWidth:number) {
+    // Exact upstream parity (see GridCard.calculateCardWidth).
+    const containerPadding = 30;
+    const cardMargin = 10;
+    const maxUsableWidth = containerWidth - containerPadding;
+    const maxElementsOnRow = Math.ceil(maxUsableWidth / preferredWidth);
+    const width = maxUsableWidth / maxElementsOnRow - cardMargin;
+    (calculateCardWidth as any)._last = { maxElementsOnRow, preferredWidth, width, containerWidth };
     return width;
   }
   
@@ -79,7 +71,7 @@
     return [target, dimension];
   }
   
-  function useCardWidth(containerWidth:number, zoomIndex:number, zoomWidths:number[], marginPerCard:number) {
+  function useCardWidth(containerWidth:number, zoomIndex:number, zoomWidths:number[]) {
     return useMemo(() => {
       // Check for mobile - upstream returns undefined for mobile devices
       const isMobile = window.innerWidth <= 768; // Simple mobile check
@@ -89,13 +81,13 @@
       // Upstream measures a parent whose visual width includes the row's negative margins expanding into outer padding.
       // Our ref is on the .row itself (content box not enlarged by negative margins). Add 30px (15px each side) so
       // the effective width fed to the algorithm matches native measurement and prevents an extra trailing gap.
-      const effectiveWidth = containerWidth ? containerWidth + 30 : 1200; // fallback width
+  const effectiveWidth = (containerWidth ? containerWidth : 1200); // use raw row width; padding provided by outer wrapper
       if (zoomIndex === undefined || zoomIndex < 0 || zoomIndex >= zoomWidths.length) {
         return undefined; // Return undefined instead of empty return
       }
       const preferredCardWidth = zoomWidths[zoomIndex];
-      return calculateCardWidth(effectiveWidth, preferredCardWidth, marginPerCard);
-    }, [containerWidth, zoomIndex, zoomWidths, marginPerCard]);
+      return calculateCardWidth(effectiveWidth, preferredCardWidth);
+    }, [containerWidth, zoomIndex, zoomWidths]);
   }
   const { NavLink } = PluginApi.libraries.ReactRouterDOM || {} as any;
   const Bootstrap = PluginApi.libraries.Bootstrap || {} as any;
@@ -162,8 +154,7 @@
     // layout measurement (outer wrapper width drives card sizing) - using upstream hooks
   const zoomWidths = [280,340,480,640]; // exact same as SceneCardsGrid
   const [componentRef, { width: containerWidth }] = useContainerDimensions();
-  const [cardMarginLR, setCardMarginLR] = useState(0); // measured left+right margin of scene-card
-  const cardWidth = useCardWidth(containerWidth, zoomIndex, zoomWidths, cardMarginLR);
+  const cardWidth = useCardWidth(containerWidth, zoomIndex, zoomWidths);
     
     // Debug logging
     useEffect(() => {
@@ -374,27 +365,28 @@
       }
 
       // Use native row negative margins so measured width matches upstream (container padding 15px each side, row -15px margins)
-      return React.createElement('div', { className:'row ai-rec-grid d-flex flex-wrap', ref:componentRef, style:{gap:0, ['--ai-card-width' as any]: cardWidth+"px"}}, children);
+      return React.createElement('div', { className:'row ai-rec-grid d-flex flex-wrap justify-content-center', ref:componentRef, style:{gap:0, ['--ai-card-width' as any]: cardWidth+"px"}}, children);
     }, [loading, componentsLoading, error, paginatedScenes, SceneCard, cardWidth, zoomIndex]);
 
     // Post-render width verification & diagnostics (AIDebug only)
     // Margin detection + verification logging
-    useEffect(() => {
-      if (!componentRef.current) return;
-      const firstCard = componentRef.current.querySelector('.scene-card') as HTMLElement | null;
-      if (firstCard) {
-        const cs = window.getComputedStyle(firstCard);
-        const ml = parseFloat(cs.marginLeft)||0; const mr = parseFloat(cs.marginRight)||0;
-        const total = ml + mr;
-        if (total && Math.abs(total - cardMarginLR) > 0.5) { // update if changed significantly
-          setCardMarginLR(total);
-        }
+  useEffect(()=>{ if((w as any).AIDebug && cardWidth){ console.log('[RecommendedScenes][meta]', (calculateCardWidth as any)._last); } }, [cardWidth, zoomIndex, containerWidth]);
+    // Additional validation: log first row total width vs container to verify gap elimination
+    useEffect(()=>{
+      if(!(w as any).AIDebug) return;
+      if(!componentRef.current) return;
+      const row = componentRef.current as HTMLElement;
+      const cards = Array.from(row.querySelectorAll('.scene-card')) as HTMLElement[];
+      const firstRowCards: HTMLElement[] = [];
+      let currentTop: number|undefined = undefined;
+      for (const c of cards) {
+        const rect = c.getBoundingClientRect();
+        if (currentTop === undefined) currentTop = rect.top;
+        if (Math.abs(rect.top - currentTop) < 2) firstRowCards.push(c); else break;
       }
-      if (!(w as any).AIDebug) return;
-      if (cardWidth === undefined) return;
-      const meta = (calculateCardWidth as any)._last || {};
-      console.log('[RecommendedScenes][verify]', meta);
-    }, [cardWidth, paginatedScenes, zoomIndex, containerWidth, cardMarginLR]);
+      const totalRowWidth = firstRowCards.reduce((sum,el)=> sum + el.getBoundingClientRect().width,0);
+      console.log('[RecommendedScenes][row-validate]', { containerWidth, firstRowCount:firstRowCards.length, totalRowWidth });
+    }, [cardWidth, containerWidth, zoomIndex, paginatedScenes]);
 
     function SceneCardFallback(s:any){
       return React.createElement('div', { className:'scene-card stub', style:{background:'#1e1f22', border:'1px solid #333', borderRadius:4, padding:6}}, [
@@ -404,55 +396,52 @@
     }
 
     // Pagination controls (reuse class names for theming)
-    function paginationBar(position:'top'|'bottom'){
-      const outerClass = position==='bottom' ? 'pagination-footer' : 'scene-list-header';
-      return React.createElement('div', { key:'pag-'+position, className: outerClass, style:{marginTop: position==='bottom'?16:0}},
-        React.createElement('div',{className:'d-flex w-100 align-items-center justify-content-between', style:{gap:12}},[
-          React.createElement('div',{key:'controls', className:'btn-group'}, [
-            React.createElement(Button,{key:'first', className:'minimal', disabled:page<=1, onClick:()=>setPage(1)}, '«'),
-            React.createElement(Button,{key:'prev', className:'minimal', disabled:page<=1, onClick:()=>setPage((p:any)=>Math.max(1,p-1))}, '‹'),
-            React.createElement('span',{key:'pi', className:'pagination-index', style:{padding:'4px 8px', fontSize:12}}, `${page} of ${totalPages}`),
-            React.createElement(Button,{key:'next', className:'minimal', disabled:page>=totalPages, onClick:()=>setPage((p:any)=>Math.min(totalPages,p+1))}, '›'),
-            React.createElement(Button,{key:'last', className:'minimal', disabled:page>=totalPages, onClick:()=>setPage(totalPages)}, '»')
+    function paginationBar(position:'top'|'bottom') {
+      const outerClass = position==='bottom' ? 'pagination-footer scene-list-header mt-2' : 'scene-list-header';
+      return React.createElement('div', { key:'pag-'+position, className: outerClass },
+        React.createElement('div',{className:'d-flex w-100 align-items-center gap-2'},[
+          React.createElement('div',{key:'controls', className:'btn-group'},[
+            React.createElement(Button,{key:'first', className:'btn btn-secondary minimal', disabled:page<=1, onClick:()=>setPage(1)},'«'),
+            React.createElement(Button,{key:'prev', className:'btn btn-secondary minimal', disabled:page<=1, onClick:()=>setPage((p:any)=>Math.max(1,p-1))},'‹'),
+            React.createElement('span',{key:'pi', className:'small text-muted px-2'}, `${page} of ${totalPages}`),
+            React.createElement(Button,{key:'next', className:'btn btn-secondary minimal', disabled:page>=totalPages, onClick:()=>setPage((p:any)=>Math.min(totalPages,p+1))},'›'),
+            React.createElement(Button,{key:'last', className:'btn btn-secondary minimal', disabled:page>=totalPages, onClick:()=>setPage(totalPages)},'»')
           ]),
-          React.createElement('div',{key:'range', style:{fontSize:12, opacity:.85}}, `${startIndex}-${endIndex} of ${filteredScenes.length}`)
+          React.createElement('div',{key:'range', className:'ms-auto small text-muted'}, `${startIndex}-${endIndex} of ${filteredScenes.length}`)
         ])
       );
     }
 
-  const toolbarInner = React.createElement('div', { className:'scene-list-toolbar btn-toolbar d-flex flex-wrap align-items-center', style:{gap:8}}, [
-      // Items per page
-      React.createElement('div',{key:'ipp', className:'page-size-select'}, React.createElement('select',{className:'form-control', value:itemsPerPage, onChange:(e:any)=>{setItemsPerPage(Number(e.target.value)); setPage(1);}}, [20,40,80,120].map(n=> React.createElement('option',{key:n, value:n}, n)))),
-      // Zoom slider
-      React.createElement('div',{key:'zoom', className:'d-flex align-items-center', style:{gap:6, minWidth:160}}, [
-        React.createElement('span',{key:'zl', style:{fontSize:12, opacity:.7, whiteSpace:'nowrap'}}, 'Zoom'),
-        React.createElement('input',{key:'zr', className:'form-range', style:{width:110}, type:'range', min:0, max:3, value:zoomIndex, onChange:(e:any)=>setZoomIndex(Number(e.target.value))})
-      ]),
-      // Algorithm select
-      React.createElement('div',{key:'alg', style:{minWidth:140}}, React.createElement('select', {className:'form-control', value:algorithm, onChange:(e:any)=>setAlgorithm(e.target.value)}, [
+    // Split into two bars to mirror upstream structure: scene-list-toolbar (actions) and scene-list-header (pagination + zoom/page size)
+    const actionsBar = React.createElement('div', { key:'actionsBar', className:'scene-list-toolbar btn-toolbar d-flex flex-wrap align-items-center gap-2 mb-1' }, [
+      React.createElement('h2',{key:'h', className:'mb-0 me-3', style:{fontSize:'1.25rem'}},'Recommended Scenes'),
+      React.createElement('div',{key:'alg', className:'d-flex'}, React.createElement('select', {className:'form-control form-control-sm', value:algorithm, onChange:(e:any)=>setAlgorithm(e.target.value)}, [
         React.createElement('option',{key:'similarity', value:'similarity'},'Similarity'),
         React.createElement('option',{key:'recent', value:'recent'},'Recent'),
         React.createElement('option',{key:'popular', value:'popular'},'Popular')
       ])),
-      // Min score
-      React.createElement('div',{key:'minscore', style:{width:90}}, React.createElement('input',{className:'form-control', type:'number', step:0.05, min:0, max:1, value:minScore, onChange:(e:any)=>setMinScore(Number(e.target.value))})),
-      // Actions
-      React.createElement('div',{key:'actions', className:'btn-group'}, [
-        React.createElement(Button,{key:'refresh', className:'minimal', disabled:loading, onClick:()=>{ const reshuffled=[...sceneIds].sort(()=>Math.random()-0.5); setSceneIds(reshuffled); fetchScenes(reshuffled); }}, loading?'…':'↻'),
-        React.createElement(Button,{key:'reset', className:'minimal', onClick:()=>{ setAlgorithm('similarity'); setItemsPerPage(40); setMinScore(0.5); setZoomIndex(1); setSceneIds(TEST_SCENE_IDS); fetchScenes(TEST_SCENE_IDS); setPage(1); }}, 'Reset')
+      React.createElement('div',{key:'minscore', className:'d-flex'}, React.createElement('input',{className:'form-control form-control-sm', style:{width:70}, type:'number', step:0.05, min:0, max:1, value:minScore, onChange:(e:any)=>setMinScore(Number(e.target.value))})),
+      React.createElement('div',{key:'actions', className:'btn-group ms-auto'}, [
+        React.createElement(Button,{key:'refresh', className:'btn btn-secondary minimal', disabled:loading, onClick:()=>{ const reshuffled=[...sceneIds].sort(()=>Math.random()-0.5); setSceneIds(reshuffled); fetchScenes(reshuffled); }}, loading?'…':'↻'),
+        React.createElement(Button,{key:'reset', className:'btn btn-secondary minimal', onClick:()=>{ setAlgorithm('similarity'); setItemsPerPage(40); setMinScore(0.5); setZoomIndex(1); setSceneIds(TEST_SCENE_IDS); fetchScenes(TEST_SCENE_IDS); setPage(1); }}, 'Reset')
       ])
     ]);
 
-    const toolbar = React.createElement('div', { key:'tbwrap', className:'scene-list-header', style:{marginBottom:4}},
-      React.createElement('div',{className:'d-flex w-100 align-items-center justify-content-between flex-wrap', style:{rowGap:8, columnGap:12}},[
-        React.createElement('h2',{key:'h', style:{margin:0, fontSize:'1.35rem'}},'Recommended Scenes'),
-        toolbarInner
+    const headerBar = React.createElement('div', { key:'headerBar', className:'scene-list-header mb-1 btn-toolbar d-flex justify-content-between flex-wrap gap-3' }, [
+      React.createElement('div',{key:'pi'}, React.createElement('span',{className:'pagination-index'}, `${startIndex}-${endIndex} of ${filteredScenes.length}`)),
+      React.createElement('div',{key:'right', className:'d-flex align-items-center flex-wrap gap-2'}, [
+        React.createElement('div',{key:'pagesize', className:'page-size-select'}, React.createElement('select',{className:'form-control form-control-sm', value:itemsPerPage, onChange:(e:any)=>{setItemsPerPage(Number(e.target.value)); setPage(1);}}, [20,40,80,120].map(n=> React.createElement('option',{key:n, value:n}, n)))),
+        React.createElement('div',{key:'zoom', className:'d-flex align-items-center', style:{gap:6}}, [
+          React.createElement('span',{key:'zl', className:'text-muted small'}, 'Zoom'),
+          React.createElement('input',{key:'zr', className:'form-range', style:{width:120}, type:'range', min:0, max:3, value:zoomIndex, onChange:(e:any)=>setZoomIndex(Number(e.target.value))})
+        ])
       ])
-    );
+    ]);
 
-    return React.createElement('div', { className:'recommended-scenes-page scene-list', style:{padding:'0 15px 24px'}}, [
-      toolbar,
-      paginationBar('top'),
+    // Mount directly so parent container-fluid provides spacing identically to native scenes page
+    return React.createElement(React.Fragment, null, [
+      actionsBar,
+      headerBar,
       grid,
       paginationBar('bottom')
     ]);
