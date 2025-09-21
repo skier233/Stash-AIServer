@@ -1,47 +1,77 @@
-// TaskDashboard
-// Contract:
-//  - Shows active parent/controller tasks in real-time (sourced from global websocket task cache & listeners).
-//  - Computes parent progress from aggregated child task states (weighted: completed|failed=1, running=0.5, queued=0, cancelled excluded).
-//  - Fetches recent persisted history via canonical REST endpoint /api/v1/tasks/history (limit=50 by default UI refresh).
-//  - Filters by service; manual refresh button; no auto-polling aside from user-trigger or mount.
-//  - Attempts backend base resolution: explicit window.AI_BACKEND_URL, else same-origin, else localhost dev fallback.
-//  - Only parent/controller tasks are persisted & shown (children omitted intentionally for clarity).
-//  - Debug/diagnostic logs gated by window.AIDebug = true.
-//  - Zero external dependencies; relies on global React & (optionally) ReactDOM exposed by host/plugin API.
+// TaskDashboard (cleaned)
+// Minimal responsibilities:
+//  - Show active top-level tasks (no children listed) with progress inferred from children.
+//  - Manual history fetch.
+//  - Cancel queued/running parent tasks (single base URL resolution).
+//  - Expand failed history rows to view/copy error.
 
-interface TaskSummary { id: string; action_id: string; service: string; status: string; group_id?: string | null; submitted_at: number; started_at?: number; finished_at?: number; error?: string | null; }
 interface HistoryItem { task_id: string; action_id: string; service: string; status: string; submitted_at: number; started_at?: number; finished_at?: number; duration_ms?: number | null; items_sent?: number | null; item_id?: string | null; error?: string | null; }
 
 const TaskDashboard = () => {
   const React: any = (window as any).PluginApi?.React || (window as any).React;
   if (!React) { console.error('[TaskDashboard] React not found'); return null; }
-  // Derive backend base more robustly: allow explicit override, else same-origin, else localhost dev.
-  function resolveBackendBase(): string {
-    const g: any = window as any;
-    if (g.AI_BACKEND_URL && typeof g.AI_BACKEND_URL === 'string') return g.AI_BACKEND_URL.replace(/\/$/, '');
-    // Prefer same-origin (assumes backend mounted at root /api/v1/* via proxy)
-    if (location && location.origin) return location.origin;
-    return 'http://localhost:8000';
-  }
-  const backendBase = resolveBackendBase();
-  // Avoid generic type params because React may be the untyped global provided by host.
+  // Backend base (simplified): prefer explicit AI_BACKEND_URL, else if UI served on :3000 map to :8000, else use current origin.
+  const [backendBase] = React.useState(() => {
+    const explicit = (window as any).AI_BACKEND_URL as string | undefined;
+    if (explicit) return explicit.replace(/\/$/, '');
+    const loc = (location && location.origin) || '';
+    try {
+      const u = new URL(loc);
+      if (u.port === '3000') { u.port = '8000'; return u.toString().replace(/\/$/, ''); }
+    } catch {}
+    return (loc || 'http://localhost:8000').replace(/\/$/, '');
+  });
+
   const [active, setActive] = React.useState([] as any[]);
   const [history, setHistory] = React.useState([] as HistoryItem[]);
   const [loadingHistory, setLoadingHistory] = React.useState(false as boolean);
   const [filterService, setFilterService] = React.useState(null as string | null);
+  const [expanded, setExpanded] = React.useState(new Set<string>());
+  const [cancelling, setCancelling] = React.useState(new Set<string>());
 
-  // Derive tasks from global cache and re-render when any task updates
+  // Ensure websocket (reuse if AIButton already created it)
+  React.useEffect(() => {
+    const g: any = window as any;
+    if (g.__AI_TASK_WS__ && g.__AI_TASK_WS__.readyState === 1) return;
+    if (g.__AI_TASK_WS_INIT__) return;
+    g.__AI_TASK_WS_INIT__ = true;
+    const base = backendBase.replace(/^http/, 'ws');
+    const urls = [`${base}/api/v1/ws/tasks`, `${base}/ws/tasks`];
+    for (const u of urls) {
+      try {
+        const sock = new WebSocket(u);
+        g.__AI_TASK_WS__ = sock;
+        if (!g.__AI_TASK_CACHE__) g.__AI_TASK_CACHE__ = {};
+        if (!g.__AI_TASK_WS_LISTENERS__) g.__AI_TASK_WS_LISTENERS__ = {};
+        if (!g.__AI_TASK_ANY_LISTENERS__) g.__AI_TASK_ANY_LISTENERS__ = [];
+        sock.onmessage = (evt: MessageEvent) => {
+          try {
+            const m = JSON.parse(evt.data);
+            const task = m.task || m.data?.task || m.data || m;
+            if (!task?.id) return;
+            g.__AI_TASK_CACHE__[task.id] = task;
+            const ls = g.__AI_TASK_WS_LISTENERS__[task.id]; if (ls) ls.forEach((fn: any) => fn(task));
+            const anyLs = g.__AI_TASK_ANY_LISTENERS__; if (anyLs) anyLs.forEach((fn: any) => { try { fn(task); } catch {} });
+          } catch {}
+        };
+        sock.onclose = () => { if (g.__AI_TASK_WS__ === sock) g.__AI_TASK_WS__ = null; g.__AI_TASK_WS_INIT__ = false; };
+        break;
+      } catch {}
+    }
+  }, [backendBase]);
+
+  // Active tasks tracking
   React.useEffect(() => {
     const g: any = window as any;
     if (!g.__AI_TASK_ANY_LISTENERS__) g.__AI_TASK_ANY_LISTENERS__ = [];
     const pull = () => {
       const cache = g.__AI_TASK_CACHE__ || {};
       const tasks = Object.values(cache) as any[];
-  const activeTasks = tasks.filter(t => !t.group_id && !['completed','failed','cancelled'].includes(t.status));
-      setActive(activeTasks.sort((a,b) => (a.submitted_at||0) - (b.submitted_at||0)));
+      const activeParents = tasks.filter(t => !t.group_id && !['completed','failed','cancelled'].includes(t.status));
+      setActive(activeParents.sort((a,b) => (a.submitted_at||0) - (b.submitted_at||0)));
     };
     pull();
-    const listener = (_t: any) => pull();
+    const listener = () => pull();
     g.__AI_TASK_ANY_LISTENERS__.push(listener);
     return () => { g.__AI_TASK_ANY_LISTENERS__ = (g.__AI_TASK_ANY_LISTENERS__ || []).filter((fn: any) => fn !== listener); };
   }, []);
@@ -49,70 +79,55 @@ const TaskDashboard = () => {
   const fetchHistory = React.useCallback(async () => {
     setLoadingHistory(true);
     try {
-      let lastErr: any = null;
-      const bases: string[] = [];
-      const g: any = window as any;
-      if (g.AI_BACKEND_URL) bases.push(g.AI_BACKEND_URL.replace(/\/$/, ''));
-      if (!bases.includes(backendBase)) bases.push(backendBase);
-      if (!bases.includes('http://localhost:8000')) bases.push('http://localhost:8000');
-  const pathVariants = ['/api/v1/tasks/history'];
-      for (const b of bases) {
-        for (const pv of pathVariants) {
-          try {
-            const url = new URL(`${b}${pv}`);
-            url.searchParams.set('limit','50');
-            if (filterService) url.searchParams.set('service', filterService);
-            const full = url.toString();
-            const res = await fetch(full);
-            if (!res.ok) {
-              // Only log non-404 errors to reduce noise when one variant doesn't exist
-              if ((window as any).AIDebug && res.status !== 404) console.warn('[TaskDashboard] history fetch non-OK', full, res.status);
-              lastErr = new Error('HTTP ' + res.status);
-              continue;
-            }
-            const data = await res.json();
-            setHistory(data.history || []);
-            if ((window as any).AIDebug) console.log('[TaskDashboard] history loaded', data.history?.length, 'from', full);
-            return;
-          } catch (err) {
-            lastErr = err;
-            // proceed to next variant/base
-          }
-        }
-      }
-  if ((window as any).AIDebug) console.error('[TaskDashboard] All history fetch attempts failed', lastErr);
+      const url = new URL(`${backendBase}/api/v1/tasks/history`);
+      url.searchParams.set('limit','50');
+      if (filterService) url.searchParams.set('service', filterService);
+  if ((window as any).AIDebug) console.debug('[TaskDashboard] Fetch history URL:', url.toString());
+      const res = await fetch(url.toString());
+      if (!res.ok) return;
+      const ct = (res.headers.get('content-type') || '').toLowerCase();
+      if (!ct.includes('application/json')) return;
+      const data = await res.json();
+      if (data && Array.isArray(data.history)) setHistory(data.history);
     } finally { setLoadingHistory(false); }
   }, [backendBase, filterService]);
-
   React.useEffect(() => { fetchHistory(); }, [fetchHistory]);
 
-  // Progress for parent tasks (controller) using children in cache
   function computeProgress(task: any): number | null {
-    if (!task) return null;
     const g: any = window as any;
     const cache = g.__AI_TASK_CACHE__ || {};
-  const children = (Object.values(cache) as any[]).filter((c: any) => c.group_id === task.id);
+    const children = (Object.values(cache) as any[]).filter((c: any) => c.group_id === task.id);
     if (!children.length) return null;
-    let done=0, running=0, queued=0, failed=0, cancelled=0;
-    for (const c of children as any[]) {
+    let done=0,running=0,queued=0,failed=0,cancelled=0;
+    for (const c of children) {
       switch(c.status){
-        case 'completed': done++; break;
-        case 'running': running++; break;
-        case 'queued': queued++; break;
-        case 'failed': failed++; break;
-        case 'cancelled': cancelled++; break;
+        case 'completed': done++; break; case 'running': running++; break; case 'queued': queued++; break; case 'failed': failed++; break; case 'cancelled': cancelled++; break;
       }
     }
-    const effectiveTotal = done + running + queued + failed; // ignore cancelled in denominator
+    const effectiveTotal = done+running+queued+failed;
     if (!effectiveTotal) return 0;
-    const weighted = done + failed + running * 0.5;
+    const weighted = done + failed + running*0.5;
     return Math.min(1, weighted / effectiveTotal);
   }
 
-  const ReactEl = (window as any).React || (window as any).PluginApi?.React;
-  const formatTs = (v?: number) => v ? new Date(v*1000).toLocaleTimeString() : '-';
+  function toggleExpand(id: string) {
+    setExpanded((prev: Set<string>) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  }
+  function copyToClipboard(text: string) { try { navigator.clipboard?.writeText(text); } catch { try { (window as any).prompt('Copy error text manually:', text); } catch {} } }
 
-  const services = Array.from(new Set((history as any[]).map((h: any) => h.service).concat((active as any[]).map((a: any) => a.service))));
+  async function cancelTask(id: string) {
+    setCancelling((prev: Set<string>) => { const n = new Set(prev); n.add(id); return n; });
+    try {
+      const res = await fetch(`${backendBase}/api/v1/tasks/${id}/cancel`, { method: 'POST' });
+      if (!res.ok) throw new Error('Cancel failed HTTP '+res.status);
+    } catch (e: any) {
+      setCancelling((prev: Set<string>) => { const n = new Set(prev); n.delete(id); return n; });
+      alert('Cancel failed: ' + (e.message || 'unknown'));
+    }
+  }
+
+  const formatTs = (v?: number) => v ? new Date(v*1000).toLocaleTimeString() : '-';
+  const services = Array.from(new Set((history as any[]).map(h => h.service).concat((active as any[]).map(a => a.service))));
 
   return React.createElement('div', { className: 'ai-task-dashboard' }, [
     React.createElement('div', { key: 'hdr', className: 'ai-task-dash__header' }, [
@@ -128,27 +143,41 @@ const TaskDashboard = () => {
     React.createElement('div', { key: 'active', className: 'ai-task-dash__section' }, [
       React.createElement('h4', { key: 'lbl' }, 'Active'),
       active.length === 0 && React.createElement('div', { key: 'none', className: 'ai-task-dash__empty' }, 'No active tasks'),
-  ...(active as any[]).map((t: any) => {
-        const prog = computeProgress(t);
+      ...(active as any[]).map((t: any) => {
+        const prog = computeProgress(t); const isCancelling = cancelling.has(t.id);
         return React.createElement('div', { key: t.id, className: 'ai-task-row' }, [
           React.createElement('div', { key: 'svc', className: 'ai-task-row__svc' }, t.service),
           React.createElement('div', { key: 'act', className: 'ai-task-row__action' }, t.action_id),
-          React.createElement('div', { key: 'status', className: 'ai-task-row__status' }, t.status),
+          React.createElement('div', { key: 'status', className: 'ai-task-row__status' }, t.status + (isCancelling ? ' (cancelling...)' : '')),
           React.createElement('div', { key: 'progress', className: 'ai-task-row__progress' }, prog != null ? `${Math.round(prog*100)}%` : ''),
-          React.createElement('div', { key: 'times', className: 'ai-task-row__times' }, formatTs(t.started_at))
+          React.createElement('div', { key: 'times', className: 'ai-task-row__times' }, formatTs(t.started_at)),
+          (t.status === 'queued' || t.status === 'running') && React.createElement('button', { key: 'cancel', disabled: isCancelling, className: 'ai-task-row__cancel', onClick: () => cancelTask(t.id), style: { marginLeft: 8 } }, isCancelling ? 'Cancelling…' : 'Cancel')
         ]);
       })
     ]),
     React.createElement('div', { key: 'hist', className: 'ai-task-dash__section' }, [
       React.createElement('h4', { key: 'lbl' }, 'Recent History'),
       history.length === 0 && React.createElement('div', { key: 'none', className: 'ai-task-dash__empty' }, 'No recent tasks'),
-  ...(history as any[]).map((h: any) => React.createElement('div', { key: h.task_id, className: 'ai-task-row ai-task-row--history' }, [
-        React.createElement('div', { key: 'svc', className: 'ai-task-row__svc' }, h.service),
-        React.createElement('div', { key: 'act', className: 'ai-task-row__action' }, h.action_id),
-        React.createElement('div', { key: 'status', className: 'ai-task-row__status' }, h.status),
-        React.createElement('div', { key: 'dur', className: 'ai-task-row__progress' }, h.duration_ms != null ? `${h.duration_ms}ms` : ''),
-        React.createElement('div', { key: 'time', className: 'ai-task-row__times' }, formatTs(h.finished_at || h.started_at))
-      ]))
+      ...(history as any[]).map(h => {
+        const isFailed = h.status === 'failed'; const isExpanded = expanded.has(h.task_id);
+        const rowClasses = ['ai-task-row','ai-task-row--history']; if (isFailed) rowClasses.push('ai-task-row--failed'); if (isExpanded) rowClasses.push('ai-task-row--expanded');
+        return React.createElement(React.Fragment, { key: h.task_id }, [
+          React.createElement('div', { key: 'row', className: rowClasses.join(' '), onClick: () => { if (isFailed) toggleExpand(h.task_id); }, style: isFailed ? { cursor: 'pointer' } : undefined }, [
+            React.createElement('div', { key: 'svc', className: 'ai-task-row__svc' }, h.service),
+            React.createElement('div', { key: 'act', className: 'ai-task-row__action' }, h.action_id),
+            React.createElement('div', { key: 'status', className: 'ai-task-row__status' }, h.status + (isFailed ? (isExpanded ? ' ▲' : ' ▼') : '')),
+            React.createElement('div', { key: 'dur', className: 'ai-task-row__progress' }, h.duration_ms != null ? `${h.duration_ms}ms` : ''),
+            React.createElement('div', { key: 'time', className: 'ai-task-row__times' }, formatTs(h.finished_at || h.started_at))
+          ]),
+          isFailed && isExpanded && h.error && React.createElement('div', { key: 'err', className: 'ai-task-row__errorDetail' }, [
+            React.createElement('pre', { key: 'pre', style: { margin: 0, whiteSpace: 'pre-wrap', fontSize: '12px', lineHeight: '1.3', background: '#330', color: '#fdd', padding: '6px', borderRadius: '4px', maxHeight: '200px', overflow: 'auto' } }, h.error),
+            React.createElement('div', { key: 'btns', style: { marginTop: '4px', display: 'flex', gap: '8px' } }, [
+              React.createElement('button', { key: 'copy', onClick: (e: any) => { e.stopPropagation(); copyToClipboard(h.error!); } }, 'Copy Error'),
+              React.createElement('button', { key: 'close', onClick: (e: any) => { e.stopPropagation(); toggleExpand(h.task_id); } }, 'Close')
+            ])
+          ])
+        ]);
+      })
     ])
   ]);
 };

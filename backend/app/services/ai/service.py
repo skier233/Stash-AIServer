@@ -70,7 +70,12 @@ class AIService(ServiceBase):
             selected = ['demo-scene-1']
         per_scene = []
         for sid in selected:
-            await asyncio.sleep(0.5)
+            # Sleep in smaller increments to improve cancellation reactivity
+            remaining = 0.5
+            while remaining > 0:
+                chunk = min(0.05, remaining)
+                await asyncio.sleep(chunk)
+                remaining -= chunk
             per_scene.append({
                 'scene_id': sid,
                 'suggested_tags': [
@@ -113,21 +118,28 @@ class AIService(ServiceBase):
             definition, handler = resolved
             child = task_manager.submit(definition, handler, detail_ctx, {}, TaskPriority.high, group_id=task_record.id)
             spawned.append(child.id)
-        # Optionally keep controller task alive until children finish so frontend can show progressive %.
+        # hold_children: keep parent alive until children settle (default true)
         hold = params.get('hold_children', True)
+        # Optional minimum hold duration even if children finish early, to allow a cancellation window.
+        min_hold = float(params.get('hold_parent_seconds', 0) or 0)
+        import time
+        start_time = time.time()
         if hold:
-            import time
-            # Poll internal manager state (no extra DB calls)
             while True:
                 children = [t for t in task_manager.tasks.values() if t.group_id == task_record.id]
                 pending = [c for c in children if c.status not in ('completed', 'failed', 'cancelled')]
-                if not pending:
+                elapsed = time.time() - start_time
+                if not pending and elapsed >= min_hold:
                     break
-                # Sleep in small steps to be cancellation-friendly
                 await asyncio.sleep(0.1)
                 if getattr(task_record, 'cancel_requested', False):
                     break
-        return {'spawned': spawned, 'count': len(spawned), 'held': bool(hold)}
+        return {
+            'spawned': spawned,
+            'count': len(spawned),
+            'held': bool(hold),
+            'min_hold': min_hold if min_hold else None
+        }
 
     @action(
         id='ai.tag.scenes',

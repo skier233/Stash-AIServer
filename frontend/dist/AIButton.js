@@ -30,7 +30,22 @@ const MinimalAIButton = () => {
     const [activeTasks, setActiveTasks] = React.useState([]);
     /** @type {[string[], Function]} */
     const [recentlyFinished, setRecentlyFinished] = React.useState([]);
-    const backendBase = window.AI_BACKEND_URL || 'http://localhost:8000';
+    // Backend base: explicit override > map :3000 UI origin to :8000 backend > fallback localhost:8000
+    const backendBase = (() => {
+        const explicit = window.AI_BACKEND_URL;
+        if (explicit)
+            return explicit.replace(/\/$/, '');
+        const loc = (location && location.origin) || '';
+        try {
+            const u = new URL(loc);
+            if (u.port === '3000') {
+                u.port = '8000';
+                return u.toString().replace(/\/$/, '');
+            }
+        }
+        catch { }
+        return (loc || 'http://localhost:8000').replace(/\/$/, '');
+    })();
     const actionsRef = React.useRef(null);
     React.useEffect(() => pageAPI.subscribe((ctx) => setContext(ctx)), []);
     const refetchActions = React.useCallback(async (ctx, opts = {}) => {
