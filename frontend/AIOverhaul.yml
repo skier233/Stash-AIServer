@@ -6,6 +6,8 @@ ui:
     - dist/pageContext.js
     - dist/AIButton.js
     - dist/AIButtonIntegration.js
+    - dist/TaskDashboard.js
+    - dist/TaskDashboardSimpleIntegration.js
   css:
-    - src/css/AIButton.css
+    - AIOverhaul.css
 interface: raw

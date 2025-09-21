@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 from typing import Any
 from app.services.registry import ServiceBase, services
 from app.actions.registry import action
@@ -69,6 +70,7 @@ class AIService(ServiceBase):
             selected = ['demo-scene-1']
         per_scene = []
         for sid in selected:
+            await asyncio.sleep(0.5)
             per_scene.append({
                 'scene_id': sid,
                 'suggested_tags': [
@@ -111,7 +113,21 @@ class AIService(ServiceBase):
             definition, handler = resolved
             child = task_manager.submit(definition, handler, detail_ctx, {}, TaskPriority.high, group_id=task_record.id)
             spawned.append(child.id)
-        return {'spawned': spawned, 'count': len(spawned)}
+        # Optionally keep controller task alive until children finish so frontend can show progressive %.
+        hold = params.get('hold_children', True)
+        if hold:
+            import time
+            # Poll internal manager state (no extra DB calls)
+            while True:
+                children = [t for t in task_manager.tasks.values() if t.group_id == task_record.id]
+                pending = [c for c in children if c.status not in ('completed', 'failed', 'cancelled')]
+                if not pending:
+                    break
+                # Sleep in small steps to be cancellation-friendly
+                await asyncio.sleep(0.1)
+                if getattr(task_record, 'cancel_requested', False):
+                    break
+        return {'spawned': spawned, 'count': len(spawned), 'held': bool(hold)}
 
     @action(
         id='ai.tag.scenes',

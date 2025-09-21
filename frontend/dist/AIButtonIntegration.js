@@ -5,6 +5,7 @@
 (function () {
     const PluginApi = window.PluginApi;
     const React = PluginApi.React;
+    // Do NOT force-set AI_BACKEND_URL here; frontend components will handle fallbacks.
     // Add the minimal button to the main navigation
     PluginApi.patch.before('MainNavBar.UtilityItems', function (props) {
         // Check if MinimalAIButton is available

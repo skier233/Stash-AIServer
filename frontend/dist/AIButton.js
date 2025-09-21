@@ -17,7 +17,11 @@ const MinimalAIButton = () => {
     const [openMenu, setOpenMenu] = React.useState(false);
     const [loadingActions, setLoadingActions] = React.useState(false);
     const [actions, setActions] = React.useState([]);
-    const [executing, setExecuting] = React.useState(null);
+    // Track multiple active tasks
+    /** @type {[string[], Function]} */
+    const [activeTasks, setActiveTasks] = React.useState([]);
+    /** @type {[string[], Function]} */
+    const [recentlyFinished, setRecentlyFinished] = React.useState([]);
     const backendBase = window.AI_BACKEND_URL || 'http://localhost:8000';
     const actionsRef = React.useRef(null);
     React.useEffect(() => pageAPI.subscribe((ctx) => setContext(ctx)), []);
@@ -103,6 +107,8 @@ const MinimalAIButton = () => {
         const glob = window;
         if (!glob.__AI_TASK_WS_LISTENERS__)
             glob.__AI_TASK_WS_LISTENERS__ = {};
+        if (!glob.__AI_TASK_ANY_LISTENERS__)
+            glob.__AI_TASK_ANY_LISTENERS__ = [];
         if (!glob.__AI_TASK_CACHE__)
             glob.__AI_TASK_CACHE__ = {};
         sock.onopen = () => { dlog('WS open', sock === null || sock === void 0 ? void 0 : sock.url); };
@@ -121,6 +127,14 @@ const MinimalAIButton = () => {
                 dlog('Task event', task.id, task.status, 'listeners:', ls ? ls.length : 0);
                 if (ls)
                     ls.forEach((fn) => fn(task));
+                // Broadcast to any-listeners (for progress updates / dashboards)
+                const anyLs = glob.__AI_TASK_ANY_LISTENERS__;
+                if (anyLs && anyLs.length) {
+                    anyLs.forEach((fn) => { try {
+                        fn(task);
+                    }
+                    catch (_) { } });
+                }
             }
             catch (err) {
                 if (debug)
@@ -141,7 +155,6 @@ const MinimalAIButton = () => {
     const handleExecute = async (actionId) => {
         var _a;
         dlog('Execute action', actionId, 'context', context);
-        setExecuting(actionId);
         try {
             ensureWS();
             const g = window;
@@ -154,14 +167,19 @@ const MinimalAIButton = () => {
             if (!g.__AI_TASK_WS_LISTENERS__[taskId])
                 g.__AI_TASK_WS_LISTENERS__[taskId] = [];
             dlog('Registered task listener', taskId);
-            const finalize = (t) => { if (t.status === 'completed') {
-                if (t.result_kind === 'dialog' || t.result_kind === 'notification') {
-                    alert(`Action ${actionId} result:\n` + JSON.stringify(t.result, null, 2));
+            setActiveTasks((prev) => prev.includes(taskId) ? prev : [...prev, taskId]);
+            const finalize = (t) => {
+                if (t.status === 'completed') {
+                    if (t.result_kind === 'dialog' || t.result_kind === 'notification') {
+                        alert(`Action ${actionId} result:\n` + JSON.stringify(t.result, null, 2));
+                    }
                 }
-            }
-            else if (t.status === 'failed') {
-                alert(`Action ${actionId} failed: ${t.error || 'unknown error'}`);
-            } setExecuting(null); setOpenMenu(false); };
+                else if (t.status === 'failed') {
+                    alert(`Action ${actionId} failed: ${t.error || 'unknown error'}`);
+                }
+                setActiveTasks((prev) => prev.filter((id) => id !== t.id));
+                setRecentlyFinished((prev) => [t.id, ...prev].slice(0, 20));
+            };
             const listener = (t) => {
                 if (t.id !== taskId)
                     return;
@@ -180,8 +198,6 @@ const MinimalAIButton = () => {
         }
         catch (e) {
             alert(`Action ${actionId} failed: ${e.message}`);
-            setExecuting(null);
-            setOpenMenu(false);
         }
     };
     const toggleMenu = () => { if (!openMenu) {
@@ -202,9 +218,78 @@ const MinimalAIButton = () => {
     } };
     const colorClass = context.isDetailView ? 'ai-btn--detail' : `ai-btn--${context.page}`;
     const elems = [];
-    elems.push(React.createElement('button', { key: 'ai-btn', className: `ai-btn ${colorClass}`, onClick: toggleMenu, onMouseEnter: () => setShowTooltip(true), onMouseLeave: () => setShowTooltip(false), disabled: loadingActions }, [
-        React.createElement('div', { key: 'icon', className: 'ai-btn__icon' }, executing ? '⏳' : getButtonIcon()),
-        React.createElement('div', { key: 'lbl', className: 'ai-btn__label' }, (context.page || 'AI').toUpperCase())
+    const activeCount = activeTasks.length;
+    // Force re-render on relevant child task mutations for progress (version bump)
+    const [progressVersion, setProgressVersion] = React.useState(0);
+    React.useEffect(() => {
+        const g = window;
+        const listener = (t) => {
+            if (!activeTasks.length)
+                return;
+            if (activeTasks.includes(t.id) || activeTasks.includes(t.group_id)) {
+                setProgressVersion((v) => v + 1);
+            }
+        };
+        if (!g.__AI_TASK_ANY_LISTENERS__)
+            g.__AI_TASK_ANY_LISTENERS__ = [];
+        g.__AI_TASK_ANY_LISTENERS__.push(listener);
+        return () => {
+            g.__AI_TASK_ANY_LISTENERS__ = (g.__AI_TASK_ANY_LISTENERS__ || []).filter((fn) => fn !== listener);
+        };
+    }, [activeTasks]);
+    // Progress inference for single active parent/controller: compute via children states in global cache
+    let singleProgress = null;
+    if (activeCount === 1) {
+        try {
+            const g = window;
+            const tid = activeTasks[0];
+            const cache = g.__AI_TASK_CACHE__ || {};
+            const tasks = Object.values(cache);
+            const children = tasks.filter(t => t.group_id === tid);
+            if (children.length) {
+                let done = 0, running = 0, queued = 0, failed = 0, cancelled = 0;
+                for (const c of children) {
+                    switch (c.status) {
+                        case 'completed':
+                            done++;
+                            break;
+                        case 'running':
+                            running++;
+                            break;
+                        case 'queued':
+                            queued++;
+                            break;
+                        case 'failed':
+                            failed++;
+                            break;
+                        case 'cancelled':
+                            cancelled++;
+                            break;
+                    }
+                }
+                // Effective total excludes cancelled to keep progress intuitive when some children are aborted early.
+                const effectiveTotal = done + running + queued + failed; // cancelled removed from denominator
+                if (effectiveTotal > 0) {
+                    // Weighted progress: completed=1.0, failed=1.0 (terminal), running=0.5, queued=0.
+                    const weighted = done + failed + running * 0.5;
+                    singleProgress = Math.min(1, weighted / effectiveTotal);
+                }
+            }
+            else {
+                // Fallback: show 0% instead of hiding percent for a controller whose children haven't arrived yet
+                // We'll treat absence of children as 0% rather than null so UI shows ring.
+                singleProgress = 0;
+            }
+        }
+        catch { }
+    }
+    const progressPct = singleProgress != null ? Math.round(singleProgress * 100) : null;
+    const progressRing = (singleProgress != null && activeCount === 1) ? React.createElement('div', { key: 'ring', className: 'ai-btn__progress-ring', style: { ['--ai-progress']: `${progressPct}%` } }) : null;
+    elems.push(React.createElement('button', { key: 'ai-btn', className: `ai-btn ${colorClass}` + (singleProgress != null ? ' ai-btn--progress' : ''), onClick: toggleMenu, onMouseEnter: () => setShowTooltip(true), onMouseLeave: () => setShowTooltip(false), disabled: loadingActions }, [
+        progressRing,
+        React.createElement('div', { key: 'icon', className: 'ai-btn__icon' }, activeCount === 0 ? getButtonIcon() : (activeCount === 1 && progressPct != null ? `${progressPct}%` : '⏳')),
+        React.createElement('div', { key: 'lbl', className: 'ai-btn__label' }, (context.page || 'AI').toUpperCase()),
+        activeCount > 1 && React.createElement('span', { key: 'badge', className: 'ai-btn__badge' }, String(activeCount))
     ]));
     if (showTooltip && !openMenu) {
         elems.push(React.createElement('div', { key: 'tip', className: 'ai-btn__tooltip' }, [
@@ -220,11 +305,10 @@ const MinimalAIButton = () => {
             !loadingActions && actions.length === 0 && React.createElement('div', { key: 'none', className: 'ai-actions-menu__status' }, 'No actions'),
             !loadingActions && actions.map((a) => {
                 var _a, _b;
-                return React.createElement('button', { key: a.id, onClick: () => handleExecute(a.id), disabled: !!executing, className: 'ai-actions-menu__item' }, [
+                return React.createElement('button', { key: a.id, onClick: () => handleExecute(a.id), className: 'ai-actions-menu__item' }, [
                     React.createElement('span', { key: 'svc', className: 'ai-actions-menu__svc' }, ((_b = (_a = a.service) === null || _a === void 0 ? void 0 : _a.toUpperCase) === null || _b === void 0 ? void 0 : _b.call(_a)) || a.service),
                     React.createElement('span', { key: 'albl', style: { flexGrow: 1 } }, a.label),
-                    a.result_kind === 'dialog' && React.createElement('span', { key: 'rk', className: 'ai-actions-menu__rk' }, '↗'),
-                    executing === a.id && React.createElement('span', { key: 'exec', className: 'ai-actions-menu__exec' }, '…')
+                    a.result_kind === 'dialog' && React.createElement('span', { key: 'rk', className: 'ai-actions-menu__rk' }, '↗')
                 ]);
             })
         ]));

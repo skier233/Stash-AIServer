@@ -10,7 +10,10 @@ const { execSync } = require('child_process');
 const files = [
   'src/pageContext.ts',
   'src/AIButton.tsx',
-  'src/AIButtonIntegration.tsx'
+  'src/AIButtonIntegration.tsx',
+  'src/TaskDashboard.tsx'
+  // Removed legacy heuristic integration script
+  , 'src/TaskDashboardSimpleIntegration.tsx'
 ];
 
 // Simple wrapper template to isolate scope & avoid stray exports in browser context
@@ -29,7 +32,8 @@ console.log('🔨 Building minimal AI Overhaul...\n');
 for (const file of files) {
   try {
     console.log(`📝 Compiling ${file}...`);
-    execSync(`npx tsc ${file} --target es2019 --module commonjs --lib es2019,dom --outDir dist --declaration false --skipLibCheck true --noResolve`, {
+    const jsxFlag = file.endsWith('.tsx') ? '--jsx react' : '';
+    execSync(`npx tsc ${file} --target es2019 --module commonjs --lib es2019,dom ${jsxFlag} --outDir dist --declaration false --skipLibCheck true --noResolve`, {
       stdio: 'inherit'
     });
 

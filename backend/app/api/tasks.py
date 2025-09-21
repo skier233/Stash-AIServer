@@ -1,8 +1,11 @@
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Any, Optional
+from sqlalchemy.orm import Session
+from app.db.session import get_db
 from app.tasks.manager import manager
 from app.tasks.models import TaskPriority, TaskStatus
+from app.tasks.history import TaskHistory
 from app.actions.models import ContextInput
 from app.actions.registry import registry as action_registry
 
@@ -17,6 +20,30 @@ class SubmitTaskRequest(BaseModel):
 class SubmitTaskResponse(BaseModel):
     task_id: str
     status: str
+
+# NOTE: Define history endpoint BEFORE dynamic '/{task_id}' routes to avoid them capturing 'history' as a task_id.
+class HistoryItem(BaseModel):
+    task_id: str
+    action_id: str
+    service: str
+    status: str
+    submitted_at: float
+    started_at: float | None
+    finished_at: float | None
+    duration_ms: int | None
+    items_sent: int | None
+    item_id: str | None
+    error: str | None
+
+@router.get('/history')
+def task_history(limit: int = 50, service: str | None = None, status: str | None = None, db: Session = Depends(get_db)) -> dict:
+    q = db.query(TaskHistory)
+    if service:
+        q = q.filter(TaskHistory.service == service)
+    if status:
+        q = q.filter(TaskHistory.status == status)
+    rows = q.order_by(TaskHistory.created_at.desc()).limit(min(limit, 500)).all()
+    return {'history': [r.as_dict() for r in rows]}
 
 @router.post('/submit', response_model=SubmitTaskResponse)
 async def submit_task(payload: SubmitTaskRequest):
@@ -78,7 +105,12 @@ class ListTasksResponse(BaseModel):
 
 @router.get('', response_model=ListTasksResponse)
 async def list_tasks(service: str | None = None, status: str | None = None):
-    st = TaskStatus(status) if status in TaskStatus.__members__.values() else None  # type: ignore
+    st = None
+    if status:
+        try:
+            st = TaskStatus(status)
+        except ValueError:
+            st = None
     tasks = manager.list(service=service, status=st)
     return ListTasksResponse(tasks=[TaskResponse(
         id=t.id,
@@ -93,3 +125,5 @@ async def list_tasks(service: str | None = None, status: str | None = None):
         started_at=t.started_at,
         finished_at=t.finished_at,
     ) for t in tasks])
+
+## Removed temporary '/tasks/history' alias after route ordering fix; canonical path is '/api/v1/tasks/history'.

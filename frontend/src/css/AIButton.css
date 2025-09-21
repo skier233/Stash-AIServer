@@ -57,6 +57,63 @@
   letter-spacing: 0.5px;
 }
 
+/* Active count badge */
+.ai-btn__badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  background: #ef4444;
+  color: #fff;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 10px;
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.35);
+  pointer-events: none;
+}
+
+/* Progress state variant (single active) */
+.ai-btn--progress {
+  position: relative;
+}
+.ai-btn--progress::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: var(--ai-btn-radius);
+  box-shadow: 0 0 0 2px currentColor inset;
+  opacity: 0.25;
+  pointer-events: none;
+}
+
+/* Circular progress ring (single active task) */
+.ai-btn__progress-ring {
+  position: absolute;
+  inset: -2px;
+  border-radius: var(--ai-btn-radius);
+  background:
+    conic-gradient(currentColor var(--ai-progress, 0), rgba(255,255,255,0.08) 0);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  mix-blend-mode: normal;
+  opacity: 0.85;
+  pointer-events: none;
+  mask: radial-gradient(circle at 50% 50%, rgba(0,0,0,0) 48%, rgba(0,0,0,1) 49%);
+  -webkit-mask: radial-gradient(circle at 50% 50%, rgba(0,0,0,0) 48%, rgba(0,0,0,1) 49%);
+}
+.ai-btn--progress .ai-btn__icon {
+  font-size: 13px;
+  font-weight: 600;
+  position: relative;
+  z-index: 1;
+}
+
 /* Context color variants */
 .ai-btn--scenes { border-color: var(--ai-color-scenes); color: var(--ai-color-scenes); }
 .ai-btn--galleries { border-color: var(--ai-color-galleries); color: var(--ai-color-galleries); }

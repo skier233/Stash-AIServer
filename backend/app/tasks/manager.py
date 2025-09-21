@@ -7,6 +7,8 @@ import logging
 from app.tasks.models import TaskRecord, TaskStatus, TaskPriority, CancelToken
 from app.actions.registry import registry as action_registry
 from app.actions.models import ContextInput
+from app.db.session import SessionLocal
+from app.tasks.history import TaskHistory
 
 SERVICE_CONFIG: dict[str, dict] = {}
 
@@ -62,6 +64,57 @@ class TaskManager:
                 cb(event, task, extra)
             except Exception:
                 pass
+        # Persist terminal states into history DB (fire-and-forget best-effort)
+        if event in ('completed', 'failed', 'cancelled'):
+            try:
+                db = SessionLocal()
+                existing = db.query(TaskHistory).filter_by(task_id=task.id).first()
+                # Only persist top-level (no group_id) tasks
+                if not existing and not task.group_id:
+                    duration_ms = None
+                    if task.started_at and task.finished_at:
+                        duration_ms = int((task.finished_at - task.started_at) * 1000)
+                    items_sent = None
+                    item_id = None
+                    child_count = len([t for t in self.tasks.values() if t.group_id == task.id])
+                    if child_count:
+                        items_sent = child_count
+                    try:
+                        if getattr(task.context, 'isDetailView', False) and getattr(task.context, 'entityId', None):
+                            item_id = str(task.context.entityId)
+                    except Exception:
+                        pass
+                    rec = TaskHistory(
+                        task_id=task.id,
+                        action_id=task.action_id,
+                        service=task.service,
+                        status=task.status.value,
+                        submitted_at=task.submitted_at,
+                        started_at=task.started_at,
+                        finished_at=task.finished_at,
+                        duration_ms=duration_ms,
+                        items_sent=items_sent,
+                        item_id=item_id,
+                        error=task.error,
+                    )
+                    db.add(rec)
+                    try:
+                        total = db.query(TaskHistory).count()
+                        if total > 600:
+                            overflow = total - 500
+                            old_ids = [r.id for r in db.query(TaskHistory).order_by(TaskHistory.created_at.asc()).limit(overflow).all()]
+                            if old_ids:
+                                db.query(TaskHistory).filter(TaskHistory.id.in_(old_ids)).delete(synchronize_session=False)
+                    except Exception:
+                        pass
+                db.commit()
+            except Exception:
+                pass
+            finally:
+                try:
+                    db.close()
+                except Exception:
+                    pass
 
     def submit(self, definition, handler, ctx: ContextInput, params: dict, priority: TaskPriority, *, group_id: str | None = None) -> TaskRecord:
         service = definition.service
