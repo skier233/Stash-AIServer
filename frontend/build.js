@@ -11,7 +11,8 @@ let files = [
   'src/AIButton.tsx',
   'src/AIButtonIntegration.tsx',
   'src/TaskDashboard.tsx',
-  'src/pageContext.ts'
+  'src/pageContext.ts',
+  'src/RecommendedScenes.tsx'
   // (Order not semantically critical; sorted for determinism below)
 ];
 files = files.sort();

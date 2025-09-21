@@ -7,6 +7,7 @@ ui:
     - dist/AIButton.js
     - dist/AIButtonIntegration.js
     - dist/TaskDashboard.js
+    - dist/RecommendedScenes.js
   css:
     - AIOverhaul.css
 interface: raw

@@ -6,8 +6,8 @@ from app.actions.registry import action
 from app.actions.models import ContextRule, ContextInput
 
 
-class AIService(ServiceBase):
-    name = 'ai'
+class Skier_AITagging_Service(ServiceBase):
+    name = 'skier.ai_tagging'
     description = 'AI tagging and analysis service'
     # Removed external server_url placeholder to avoid unnecessary connectivity failures in isolated environments.
     server_url = None  # No outbound health check required for mock handlers
@@ -16,7 +16,7 @@ class AIService(ServiceBase):
     # Image Tagging (single + bulk variants under one logical id)
     # ------------------------------------------------------------------
     @action(
-        id='ai.tag.image',
+        id='skier.ai_tag.image',
         label='AI Tag Image',
         description='Generate tag suggestions for an image',
         service='ai',
@@ -34,7 +34,7 @@ class AIService(ServiceBase):
         }
 
     @action(
-        id='ai.tag.image',
+        id='skier.ai_tag.image',
         label='AI Tag Images',  # bulk label
         description='Generate tag suggestions for images',
         service='ai',
@@ -55,7 +55,7 @@ class AIService(ServiceBase):
     # Scene Tagging (single + bulk variants under one logical id)
     # ------------------------------------------------------------------
     @action(
-        id='ai.tag.scenes',
+        id='skier.ai_tag.scene',
         label='AI Tag Scene',
         description='Analyze a scene for tag segments',
         service='ai',
@@ -94,7 +94,7 @@ class AIService(ServiceBase):
     # Batch parent that spawns child tasks (demonstration of group cancellation)
     # ------------------------------------------------------------------
     @action(
-        id='ai.batch.spawn.scenes',
+        id='skier.ai_tag.batch.spawn.scenes',
         label='AI Batch Spawn Scenes',
         description='Spawn individual tagging subtasks for each selected scene',
         service='ai',
@@ -142,7 +142,7 @@ class AIService(ServiceBase):
         }
 
     @action(
-        id='ai.tag.scenes',
+        id='skier.ai_tag.scene',
         label='AI Tag Scenes',
         description='Analyze scenes for tag segments',
         service='ai',
@@ -171,4 +171,4 @@ class AIService(ServiceBase):
 
 
 def register():
-    services.register(AIService())
+    services.register(Skier_AITagging_Service())

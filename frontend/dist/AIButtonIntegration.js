@@ -32,9 +32,6 @@
             if (MinimalAIButton) {
                 children.push(React.createElement('div', { key: 'ai-btn-wrap', style: { marginRight: 8, display: 'flex', alignItems: 'center' } }, React.createElement(MinimalAIButton)));
             }
-            if (NavLink) {
-                children.push(React.createElement(NavLink, { key: 'ai-navlink', className: 'nav-utility', exact: true, to: '/plugins/ai-tasks' }, React.createElement(Button, { className: 'minimal d-flex align-items-center h-100', title: 'AI Tasks' }, 'AI')));
-            }
             return [{ children }];
         });
         dlog('Patched MainNavBar.UtilityItems');

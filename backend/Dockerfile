@@ -10,10 +10,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Create data directory for sqlite
 RUN mkdir -p /app/data
 
-# Copy only alembic + app code (mount will override in compose for dev)
+# Copy only migration tooling; omit application code (mounted via bind in docker-compose for live reload)
 COPY alembic.ini /app/
 COPY alembic /app/alembic
-COPY app /app/app
+RUN mkdir -p /app/app
 
 EXPOSE 8000
+ENV AIO_DEVMODE=1
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
