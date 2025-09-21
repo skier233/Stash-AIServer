@@ -6,6 +6,11 @@ from app.db.session import Base
 
 
 class TaskHistory(Base):
+    """Immutable record of top-level task terminal states for recent history UI.
+
+    Only parent/controller tasks are persisted; children (group members) are excluded
+    to keep history concise and bounded. Pruning handled in manager.
+    """
     __tablename__ = 'task_history'
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     task_id: Mapped[str] = mapped_column(String(64), index=True, unique=True)

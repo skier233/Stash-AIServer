@@ -1,5 +1,13 @@
-// TaskDashboard: Displays active tasks (live from websocket cache) and recent history (fetched via REST)
-// Lightweight, no external deps beyond global React already used by AIButton.
+// TaskDashboard
+// Contract:
+//  - Shows active parent/controller tasks in real-time (sourced from global websocket task cache & listeners).
+//  - Computes parent progress from aggregated child task states (weighted: completed|failed=1, running=0.5, queued=0, cancelled excluded).
+//  - Fetches recent persisted history via canonical REST endpoint /api/v1/tasks/history (limit=50 by default UI refresh).
+//  - Filters by service; manual refresh button; no auto-polling aside from user-trigger or mount.
+//  - Attempts backend base resolution: explicit window.AI_BACKEND_URL, else same-origin, else localhost dev fallback.
+//  - Only parent/controller tasks are persisted & shown (children omitted intentionally for clarity).
+//  - Debug/diagnostic logs gated by window.AIDebug = true.
+//  - Zero external dependencies; relies on global React & (optionally) ReactDOM exposed by host/plugin API.
 
 interface TaskSummary { id: string; action_id: string; service: string; status: string; group_id?: string | null; submitted_at: number; started_at?: number; finished_at?: number; error?: string | null; }
 interface HistoryItem { task_id: string; action_id: string; service: string; status: string; submitted_at: number; started_at?: number; finished_at?: number; duration_ms?: number | null; items_sent?: number | null; item_id?: string | null; error?: string | null; }
@@ -47,8 +55,7 @@ const TaskDashboard = () => {
       if (g.AI_BACKEND_URL) bases.push(g.AI_BACKEND_URL.replace(/\/$/, ''));
       if (!bases.includes(backendBase)) bases.push(backendBase);
       if (!bases.includes('http://localhost:8000')) bases.push('http://localhost:8000');
-    // Try canonical first; include transitional double-stack fallback for one release window.
-    const pathVariants = ['/api/v1/tasks/history', '/api/v1/tasks/tasks/history'];
+  const pathVariants = ['/api/v1/tasks/history'];
       for (const b of bases) {
         for (const pv of pathVariants) {
           try {
@@ -59,7 +66,7 @@ const TaskDashboard = () => {
             const res = await fetch(full);
             if (!res.ok) {
               // Only log non-404 errors to reduce noise when one variant doesn't exist
-              if (res.status !== 404) console.warn('[TaskDashboard] history fetch non-OK', full, res.status);
+              if ((window as any).AIDebug && res.status !== 404) console.warn('[TaskDashboard] history fetch non-OK', full, res.status);
               lastErr = new Error('HTTP ' + res.status);
               continue;
             }
@@ -73,7 +80,7 @@ const TaskDashboard = () => {
           }
         }
       }
-      console.error('[TaskDashboard] All history fetch attempts failed', lastErr);
+  if ((window as any).AIDebug) console.error('[TaskDashboard] All history fetch attempts failed', lastErr);
     } finally { setLoadingHistory(false); }
   }, [backendBase, filterService]);
 

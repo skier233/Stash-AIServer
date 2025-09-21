@@ -1,29 +1,34 @@
-# AI Overhaul (Minimal Reset)
+# AI Overhaul (Minimal Async Core)
 
-This branch / state is a stripped-down reset of the original AI Overhaul plugin. It intentionally removes nearly all prior frontend logic, services, handlers, WebSocket code, and action orchestration. The only remaining functionality is a small, context-aware UI button that detects what page of Stash the user is currently on and displays that context.
+This state is a lean, production-oriented core: a context-aware AI action button + real-time task dashboard powered exclusively by a websocket + concise REST endpoints. All heavy orchestration (queues, priority, concurrency, batching, cancellation, parent/child progress) is backend-driven. The frontend is intentionally thin, stateless, and reactive.
 
-## ✅ What Remains
+## ✅ Included Frontend Pieces
 
-- `AIButton.tsx`: A minimal React component (no build-time props needed) that:
-  - Detects page type (`scenes`, `images`, `galleries`, `performers`, `home`, etc.)
-  - Determines whether the user is on a detail view (entity page) vs a list
-  - Extracts an entity ID if present in the URL
-  - Displays a compact button with contextual tooltip
-  - Emits simple console logs for future debugging
-- `AIButtonIntegration.tsx`: Injects the button into the Stash UI nav bar.
-- Minimal CSS: Only the light styles needed for the button hover/active effect.
-- Simple build process compiling just the two remaining TypeScript files.
+- `pageContext.ts`: Lightweight context detector (page, entityId, selection) exposed via `window.AIPageContext`.
+- `AIButton.tsx`: Context-aware action launcher:
+  - Fetches available actions lazily on open / context change.
+  - Submits actions via `/api/v1/actions/submit`.
+  - Tracks multiple concurrent parent tasks; infers progress ring for a single active controller via child task events.
+  - No polling. All progress & completion via shared websocket `/api/v1/ws/tasks` (fallback `/ws/tasks`).
+- `TaskDashboard.tsx`: Real-time + historical view:
+  - Active parent/controller tasks live from global websocket cache.
+  - Progress derived from weighted child states (completed|failed=1, running=0.5, queued=0, cancelled excluded).
+  - History fetched manually (user refresh or mount) from canonical endpoint: `/api/v1/tasks/history`.
+  - Service filter dropdown.
+- `AIButtonIntegration.tsx`: Unified integration script:
+  - Injects AI button into `MainNavBar.UtilityItems`.
+  - Registers dashboard route `/plugins/ai-tasks`.
+  - Adds settings tools entry + nav utility link fallback.
+- `AIOverhaul.css`: Styling for button, progress ring, dashboard rows.
+- Deterministic build `build.js`: Compiles & IIFE-wraps each file to `dist/`.
 
-## 🧹 What Was Removed
+## 🧹 Intentionally Omitted (Handled Backend-Side Now or Deferred)
 
-- All action handlers (single, batch, multi-select)
-- Service discovery & health checks
-- WebSocket manager & cancellation logic
-- GraphQL utilities & mutations
-- Settings page and persistence logic
-- Results overlays & job suites
-- SVG icon set (replaced with emoji for now)
-- Extended CSP allowances (no outbound AI service calls in this state)
+- Client-side queue / concurrency accounting (server authoritative).
+- Manual polling loops (websocket only for live state; explicit REST for history snapshot).
+- Persisting or displaying child tasks (UI focuses on parent/controller clarity).
+- Complex modal/result rendering (results surfaced via simple dialogs/notifications for now).
+- Legacy heuristic integrations & deprecated code paths.
 
 ## 🛠 Build
 
@@ -34,46 +39,53 @@ npm install
 npm run build
 ```
 
-Outputs to `dist/AIButton.js` and `dist/AIButtonIntegration.js` which are referenced in `AIOverhaul.yml`.
+Outputs to `dist/*.js` (button, dashboard, integration, context). All listed in `AIOverhaul.yml`.
 
-## 🔭 Next Steps (Backend-Centric Rewrite Roadmap)
+## 🔭 Potential Enhancements
 
-These are suggested future directions now that the frontend is reduced:
-
-1. Define backend APIs for: task creation, queue state, batch operations.
-2. Reintroduce service discovery by fetching a descriptor from the backend instead of embedding logic.
-3. Add a lightweight event or polling channel (later possibly WebSocket) only after backend contracts stabilize.
-4. Introduce a typed DTO layer for results & tasks (fetched on-demand instead of pushed aggressively).
-5. Progressive enhancement: button → dropdown → modal → overlay, driven entirely by backend responses.
+1. Rich result rendering (markdown/modals) based on `result_kind` contract.
+2. Inline cancellation buttons for active parent tasks.
+3. Service-driven dynamic parameter forms (fetched schema, render ephemeral inputs before submit).
+4. Export / download task summaries.
+5. Multi-select batch previews before execution.
 
 ## 🔒 CSP & Network
 
 Current `AIOverhaul.yml` deliberately keeps things minimal—no broad `connect-src` entries. Re-add only what the new backend actually requires when features return.
 
-## 🧪 Testing the Button
+## 🧪 Quick Manual Test Flow
 
-Navigate around Stash and observe:
-- Tooltip updates when moving between list and detail pages
-- Button label changes color (planned future enhancement) can be added if desired
-- Console logs show detected context
+1. Open a list page (e.g. scenes) – button tooltip should show page + selection count (if any).
+2. Open a detail page – icon style adjusts; entityId appears in tooltip.
+3. Open button menu – actions load (network POST /api/v1/actions/available).
+4. Execute a batch action – button shows progress ring (% inferred from child updates) or count badge for >1.
+5. Open Settings → Tools → AI Tasks – dashboard shows active parent; progress % updates without refresh.
+6. Click Refresh – recent history populates from `/api/v1/tasks/history`.
 
 ### Multi-Select & Selection Context
 When on list (non-detail) pages, selected entity IDs are captured heuristically. Hover the button to see a count; click to view a sample list in the alert.
 
-Enable verbose logging:
+Enable verbose logging (gates console output across components/integration):
 ```js
 window.AIPageContextDebug = true;
+window.AIDebug = true;
 ```
 Manually force a context recompute (rarely needed):
 ```js
 window.AIPageContext.forceRefresh();
 ```
+Toggle debug off:
+```js
+delete window.AIDebug;
+```
 
-## 📁 Current Structure
+## 📁 Structure
 
 ```
 src/
+  pageContext.ts
   AIButton.tsx
+  TaskDashboard.tsx
   AIButtonIntegration.tsx
   css/
     AIButton.css
@@ -83,16 +95,17 @@ README.md
 package.json
 ```
 
-## 🧩 Design Principles for the Rewrite
+## 🧩 Design Principles
 
-- Move ALL actionable intelligence server-side.
-- Keep the frontend a stateless renderer + minimal context detector.
-- Treat every future interaction as an idempotent backend call returning declarative UI model.
-- Avoid long-lived client state until strictly necessary.
+- Backend-first: queues, prioritization, orchestration live server-side.
+- Minimal surface: frontend reacts to declarative task/action contracts.
+- Event-driven: no timer loops; websocket + explicit user-triggered fetches only.
+- Clear separation: parent tasks represent user intent; children stay implicit.
+- Deterministic builds: each TS file → one isolated IIFE output.
 
-## � Contribution Guidance (During Rewrite Phase)
+## 🤝 Contribution Guidance
 
-Please DO NOT reintroduce large client modules yet. Instead, propose backend contracts first (e.g. `GET /ai/services`, `POST /ai/tasks`, etc.). Once accepted, the frontend can bind those responses to tiny, composable UI pieces.
+Before adding UI complexity, extend backend contracts (actions metadata, parameter schemas, result descriptors). Keep client additions composable and stateless where possible.
 
 ---
-This minimal state is the foundation for a cleaner, backend-driven architecture. Build back only what you truly need.
+This focused core is the foundation; extend only as backend capabilities mature.

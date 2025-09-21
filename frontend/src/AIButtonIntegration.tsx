@@ -1,35 +1,65 @@
 // =============================================================================
-// Minimal AI Button Integration - Simple Integration for Context Display
+// Unified Integration for AI Button + Task Dashboard
+//  - Injects MinimalAIButton into MainNavBar.UtilityItems
+//  - Registers /plugins/ai-tasks route mounting TaskDashboard
+//  - Adds SettingsToolsSection entry linking to the dashboard
+//  - Adds simple "AI" nav utility link (in case button not visible)
+//  - All logging gated by window.AIDebug
 // =============================================================================
-
-(function () {
-  const PluginApi = (window as any).PluginApi;
+(function(){
+  const g:any = window as any;
+  const PluginApi = g.PluginApi;
+  if(!PluginApi){ console.warn('[AIIntegration] PluginApi not ready'); return; }
   const React = PluginApi.React;
-  // Do NOT force-set AI_BACKEND_URL here; frontend components will handle fallbacks.
-  
-  // Add the minimal button to the main navigation
-  PluginApi.patch.before('MainNavBar.UtilityItems', function (props: any) {
-    // Check if MinimalAIButton is available
-    const MinimalAIButton = (window as any).MinimalAIButton;
-    if (!MinimalAIButton) {
-      console.warn('MinimalAIButton not available yet, skipping integration');
-      return [{children: props.children}];
-    }
+  const debug = !!g.AIDebug;
+  const dlog = (...a:any[]) => { if (debug) console.log('[AIIntegration]', ...a); };
 
-    return [
-      {
-        children: React.createElement('div', {
-          style: { display: 'flex', alignItems: 'center' }
-        }, [
-          props.children,
-          React.createElement('div', {
-            key: 'minimal-ai-button-wrapper',
-            style: { marginRight: '8px' }
-          }, React.createElement(MinimalAIButton))
-        ])
+  // Helper to safely get components
+  const Button = (PluginApi.libraries?.Bootstrap?.Button) || ((p:any)=>React.createElement('button', p, p.children));
+  const { Link, NavLink } = PluginApi.libraries?.ReactRouterDOM || {} as any;
+
+  function getMinimalButton(){ return g.MinimalAIButton || g.AIButton; }
+  function getTaskDashboard(){ return g.TaskDashboard || g.AITaskDashboard; }
+
+  // Main nav utility items: inject AI button + nav link
+  try {
+    PluginApi.patch.before('MainNavBar.UtilityItems', function(props:any){
+      const MinimalAIButton = getMinimalButton();
+      const children: any[] = [props.children];
+      if (MinimalAIButton) {
+        children.push(React.createElement('div', { key:'ai-btn-wrap', style:{marginRight:8, display:'flex', alignItems:'center'}}, React.createElement(MinimalAIButton)));
       }
-    ];
-  });
+      if (NavLink) {
+        children.push(React.createElement(NavLink, { key:'ai-navlink', className:'nav-utility', exact:true, to:'/plugins/ai-tasks' }, React.createElement(Button, { className:'minimal d-flex align-items-center h-100', title:'AI Tasks' }, 'AI')));
+      }
+      return [{ children }];
+    });
+    dlog('Patched MainNavBar.UtilityItems');
+  } catch(e){ if (debug) console.warn('[AIIntegration] main nav patch failed', e); }
 
-  console.log('🚀 Minimal AI Button integration loaded');
+  // Register dashboard route
+  try {
+    PluginApi.register.route('/plugins/ai-tasks', () => {
+      const Dash = getTaskDashboard();
+      return Dash ? React.createElement(Dash, {}) : React.createElement('div', { style:{padding:16}}, 'Loading AI Tasks...');
+    });
+    dlog('Registered /plugins/ai-tasks route');
+  } catch(e){ if (debug) console.warn('[AIIntegration] route register failed', e); }
+
+  // Settings tools entry
+  try {
+    PluginApi.patch.before('SettingsToolsSection', function(props:any){
+      const Setting = PluginApi.components?.Setting;
+      if(!Setting) return props;
+      return [{ children: (<>
+        {props.children}
+        <Setting heading={
+          Link ? <Link to="/plugins/ai-tasks"><Button>AI Tasks</Button></Link> : React.createElement(Button, { onClick:()=> (location.href = '#/plugins/ai-tasks') }, 'AI Tasks')
+        } />
+      </>)}];
+    });
+    dlog('Patched SettingsToolsSection');
+  } catch(e){ if (debug) console.warn('[AIIntegration] settings tools patch failed', e); }
+
+  if (debug) console.log('[AIIntegration] Unified integration loaded');
 })();

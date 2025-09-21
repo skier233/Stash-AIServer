@@ -1,13 +1,12 @@
-name: AIOverhaulMinimal
-description: Minimal reset state - context-aware AI button only
-version: 0.2.0-reset
+name: AIOverhaulCore
+description: Core async AI actions + task dashboard (minimal, event-driven)
+version: 0.3.0-core
 ui:
   javascript:
     - dist/pageContext.js
     - dist/AIButton.js
     - dist/AIButtonIntegration.js
     - dist/TaskDashboard.js
-    - dist/TaskDashboardSimpleIntegration.js
   css:
     - AIOverhaul.css
 interface: raw

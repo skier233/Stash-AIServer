@@ -7,14 +7,15 @@
 const fs = require('fs');
 const { execSync } = require('child_process');
 
-const files = [
-  'src/pageContext.ts',
+let files = [
   'src/AIButton.tsx',
   'src/AIButtonIntegration.tsx',
-  'src/TaskDashboard.tsx'
-  // Removed legacy heuristic integration script
-  , 'src/TaskDashboardSimpleIntegration.tsx'
+  'src/TaskDashboard.tsx',
+  'src/pageContext.ts'
+  // (Order not semantically critical; sorted for determinism below)
 ];
+files = files.sort();
+const verbose = !!process.env.BUILD_VERBOSE;
 
 // Simple wrapper template to isolate scope & avoid stray exports in browser context
 function wrapIIFE(code) {
@@ -27,11 +28,14 @@ if (fs.existsSync('dist')) {
 }
 fs.mkdirSync('dist');
 
-console.log('🔨 Building minimal AI Overhaul...\n');
+console.log('🔨 Building minimal AI Overhaul...\n(files: ' + files.length + ')');
+if (verbose) console.log('File order:', files.join(', '));
+
+let failed = 0;
 
 for (const file of files) {
   try {
-    console.log(`📝 Compiling ${file}...`);
+  if (verbose) console.log(`📝 Compiling ${file}...`);
     const jsxFlag = file.endsWith('.tsx') ? '--jsx react' : '';
     execSync(`npx tsc ${file} --target es2019 --module commonjs --lib es2019,dom ${jsxFlag} --outDir dist --declaration false --skipLibCheck true --noResolve`, {
       stdio: 'inherit'
@@ -50,20 +54,25 @@ for (const file of files) {
       content = content.replace(/^[\t ]*\n/gm, '');
       content = wrapIIFE(content.trim());
       fs.writeFileSync(outputFile, content.trim() + '\n');
-      console.log(`✅ Output -> ${outputFile}`);
+      if (verbose) console.log(`✅ Output -> ${outputFile}`);
     }
   } catch (err) {
+    failed++;
     console.error(`❌ Failed to compile ${file}:`, err.message);
   }
 }
 
-console.log('\n🎉 Minimal build complete');
+if (failed) {
+  console.error(`\n⚠ Build finished with ${failed} failure(s)`);
+} else {
+  console.log('\n🎉 Minimal build complete');
+}
 try {
   const distFiles = fs.readdirSync('dist').filter(f => f.endsWith('.js'));
-  distFiles.forEach(f => {
-    const s = fs.statSync(`dist/${f}`);
-    console.log(`   • dist/${f} (${Math.round(s.size)} bytes)`);
-  });
+  let total = 0;
+  distFiles.forEach(f => { const s = fs.statSync(`dist/${f}`); total += s.size; console.log(`   • dist/${f} (${Math.round(s.size)} bytes)`); });
+  console.log(`   Σ Total size: ${Math.round(total)} bytes`);
 } catch (_) {
   console.log('   (no dist files)');
 }
+process.exitCode = failed ? 1 : 0;

@@ -9,7 +9,6 @@ sys.path.append(str(BASE_DIR))
 
 from app.core.config import settings  # noqa
 from app.db.session import Base  # noqa
-from app.models import ai_request  # noqa: F401 ensure model import
 
 config = context.config
 config.set_main_option('sqlalchemy.url', settings.database_url)

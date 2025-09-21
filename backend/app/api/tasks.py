@@ -37,6 +37,7 @@ class HistoryItem(BaseModel):
 
 @router.get('/history')
 def task_history(limit: int = 50, service: str | None = None, status: str | None = None, db: Session = Depends(get_db)) -> dict:
+    """Return recent top-level task history (bounded, newest first)."""
     q = db.query(TaskHistory)
     if service:
         q = q.filter(TaskHistory.service == service)
@@ -47,6 +48,7 @@ def task_history(limit: int = 50, service: str | None = None, status: str | None
 
 @router.post('/submit', response_model=SubmitTaskResponse)
 async def submit_task(payload: SubmitTaskRequest):
+    """Submit a new task for the resolved action id with optional priority."""
     ctx = payload.context
     resolved = action_registry.resolve(payload.action_id, ctx)
     if not resolved:
@@ -76,6 +78,7 @@ class TaskResponse(BaseModel):
 
 @router.get('/{task_id}', response_model=TaskResponse)
 async def get_task(task_id: str):
+    """Fetch current state (in-memory) of a task by id."""
     task = manager.get(task_id)
     if not task:
         raise HTTPException(status_code=404, detail='Task not found')
@@ -95,6 +98,7 @@ async def get_task(task_id: str):
 
 @router.post('/{task_id}/cancel')
 async def cancel_task(task_id: str):
+    """Attempt to cancel a queued or running task; cascades to children."""
     ok = manager.cancel(task_id)
     if not ok:
         raise HTTPException(status_code=404, detail='Task not found or cannot cancel')
@@ -105,6 +109,7 @@ class ListTasksResponse(BaseModel):
 
 @router.get('', response_model=ListTasksResponse)
 async def list_tasks(service: str | None = None, status: str | None = None):
+    """List current in-memory tasks (optionally filter by service/status)."""
     st = None
     if status:
         try:

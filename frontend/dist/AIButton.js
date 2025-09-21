@@ -1,5 +1,13 @@
 (function(){
-// Clean minimal websocket-only AI button (no polling, single component definition)
+// AIButton (MinimalAIButton)
+// Contract:
+//  - Provides a single floating/contextual button that lists available AI actions for current page context.
+//  - No polling: actions fetched on open + context change; task progress via shared websocket + global cache.
+//  - Supports multiple concurrent parent/controller tasks; shows aggregate count or single progress ring.
+//  - Exposes global aliases: window.AIButton & window.MinimalAIButton for integrations to mount.
+//  - Debug logging gated by window.AIDebug = true.
+//  - Assumes backend REST under /api/v1 and websocket under /api/v1/ws/tasks (with legacy fallback /ws/tasks).
+//  - Only parent/controller task IDs are tracked in activeTasks; child task events still drive progress inference.
 const MinimalAIButton = () => {
     var _a, _b;
     const React = ((_a = window.PluginApi) === null || _a === void 0 ? void 0 : _a.React) || window.React;
@@ -319,7 +327,8 @@ window.MinimalAIButton = MinimalAIButton;
 window.AIButton = MinimalAIButton; // alias for integrations expecting AIButton
 if (!window.__AI_BUTTON_LOADED__) {
     window.__AI_BUTTON_LOADED__ = true;
-    console.log('[AIButton] Component loaded and globals registered');
+    if (window.AIDebug)
+        console.log('[AIButton] Component loaded and globals registered');
 }
 MinimalAIButton;
 })();
