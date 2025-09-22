@@ -5,6 +5,7 @@ from app.api import requests as requests_router
 from app.api import actions as actions_router
 from app.api import tasks as tasks_router
 from app.api import ws as ws_router
+from app.api import recommendations as recommendations_router
 from app.tasks.manager import manager
 from app.db.session import engine, Base
 import importlib, pkgutil, pathlib, hashlib, os, sys
@@ -48,6 +49,7 @@ app.include_router(requests_router.router, prefix=settings.api_v1_prefix)
 app.include_router(actions_router.router, prefix=settings.api_v1_prefix)
 app.include_router(tasks_router.router, prefix=settings.api_v1_prefix)
 app.include_router(ws_router.router, prefix=settings.api_v1_prefix)
+app.include_router(recommendations_router.router, prefix=settings.api_v1_prefix)
 
 # Basic CORS (development) – restrict/adjust later as needed
 app.add_middleware(

@@ -1,34 +1,23 @@
-# AI Overhaul (Minimal Async Core)
+# AI Overhaul (Trimmed Core)
 
-This state is a lean, production-oriented core: a context-aware AI action button + real-time task dashboard powered exclusively by a websocket + concise REST endpoints. All heavy orchestration (queues, priority, concurrency, batching, cancellation, parent/child progress) is backend-driven. The frontend is intentionally thin, stateless, and reactive.
+Lean core: a context-aware AI action button + standalone recommendations page. Task dashboard & legacy experimental recommender harness removed to simplify maintenance and reduce bundle size.
 
 ## ✅ Included Frontend Pieces
 
 - `pageContext.ts`: Lightweight context detector (page, entityId, selection) exposed via `window.AIPageContext`.
-- `AIButton.tsx`: Context-aware action launcher:
-  - Fetches available actions lazily on open / context change.
-  - Submits actions via `/api/v1/actions/submit`.
-  - Tracks multiple concurrent parent tasks; infers progress ring for a single active controller via child task events.
-  - No polling. All progress & completion via shared websocket `/api/v1/ws/tasks` (fallback `/ws/tasks`).
-- `TaskDashboard.tsx`: Real-time + historical view:
-  - Active parent/controller tasks live from global websocket cache.
-  - Progress derived from weighted child states (completed|failed=1, running=0.5, queued=0, cancelled excluded).
-  - History fetched manually (user refresh or mount) from canonical endpoint: `/api/v1/tasks/history`.
-  - Service filter dropdown.
-- `AIButtonIntegration.tsx`: Unified integration script:
-  - Injects AI button into `MainNavBar.UtilityItems`.
-  - Registers dashboard route `/plugins/ai-tasks`.
-  - Adds settings tools entry + nav utility link fallback.
-- `AIOverhaul.css`: Styling for button, progress ring, dashboard rows.
-- Deterministic build `build.js`: Compiles & IIFE-wraps each file to `dist/`.
+- `AIButton.tsx`: Context-aware action launcher (actions list + execute + websocket task progress inference).
+- `AIButtonIntegration.tsx`: Injects button into nav + settings tools link.
+- `RecommendedScenes.tsx`: Independent recommendations page (backend ID fetch + GraphQL scene hydration + layout persistence).
+- `AIOverhaul.css`: Styling for button, progress ring, recommendations grid.
+- `build.js`: Deterministic single-file builds (IIFE wrapped) for each source.
 
-## 🧹 Intentionally Omitted (Handled Backend-Side Now or Deferred)
+## 🧹 Removed / Deferred
 
-- Client-side queue / concurrency accounting (server authoritative).
-- Manual polling loops (websocket only for live state; explicit REST for history snapshot).
-- Persisting or displaying child tasks (UI focuses on parent/controller clarity).
-- Complex modal/result rendering (results surfaced via simple dialogs/notifications for now).
-- Legacy heuristic integrations & deprecated code paths.
+- Task dashboard & historical task view (will return after backend contracts stabilize).
+- Legacy recommendation harness (`src/recommendations/*`).
+- Experimental embedding components (`RecommendationPanel`, `Recommender*`).
+- Test harnesses (`testreact.tsx`, simplified dashboard integrations).
+- Complex result rendering (stays simple for now).
 
 ## 🛠 Build
 
@@ -49,7 +38,19 @@ Outputs to `dist/*.js` (button, dashboard, integration, context). All listed in 
 4. Export / download task summaries.
 5. Multi-select batch previews before execution.
 
-## 🔒 CSP & Network
+## 🎯 Recommendations Page
+
+`RecommendedScenes.tsx` provides a focused, page-level experience:
+* Calls backend stub `/api/v1/recommendations/scenes` for ordered scene ID lists (algorithm + min_score + limit).
+* Falls back to deterministic mock set if backend unreachable (badge indicates fallback / ok state).
+* Hydrates scene details via GraphQL one-by-one with adaptive schema pruning.
+* Persists layout state (page size, zoom, page) via `localStorage` keys (`aiRec.*`) and URL params.
+
+Future enhancements: overlay scores, server-provided reasons, batched detail fetch, filters, similarity seed injection.
+
+Route: `/plugins/recommended-scenes` → `dist/RecommendedScenes.js`.
+
+## �🔒 CSP & Network
 
 Current `AIOverhaul.yml` deliberately keeps things minimal—no broad `connect-src` entries. Re-add only what the new backend actually requires when features return.
 
@@ -85,8 +86,8 @@ delete window.AIDebug;
 src/
   pageContext.ts
   AIButton.tsx
-  TaskDashboard.tsx
   AIButtonIntegration.tsx
+  RecommendedScenes.tsx
   css/
     AIButton.css
 build.js

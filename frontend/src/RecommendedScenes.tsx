@@ -186,8 +186,8 @@
       try { const raw = localStorage.getItem(key); if(raw!=null){ const n=parseInt(raw,10); if(!isNaN(n)) return n; } } catch(_){ }
       return fallback;
     }
-    const [algorithm, setAlgorithm] = useState('similarity');
-    const [minScore, setMinScore] = useState(0.5);
+  const [algorithm, setAlgorithm] = useState('similarity');
+  const [minScore, setMinScore] = useState(0.5);
     const [zoomIndex, setZoomIndex] = useState(()=> readInitial(LS_ZOOM_KEY, 'z', 1));
     const [itemsPerPage, setItemsPerPage] = useState(()=> readInitial(LS_PER_PAGE_KEY, 'perPage', 40));
     const [page, setPage] = useState(()=> readInitial(LS_PAGE_KEY, 'p', 1));
@@ -199,6 +199,7 @@
     const cardWidth = useCardWidth(containerWidth, zoomIndex, zoomWidths);
     // fetch IDs (mock until backend provider integrated)
   const [sceneIds, setSceneIds] = useState(TEST_SCENE_IDS as number[]);
+  const [backendStatus, setBackendStatus] = useState('idle' as 'idle'|'loading'|'ok'|'error');
 
   // filtered scenes (placeholder for future filters/search)
   const filteredScenes = useMemo(()=> scenes, [scenes]);
@@ -208,9 +209,44 @@
     useEffect(()=>{ try { const usp = new URLSearchParams(location.search); usp.set('perPage', String(itemsPerPage)); usp.set('z', String(zoomIndex)); if(page>1) usp.set('p', String(page)); else usp.delete('p'); const qs=usp.toString(); const desired=location.pathname + (qs? ('?'+qs):''); if(desired !== location.pathname + location.search) history.replaceState(null,'',desired); localStorage.setItem(LS_PER_PAGE_KEY,String(itemsPerPage)); localStorage.setItem(LS_ZOOM_KEY,String(zoomIndex)); localStorage.setItem(LS_PAGE_KEY,String(page)); } catch(_){ } }, [itemsPerPage, zoomIndex, page]);
     useEffect(()=>{ function onStorage(e:StorageEvent){ if(!e.key) return; if(e.key===LS_PER_PAGE_KEY){ const n=parseInt(String(e.newValue||''),10); if(!isNaN(n)) setItemsPerPage(n);} if(e.key===LS_ZOOM_KEY){ const n=parseInt(String(e.newValue||''),10); if(!isNaN(n)) setZoomIndex(n);} if(e.key===LS_PAGE_KEY){ const n=parseInt(String(e.newValue||''),10); if(!isNaN(n)) setPage(n);} } window.addEventListener('storage', onStorage); return ()=> window.removeEventListener('storage', onStorage); }, []);
 
-    // Fetch scenes when algorithm/minScore changes (placeholder logic currently just fetches IDs)
-  useEffect(()=>{ (async()=>{ setLoading(true); setError(null); try { const ids = sceneIds; const seen = new Set<number>(); const unique = ids.filter((i:number)=>{ if(seen.has(i)) return false; seen.add(i); return true; }); let singleQuery = `query FindScene($id: ID!){ findScene(id:$id){ ${SCENE_FIELDS} } }`; const client = (PluginApi as any).graphqlClient || (PluginApi as any).client || (PluginApi as any).apiClient; const results:BasicScene[] = []; for(const id of unique){ try { const sc = await fetchScene(client, id, singleQuery); if(sc) results.push(sc); } catch(e:any){ const msg = e?.message || ''; if(pruneSchemaFromError(msg)){ singleQuery = `query FindScene($id: ID!){ findScene(id:$id){ ${SCENE_FIELDS} } }`; try { const retry = await fetchScene(client, id, singleQuery); if(retry) results.push(retry); } catch(e2:any){ warn('retry failed', id, e2?.message); } } else warn('fetch failed', id, msg); } }
-    const byId:Record<number,BasicScene> = {}; results.forEach((r:BasicScene)=>{byId[r.id]=r;}); setScenes(ids.map((i:number)=> byId[i]).filter(Boolean)); } catch(e:any){ setError(e?.message||'Failed to load scenes'); } finally { setLoading(false); } })(); }, [algorithm, minScore]);
+    // Resolve backend base (mirror logic from AIButton for consistency)
+    const backendBase = useMemo(()=>{
+      const explicit = (w as any).AI_BACKEND_URL as string | undefined;
+      if (explicit) return explicit.replace(/\/$/, '');
+      const loc = (location && location.origin) || '';
+      try { const u = new URL(loc); if (u.port === '3000') { u.port = '8000'; return u.toString().replace(/\/$/, ''); } } catch {}
+      return (loc || 'http://localhost:8000').replace(/\/$/, '');
+    }, []);
+
+    // Fetch recommended IDs from backend when algorithm/minScore changes, then load scenes via GraphQL
+    useEffect(()=>{ (async()=>{
+      setBackendStatus('loading');
+      let ids:number[] = [];
+      try {
+        // Attempt backend fetch
+        const body = JSON.stringify({ algorithm, min_score: minScore, limit: 200 });
+        const url = `${backendBase}/api/v1/recommendations/scenes`;
+        if ((w as any).AIDebug) console.log('[RecommendedScenes] fetch recommendations', url, body);
+        const res = await fetch(url, { method:'POST', headers:{ 'Content-Type':'application/json' }, body });
+        if(res.ok){
+          const j = await res.json();
+          if(Array.isArray(j.ids) && j.ids.length){ ids = j.ids.map((n:any)=> parseInt(n,10)).filter((n:number)=> !isNaN(n)); }
+          setBackendStatus('ok');
+        } else {
+          if ((w as any).AIDebug) console.warn('[RecommendedScenes] backend status', res.status);
+          setBackendStatus('error');
+        }
+      } catch(e){ setBackendStatus('error'); }
+      if(!ids.length){
+        // Fallback to existing local mock / shuffled for variance
+        ids = [...TEST_SCENE_IDS];
+      }
+      setSceneIds(ids);
+    })(); }, [algorithm, minScore, backendBase]);
+
+    // Fetch scenes whenever sceneIds changes
+    useEffect(()=>{ (async()=>{ setLoading(true); setError(null); try { const ids = sceneIds; const seen = new Set<number>(); const unique = ids.filter((i:number)=>{ if(seen.has(i)) return false; seen.add(i); return true; }); let singleQuery = `query FindScene($id: ID!){ findScene(id:$id){ ${SCENE_FIELDS} } }`; const client = (PluginApi as any).graphqlClient || (PluginApi as any).client || (PluginApi as any).apiClient; const results:BasicScene[] = []; for(const id of unique){ try { const sc = await fetchScene(client, id, singleQuery); if(sc) results.push(sc); } catch(e:any){ const msg = e?.message || ''; if(pruneSchemaFromError(msg)){ singleQuery = `query FindScene($id: ID!){ findScene(id:$id){ ${SCENE_FIELDS} } }`; try { const retry = await fetchScene(client, id, singleQuery); if(retry) results.push(retry); } catch(e2:any){ warn('retry failed', id, e2?.message); } } else warn('fetch failed', id, msg); } }
+      const byId:Record<number,BasicScene> = {}; results.forEach((r:BasicScene)=>{byId[r.id]=r;}); setScenes(ids.map((i:number)=> byId[i]).filter(Boolean)); } catch(e:any){ setError(e?.message||'Failed to load scenes'); } finally { setLoading(false); } })(); }, [sceneIds]);
 
   // Clamp page when per-page changes
   useEffect(()=>{ const totalPagesInner = Math.max(1, Math.ceil(scenes.length / itemsPerPage)); if(page>totalPagesInner) setPage(totalPagesInner); }, [itemsPerPage, scenes.length, page]);
@@ -270,14 +306,17 @@
           React.createElement('input',{ key:'zr', min:0, max:3, type:'range', className:'zoom-slider ml-1 form-control-range', value:zoomIndex, onChange:(e:any)=> setZoomIndex(Number(e.target.value)) })
         ]),
         React.createElement('div',{ key:'act', role:'group', className:'mb-2 btn-group'}, [
-          React.createElement(Button,{ key:'refresh', className:'btn btn-secondary minimal', disabled:loading, title:'Refresh', onClick:()=>{ setSceneIds([...sceneIds].sort(()=>Math.random()-0.5)); setAlgorithm((a:string)=>a); }}, '↻'),
+          React.createElement(Button,{ key:'refresh', className:'btn btn-secondary minimal', disabled:loading, title:'Refresh', onClick:()=>{ setAlgorithm((a:string)=>a); setSceneIds((s:number[])=>[...s]); }}, '↻'),
           React.createElement(Button,{ key:'reset', className:'btn btn-secondary minimal', title:'Reset', onClick:()=>{ setAlgorithm('similarity'); setMinScore(0.5); setItemsPerPage(40); setZoomIndex(1); setSceneIds(TEST_SCENE_IDS); setPage(1); }}, 'Reset')
         ])
       ])
     ]);
 
+    const backendBadge = backendStatus==='ok' ? '✅ backend' : backendStatus==='loading' ? '… backend' : backendStatus==='error' ? '⚠ backend fallback' : '';
+
     return React.createElement(React.Fragment,null,[
-      toolbar,
+  backendBadge? React.createElement('div',{key:'bstat', className:'text-center small text-muted mb-1'}, backendBadge): null,
+  toolbar,
       React.createElement(PaginationControl,{ key:'pgt', position:'top'}),
       grid,
       React.createElement(PaginationControl,{ key:'pgb', position:'bottom'})

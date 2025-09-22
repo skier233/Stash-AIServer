@@ -1,6 +1,6 @@
 name: AIOverhaulCore
-description: Core async AI actions + task dashboard (minimal, event-driven)
-version: 0.3.0-core
+description: Core AI action button (fresh minimal rebuild)
+version: 0.4.0-core-min
 ui:
   javascript:
     - dist/pageContext.js
