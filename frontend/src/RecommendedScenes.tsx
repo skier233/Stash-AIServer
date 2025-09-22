@@ -120,8 +120,8 @@
   ].join(' ');
   let FORCE_FALLBACK = false; // attempt native SceneCard now
 
-  // Attempt to reuse existing scene card component if exposed (future enhancement)
-  const SceneCard = (id:number) => React.createElement('div', {
+  // Local fallback placeholder (not the real core SceneCard)
+  const SceneCardPlaceholder = (id:number) => React.createElement('div', {
       key:id,
       className:'ai-rec-scene-card',
       style:{
@@ -156,19 +156,7 @@
   const [componentRef, { width: containerWidth }] = useContainerDimensions();
   const cardWidth = useCardWidth(containerWidth, zoomIndex, zoomWidths);
     
-    // Debug logging
-    useEffect(() => {
-      if (w.AIDebug) {
-        console.log('[RecommendedScenes] Grid debug:', {
-          containerWidth,
-          zoomIndex,
-          cardWidth,
-          zoomWidths,
-          preferredWidth: zoomWidths[zoomIndex],
-          hasContainer: !!componentRef.current
-        });
-      }
-    }, [containerWidth, zoomIndex, cardWidth]);
+    // (moved below paginatedScenes for TDZ reasons)
 
     // Fetch scenes from Stash GraphQL
     async function fetchScenes(ids:number[]){
@@ -307,13 +295,6 @@
       if (page > totalPages) setPage(totalPages);
     }, [itemsPerPage, scenes.length, page]);
 
-    // Debug logging to analyze sizing issues
-    useEffect(()=>{
-      if ((window as any).AIDebug) {
-        console.log('[RecommendedScenes] layout', { containerWidth, zoomIndex, baseZoomWidth: zoomWidths[zoomIndex], cardWidth });
-      }
-    }, [containerWidth, zoomIndex, cardWidth]);
-
     // For now scenes are shown in the order provided by sceneIds (no search/sort)
     const filteredScenes = useMemo(()=> scenes, [scenes]);
 
@@ -322,9 +303,70 @@
       return filteredScenes.slice(start, start+itemsPerPage);
     }, [filteredScenes, page, itemsPerPage]);
 
+    // Consolidated debug logging (layout + meta + first-row width)
+    useEffect(() => {
+      if (!w.AIDebug || !cardWidth) return;
+      console.log('[RecommendedScenes] layout', { containerWidth, zoomIndex, preferredWidth: zoomWidths[zoomIndex], cardWidth });
+      console.log('[RecommendedScenes][meta]', (calculateCardWidth as any)._last);
+      if(componentRef.current){
+        const row = componentRef.current as HTMLElement;
+        const cards = Array.from(row.querySelectorAll('.scene-card')) as HTMLElement[];
+        const firstRowCards: HTMLElement[] = [];
+        let currentTop: number|undefined = undefined;
+        for (const c of cards) {
+          const rect = c.getBoundingClientRect();
+          if (currentTop === undefined) currentTop = rect.top;
+          if (Math.abs(rect.top - currentTop) < 2) firstRowCards.push(c); else break;
+        }
+        const totalRowWidth = firstRowCards.reduce((sum,el)=> sum + el.getBoundingClientRect().width,0);
+        console.log('[RecommendedScenes][row-validate]', { containerWidth, firstRowCount:firstRowCards.length, totalRowWidth });
+      }
+    }, [containerWidth, zoomIndex, cardWidth, paginatedScenes]);
+
     const totalPages = useMemo(()=> Math.max(1, Math.ceil(filteredScenes.length / itemsPerPage)), [filteredScenes.length, itemsPerPage]);
     const startIndex = useMemo(()=> (filteredScenes.length? (page-1)*itemsPerPage + 1 : 0), [filteredScenes.length, page, itemsPerPage]);
     const endIndex = useMemo(()=> Math.min(filteredScenes.length, page*itemsPerPage), [filteredScenes.length, page, itemsPerPage]);
+
+    // Aggregate stats (duration & size) similar to native scenes list stats
+    const { totalDuration, totalSizeBytes } = useMemo(()=>{
+      let duration = 0; // seconds
+      let sizeBytes = 0;
+      for (const sc of filteredScenes) {
+        const files = (sc as any)?.files || [];
+        // Choose the longest file for duration (heuristic similar to native) and sum sizes
+        let longest = 0;
+        for (const f of files) {
+          if (typeof f?.duration === 'number') longest = Math.max(longest, f.duration);
+          if (typeof f?.size === 'number') sizeBytes += f.size;
+        }
+        duration += longest;
+      }
+      return { totalDuration: duration, totalSizeBytes: sizeBytes };
+    }, [filteredScenes]);
+
+    function formatDuration(seconds:number){
+      if(!seconds) return '0s';
+      const MIN=60, H=3600, D=86400, M=30*D; // approximate month
+      let rem = seconds;
+      const months = Math.floor(rem / M); rem%=M;
+      const days = Math.floor(rem / D); rem%=D;
+      const hours = Math.floor(rem / H); rem%=H;
+      const mins = Math.floor(rem / MIN);
+      const parts:string[] = [];
+      if(months) parts.push(months+'M');
+      if(days) parts.push(days+'D');
+      if(hours) parts.push(hours+'h');
+      if(mins) parts.push(mins+'m');
+      return parts.join(' ') || '0m';
+    }
+
+    function formatSize(bytes:number){
+      if(!bytes) return '0 B';
+      const units = ['B','KiB','MiB','GiB','TiB','PiB'];
+      let i=0; let val=bytes;
+      while(val>1024 && i<units.length-1){ val/=1024; i++; }
+      return (i>=3? val.toFixed(1): Math.round(val))+' '+units[i];
+    }
 
     // Load core SceneCard component if available
     const componentsToLoad = [PluginApi.loadableComponents?.SceneCard].filter(Boolean);
@@ -353,7 +395,7 @@
             React.createElement(SceneCard, { scene:s, zoomIndex, queue: undefined, index: i })
           );
         }
-        return React.createElement('div', { key:s.id+'_'+i, className:'ai-rec-card-wrapper', style:{display:'contents'} }, SceneCardFallback(s));
+  return React.createElement('div', { key:s.id+'_'+i, className:'ai-rec-card-wrapper', style:{display:'contents'} }, SceneCardFallback(s));
       });
 
       // Apply CSS variable for width so real SceneCard root can size itself; inject stylesheet once.
@@ -395,55 +437,96 @@
       ]);
     }
 
-    // Pagination controls (reuse class names for theming)
-    function paginationBar(position:'top'|'bottom') {
-      const outerClass = position==='bottom' ? 'pagination-footer scene-list-header mt-2' : 'scene-list-header';
-      return React.createElement('div', { key:'pag-'+position, className: outerClass },
-        React.createElement('div',{className:'d-flex w-100 align-items-center gap-2'},[
-          React.createElement('div',{key:'controls', className:'btn-group'},[
-            React.createElement(Button,{key:'first', className:'btn btn-secondary minimal', disabled:page<=1, onClick:()=>setPage(1)},'«'),
-            React.createElement(Button,{key:'prev', className:'btn btn-secondary minimal', disabled:page<=1, onClick:()=>setPage((p:any)=>Math.max(1,p-1))},'‹'),
-            React.createElement('span',{key:'pi', className:'small text-muted px-2'}, `${page} of ${totalPages}`),
-            React.createElement(Button,{key:'next', className:'btn btn-secondary minimal', disabled:page>=totalPages, onClick:()=>setPage((p:any)=>Math.min(totalPages,p+1))},'›'),
-            React.createElement(Button,{key:'last', className:'btn btn-secondary minimal', disabled:page>=totalPages, onClick:()=>setPage(totalPages)},'»')
+    // Native-style pagination control (centered) with dropdown page selection
+    function PaginationControl(props:any){
+      const position = props?.position === 'top' ? 'top' : 'bottom';
+  // Page dropdown enumeration
+      const dropdownItems = Array.from({length: totalPages}, (_,i)=> i+1);
+
+      // Handlers
+      const goFirst = ()=> setPage(1);
+  const goPrev = ()=> setPage((p:number)=> Math.max(1,p-1));
+  const goNext = ()=> setPage((p:number)=> Math.min(totalPages,p+1));
+      const goLast = ()=> setPage(totalPages);
+
+      const disabledFirstPrev = page<=1;
+      const disabledNextLast = page>=totalPages;
+
+      const statsFragment = `${formatDuration(totalDuration)} - ${formatSize(totalSizeBytes)}`;
+  const controlsEl = React.createElement('div',{ key:'pc', role:'group', className:'pagination btn-group' }, [
+          React.createElement('button',{key:'first', type:'button', title:'First', disabled:disabledFirstPrev, className:'btn btn-secondary', onClick:goFirst}, React.createElement('span', null, '«')),
+          React.createElement('button',{key:'prev', type:'button', title:'Previous', disabled:disabledFirstPrev, className:'btn btn-secondary', onClick:goPrev}, '<'),
+          // Page count container replicating upstream structure
+          React.createElement('div',{key:'pcc', className:'page-count-container'}, [
+            React.createElement('div',{key:'pcg', role:'group', className:'btn-group'}, [
+              React.createElement('button',{key:'label', type:'button', className:'page-count btn btn-secondary'}, `${page} of ${totalPages}`),
+              totalPages>1 && React.createElement('div',{key:'dd', className:'dropdown'}, [
+                React.createElement('button',{key:'toggle', type:'button', className:'page-count-dropdown dropdown-toggle btn btn-secondary', onClick:(e:any)=>{
+                  // Simple custom toggle: build / remove dropdown menu sibling
+                  const existing = e.currentTarget.parentElement?.querySelector('.dropdown-menu');
+                  if (existing) { existing.remove(); return; }
+                  const menu = document.createElement('div');
+                  menu.className = 'dropdown-menu show';
+                  menu.style.maxHeight = '240px';
+                  menu.style.overflowY = 'auto';
+                  dropdownItems.forEach(num=>{
+                    const a = document.createElement('a');
+                    a.className = 'dropdown-item'+(num===page?' active':'');
+                    a.textContent = String(num);
+                    a.onclick = ()=>{ setPage(num); menu.remove(); };
+                    menu.appendChild(a);
+                  });
+                  e.currentTarget.parentElement?.appendChild(menu);
+                }}, React.createElement('svg', { 'aria-hidden':true, focusable:false, 'data-prefix':'fas', 'data-icon':'chevron-down', className:'svg-inline--fa fa-chevron-down fa-xs fa-icon', role:'img', viewBox:'0 0 448 512', xmlns:'http://www.w3.org/2000/svg' },
+                  React.createElement('path',{ fill:'currentColor', d:'M201.4 406.6c12.5 12.5 32.8 12.5 45.3 0l192-192c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L224 338.7 54.6 169.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3l192 192z'})
+                ))
+              ])
+            ])
           ]),
-          React.createElement('div',{key:'range', className:'ms-auto small text-muted'}, `${startIndex}-${endIndex} of ${filteredScenes.length}`)
-        ])
-      );
+          React.createElement('button',{key:'next', type:'button', title:'Next', disabled:disabledNextLast, className:'btn btn-secondary', onClick:goNext}, '>'),
+          React.createElement('button',{key:'last', type:'button', title:'Last', disabled:disabledNextLast, className:'btn btn-secondary', onClick:goLast}, React.createElement('span', null, '»'))
+        ]);
+      const infoEl = React.createElement('span',{key:'pi', className:'filter-container text-muted paginationIndex center-text w-100 text-center mt-1'}, [
+        `${startIndex}-${endIndex} of ${filteredScenes.length} `,
+        totalDuration>0 && React.createElement('span',{key:'stats', className:'scenes-stats'}, `(${statsFragment})`)
+      ]);
+      const childrenTop = [controlsEl, infoEl];
+      const childrenBottom = [infoEl, controlsEl];
+      return React.createElement('div', { className:'d-flex flex-column align-items-center w-100 pagination-footer mt-2' }, position==='top'? childrenTop : childrenBottom);
     }
 
-    // Split into two bars to mirror upstream structure: scene-list-toolbar (actions) and scene-list-header (pagination + zoom/page size)
-    const actionsBar = React.createElement('div', { key:'actionsBar', className:'scene-list-toolbar btn-toolbar d-flex flex-wrap align-items-center gap-2 mb-1' }, [
-      React.createElement('h2',{key:'h', className:'mb-0 me-3', style:{fontSize:'1.25rem'}},'Recommended Scenes'),
-      React.createElement('div',{key:'alg', className:'d-flex'}, React.createElement('select', {className:'form-control form-control-sm', value:algorithm, onChange:(e:any)=>setAlgorithm(e.target.value)}, [
-        React.createElement('option',{key:'similarity', value:'similarity'},'Similarity'),
-        React.createElement('option',{key:'recent', value:'recent'},'Recent'),
-        React.createElement('option',{key:'popular', value:'popular'},'Popular')
-      ])),
-      React.createElement('div',{key:'minscore', className:'d-flex'}, React.createElement('input',{className:'form-control form-control-sm', style:{width:70}, type:'number', step:0.05, min:0, max:1, value:minScore, onChange:(e:any)=>setMinScore(Number(e.target.value))})),
-      React.createElement('div',{key:'actions', className:'btn-group ms-auto'}, [
-        React.createElement(Button,{key:'refresh', className:'btn btn-secondary minimal', disabled:loading, onClick:()=>{ const reshuffled=[...sceneIds].sort(()=>Math.random()-0.5); setSceneIds(reshuffled); fetchScenes(reshuffled); }}, loading?'…':'↻'),
-        React.createElement(Button,{key:'reset', className:'btn btn-secondary minimal', onClick:()=>{ setAlgorithm('similarity'); setItemsPerPage(40); setMinScore(0.5); setZoomIndex(1); setSceneIds(TEST_SCENE_IDS); fetchScenes(TEST_SCENE_IDS); setPage(1); }}, 'Reset')
-      ])
-    ]);
-
-    const headerBar = React.createElement('div', { key:'headerBar', className:'scene-list-header mb-1 btn-toolbar d-flex justify-content-between flex-wrap gap-3' }, [
-      React.createElement('div',{key:'pi'}, React.createElement('span',{className:'pagination-index'}, `${startIndex}-${endIndex} of ${filteredScenes.length}`)),
-      React.createElement('div',{key:'right', className:'d-flex align-items-center flex-wrap gap-2'}, [
-        React.createElement('div',{key:'pagesize', className:'page-size-select'}, React.createElement('select',{className:'form-control form-control-sm', value:itemsPerPage, onChange:(e:any)=>{setItemsPerPage(Number(e.target.value)); setPage(1);}}, [20,40,80,120].map(n=> React.createElement('option',{key:n, value:n}, n)))),
-        React.createElement('div',{key:'zoom', className:'d-flex align-items-center', style:{gap:6}}, [
-          React.createElement('span',{key:'zl', className:'text-muted small'}, 'Zoom'),
-          React.createElement('input',{key:'zr', className:'form-range', style:{width:120}, type:'range', min:0, max:3, value:zoomIndex, onChange:(e:any)=>setZoomIndex(Number(e.target.value))})
+    // Single filtered-list-toolbar replicating provided HTML structure (trimmed to necessary controls)
+    const toolbarBar = React.createElement('div', { key:'flt', role:'toolbar', className:'filtered-list-toolbar btn-toolbar flex-wrap w-100 mb-1 justify-content-center' }, [
+      React.createElement('div',{key:'cluster', className:'d-flex flex-wrap justify-content-center align-items-center gap-2'}, [
+        // Algorithm + score group
+        React.createElement('div',{key:'algGroup', role:'group', className:'mr-2 mb-2 btn-group'}, [
+          React.createElement('select',{key:'alg', className:'btn-secondary form-control form-control-sm', value:algorithm, onChange:(e:any)=>setAlgorithm(e.target.value)}, [
+            React.createElement('option',{key:'similarity', value:'similarity'},'Similarity'),
+            React.createElement('option',{key:'recent', value:'recent'},'Recent'),
+            React.createElement('option',{key:'popular', value:'popular'},'Popular')
+          ]),
+          React.createElement('input',{key:'score', className:'form-control form-control-sm', style:{width:70}, type:'number', step:0.05, min:0, max:1, value:minScore, onChange:(e:any)=>setMinScore(Number(e.target.value))})
+        ]),
+        // Page size selector
+        React.createElement('div',{key:'ps', className:'page-size-selector mr-2 mb-2'}, React.createElement('select',{className:'btn-secondary form-control', value:itemsPerPage, onChange:(e:any)=>{setItemsPerPage(Number(e.target.value)); setPage(1);}}, [20,40,80,120].map(n=> React.createElement('option',{key:n, value:n}, n)))),
+        // Zoom slider
+        React.createElement('div',{key:'zoomWrap', className:'mx-2 mb-2 d-inline-flex align-items-center'}, [
+          React.createElement('input',{key:'zr', min:0, max:3, type:'range', className:'zoom-slider ml-1 form-control-range', value:zoomIndex, onChange:(e:any)=>setZoomIndex(Number(e.target.value))})
+        ]),
+        // Actions
+        React.createElement('div',{key:'act', role:'group', className:'mb-2 btn-group'}, [
+          React.createElement(Button,{key:'refresh', className:'btn btn-secondary minimal', title:'Refresh', disabled:loading, onClick:()=>{ const reshuffled=[...sceneIds].sort(()=>Math.random()-0.5); setSceneIds(reshuffled); fetchScenes(reshuffled); }}, '↻'),
+          React.createElement(Button,{key:'reset', className:'btn btn-secondary minimal', title:'Reset', onClick:()=>{ setAlgorithm('similarity'); setItemsPerPage(40); setMinScore(0.5); setZoomIndex(1); setSceneIds(TEST_SCENE_IDS); fetchScenes(TEST_SCENE_IDS); setPage(1); }}, 'Reset')
         ])
       ])
     ]);
 
     // Mount directly so parent container-fluid provides spacing identically to native scenes page
     return React.createElement(React.Fragment, null, [
-      actionsBar,
-      headerBar,
+      toolbarBar,
+      React.createElement(PaginationControl, { key:'pagination-top', position:'top' }),
       grid,
-      paginationBar('bottom')
+      React.createElement(PaginationControl, { key:'pagination-bottom', position:'bottom' })
     ]);
   };
 
