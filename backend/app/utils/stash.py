@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import List, Dict, Any, Optional
-import os, random, asyncio, time, traceback
+import os, traceback
 from urllib.parse import urlparse
 
 _IMPORT_ERR: Optional[str] = None
@@ -32,6 +32,7 @@ _SCENE_FRAGMENT = (
 )
 
 def _stub_scene(i: int) -> Dict[str, Any]:
+    # Only used as a last‑resort when stash connection or tag query fails so recommenders remain functional.
     return {
         'id': i,
         'title': f'Scene {i}',
@@ -42,9 +43,6 @@ def _stub_scene(i: int) -> Dict[str, Any]:
         'tags': [],
         'files': [{'width': None,'height': None,'duration': None,'size': None,'path': None,'fingerprints': []}],
     }
-
-async def _fetch_with_stub(ids: List[int]) -> List[Dict[str, Any]]:
-    return [_stub_scene(i) for i in ids]
 
 def _have_valid_api_key() -> bool:
     return bool(STASH_API_KEY and STASH_API_KEY != 'REPLACE_WITH_API_KEY')
@@ -139,63 +137,6 @@ def get_stash() -> Any | None:
         traceback.print_exc()
         return None
 
-async def fetch_scenes_by_ids(ids: List[int]) -> List[Dict[str, Any]]:
-    """Hydrate using stashapi find_scenes scene_ids argument; fallback to per-id if needed; else stub."""
-    if not ids:
-        return []
-    client = get_stash()
-    if not client:
-        return await _fetch_with_stub(ids)
-
-    # Deduplicate while preserving original order mapping for reordering
-    seen = set()
-    deduped: List[int] = []
-    for i in ids:
-        if i not in seen:
-            seen.add(i)
-            deduped.append(i)
-
-    CHUNK = 80  # leverage server capability; adjust if needed
-    collected: List[Dict[str, Any]] = []
-    had_failure = False
-    for start in range(0, len(deduped), CHUNK):
-        batch = deduped[start:start+CHUNK]
-        try:
-            # Use scene_ids param directly (stashapi builds query with scene_ids var)
-            res = client.find_scenes(scene_ids=batch, fragment=_SCENE_FRAGMENT) or []
-            collected.extend(res)
-        except Exception as e:
-            print(f"[stash] batch hydrate error scene_ids {batch[:5]}... size={len(batch)}: {e}", flush=True)
-            traceback.print_exc()
-            had_failure = True
-
-    if not collected and not had_failure:
-        # Nothing returned but no explicit exception; fallback to stub
-        return await _fetch_with_stub(ids)
-
-    if had_failure:
-        # Attempt slow per-id fallback for only missing ones
-        have = {int(s.get('id')) for s in collected if isinstance(s, dict) and 'id' in s}
-        missing = [i for i in deduped if i not in have]
-        if missing:
-            print(f"[stash] attempting per-id fallback for {len(missing)} missing scenes", flush=True)
-            for mid in missing:
-                try:
-                    single = client.find_scene(mid, fragment=_SCENE_FRAGMENT)  # type: ignore
-                    if single:
-                        collected.append(single)
-                except Exception as e:  # pragma: no cover
-                    print(f"[stash] per-id fallback failed id={mid}: {e}", flush=True)
-
-    by_id = {int(s.get('id')): s for s in collected if isinstance(s, dict) and 'id' in s}
-    ordered = [by_id.get(i) for i in ids]
-    realized = [s for s in ordered if s]
-    if not realized:
-        return await _fetch_with_stub(ids)
-    for sc in realized:
-        _rewrite_scene_paths(sc)
-    return realized
-
 def fetch_scenes_by_tag(tag_id: int, limit: int) -> List[Dict[str, Any]]:
     """Synchronous tag-based scene query using stashapi find_scenes with tag filter.
 
@@ -222,43 +163,68 @@ def fetch_scenes_by_tag(tag_id: int, limit: int) -> List[Dict[str, Any]]:
         traceback.print_exc()
         return [_stub_scene(i) for i in range(limit)]
 
-async def hydrate_scene_ids(ids: List[int]) -> List[Dict[str, Any]]:
-    scenes = await fetch_scenes_by_ids(ids)
-    for sc in scenes:
-        if not isinstance(sc, dict):
-            continue
-        for k in ('performers','tags','files','scene_markers','galleries','groups'):
-            v = sc.get(k)
-            if not isinstance(v, list):
-                sc[k] = []
-        paths = sc.get('paths')
-        if not isinstance(paths, dict):
-            sc['paths'] = {'screenshot': None, 'preview': None}
-        else:
-            paths.setdefault('screenshot', None)
-            paths.setdefault('preview', None)
-        if 'studio' not in sc or not sc['studio']:
-            sc['studio'] = None
-        # Normalize files -> ensure fingerprints array exists to prevent SceneCard .find errors
-        for f in sc.get('files', []):  # type: ignore
-            if isinstance(f, dict):
-                if 'fingerprints' not in f or not isinstance(f['fingerprints'], list):
-                    f['fingerprints'] = []
-    return scenes
+def fetch_scenes_by_tag_paginated(tag_id: int, offset: int, limit: int) -> tuple[List[Dict[str, Any]], int, bool]:
+    """Offset-based pagination for tag scenes.
 
-# Simple ID sampler (replace with real queries later)
-BASE_IDS = [14632,14586,14466,14447]
-
-def sample_scene_ids(n: int) -> List[int]:
-    # Deterministic repeating sample for now
-    out: List[int] = []
-    while len(out) < n:
-        out.extend(BASE_IDS)
-    return out[:n]
-
-async def fetch_recent_scene_ids(limit: int) -> List[int]:
-    """Stub for 'recent' ordering – returns sampled IDs (deterministic order).
-
-    Replace with real created_at DESC query via stashapp-tools later.
+    Stash GraphQL offers page/per_page semantics; to emulate offset we compute
+    the starting page and may need to fetch additional pages if offset not aligned.
+    For simplicity we over-fetch up to two pages and then slice locally.
+    Returns (scenes_slice, total_estimate, has_more) where total_estimate is best-effort.
     """
-    return sample_scene_ids(limit)
+    if offset < 0:
+        offset = 0
+    if limit <= 0:
+        return [], 0, False
+    client = get_stash()
+    if not client:
+        # fabricate deterministic stub corpus length of 500 for consistent UX
+        total_stub = 500
+        end = min(offset + limit, total_stub)
+        scenes = [_stub_scene(i) for i in range(offset, end)]
+        return scenes, total_stub, end < total_stub
+    try:
+        per_page = max(limit, 1)
+        start_page = (offset // per_page) + 1
+        aggregated: List[Dict[str, Any]] = []
+        last_page_full = False
+        # Always fetch the start page
+        for p in (start_page, start_page + 1):
+            if p < start_page:
+                continue
+            res = client.find_scenes(
+                f={'tags': {'value': [tag_id], 'modifier': 'INCLUDES'}},
+                filter={'per_page': per_page, 'page': p},
+                fragment=_SCENE_FRAGMENT
+            ) or []
+            for sc in res:
+                _rewrite_scene_paths(sc)
+            aggregated.extend(res)
+            last_page_full = len(res) == per_page
+            if len(res) < per_page:
+                break  # no further pages
+        # Probe one extra page only if last fetched page was full and we still need to know
+        has_more = False
+        if last_page_full:
+            probe_page = start_page + 2
+            res_probe = client.find_scenes(
+                f={'tags': {'value': [tag_id], 'modifier': 'INCLUDES'}},
+                filter={'per_page': 1, 'page': probe_page},  # minimal probe
+                fragment='id'
+            ) or []
+            has_more = len(res_probe) > 0
+        approx_total = offset + len(aggregated)
+        if has_more:
+            approx_total += limit  # optimistic extension
+        slice_start = offset - ((start_page - 1) * per_page)
+        if slice_start < 0:
+            slice_start = 0
+        slice_end = slice_start + limit
+        page_slice = aggregated[slice_start:slice_end]
+        return page_slice, approx_total, has_more
+    except Exception as e:
+        print(f"[stash] paginated tag query failure tag={tag_id}: {e}", flush=True)
+        traceback.print_exc()
+        total_stub = 200
+        end = min(offset + limit, total_stub)
+        scenes = [_stub_scene(i) for i in range(offset, end)]
+        return scenes, total_stub, end < total_stub

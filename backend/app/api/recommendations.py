@@ -1,17 +1,15 @@
 from __future__ import annotations
 from fastapi import APIRouter, Body, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from typing import List, Optional, Dict, Any
-import random, time, math
-from app.recommendations.registry import autodiscover as _auto_discover_recommenders, recommender_registry
-from app.recommendations.models import RecContext, RecommendationRequest as NewRecommendationRequest
-from app.utils.stash import fetch_scenes_by_ids, sample_scene_ids
-
-try:
-    # Optional dependency: stashapp-tools (lazy usage)
-    from stashapp import StashInterface  # type: ignore
-except Exception:  # pragma: no cover - optional
-    StashInterface = None  # type: ignore
+from app.recommendations.registry import recommender_registry
+from app.recommendations.models import (
+    RecContext,
+    RecommendationRequest as NewRecommendationRequest,
+    SceneModel,
+    RecommenderDefinition,
+    RecommenderConfigField,
+)
 
 router = APIRouter(prefix='/recommendations', tags=['recommendations'])
 
@@ -22,71 +20,13 @@ class RecommendationContext(BaseModel):
     isDetailView: Optional[bool] = None
     selectedIds: List[str] | None = None
 
-class SceneRecommendationsRequest(BaseModel):
-    algorithm: str = Field('similarity', description="Algorithm key (similarity|recent|popular|random|by_performer|by_tag)")
-    min_score: float = Field(0.0, ge=0, le=1)
-    limit: int = Field(100, ge=1, le=500, description="Maximum number of scene IDs to return (frontend caps at 200)")
-    seed: int | None = Field(None, description="Optional deterministic seed for random algorithm")
-    cursor: Optional[str] = Field(None, description="Opaque paging cursor returned from previous response")
-    params: Dict[str, Any] | None = Field(None, description="Algorithm-specific parameters")
-    context: RecommendationContext | None = Field(None, description="Frontend page context for contextual recommendations")
+"""Legacy algorithm request/response models removed (frontend now uses hydrated recommender API)."""
 
 
-class SceneRecommendationsResponse(BaseModel):
-    ids: list[int]
-    algorithm: str
-    total: int
-    took_ms: int
-    note: str | None = None
-    next_cursor: str | None = None
+"""Removed legacy algorithm discovery models and stub ID corpus."""
 
 
-class AlgorithmParam(BaseModel):
-    name: str
-    type: str = 'string'  # number|string|enum|boolean
-    label: str | None = None
-    min: float | None = None
-    max: float | None = None
-    step: float | None = None
-    options: List[Dict[str, str]] | None = None
-    default: Any | None = None
-
-class AlgorithmDefinition(BaseModel):
-    name: str
-    label: str | None = None
-    description: str | None = None
-    params: List[AlgorithmParam] | None = None
-
-
-# Deterministic small corpus for stub (mirrors frontend TEST_SCENE_BASE repeated)
-BASE_IDS = [14632, 14586, 14466, 14447]
-
-
-@router.get('/algorithms', response_model=list[AlgorithmDefinition])
-async def list_algorithms():
-    """Discovery endpoint used by frontend to build dynamic parameter UI."""
-    return [
-        AlgorithmDefinition(
-            name='similarity', label='Similarity', description='Baseline similarity scorer',
-            params=[AlgorithmParam(name='min_score', type='number', min=0, max=1, step=0.05, default=0.5)]
-        ),
-        AlgorithmDefinition(
-            name='recent', label='Recent', description='Most recently added scenes'
-        ),
-        AlgorithmDefinition(
-            name='popular', label='Popular', description='Popularity heuristic (demo)'
-        ),
-        AlgorithmDefinition(
-            name='by_performer', label='By Performer', description='Scenes featuring selected performer',
-            params=[AlgorithmParam(name='max_performer_scenes', type='number', min=1, max=500, default=50, step=1)]
-        ),
-        AlgorithmDefinition(
-            name='by_tag', label='By Tag', description='Scenes with a selected tag',
-            params=[AlgorithmParam(name='max_tag_scenes', type='number', min=1, max=500, default=50, step=1)]
-        )
-    ]
-
-# ------------------- New Recommender Endpoints (Design Spec Alignment) -------------------
+# ------------------- Recommender Endpoints (Design Spec Alignment) -------------------
 
 class RecommenderListResponse(BaseModel):
     context: RecContext
@@ -98,32 +38,66 @@ class RecommendationQueryBody(BaseModel):
     recommenderId: str
     config: dict = {}
     seedSceneIds: list[int] | None = None
+    # Client supplies limit (page size) and optional offset (start index). If offset omitted, defaults to 0.
     limit: int | None = None
+    offset: int | None = 0
 
 class RecommendationQueryResponse(BaseModel):
     recommenderId: str
     scenes: list[dict]
+    # meta structure (design add): { total, offset, limit, nextOffset, hasMore }
     meta: dict
+    warnings: list[str] | None = None
 
-_recommenders_initialized = False
-def _ensure_recommenders():
-    global _recommenders_initialized
-    if _recommenders_initialized:
-        return
-    _auto_discover_recommenders()
-    # Fallback: if autodiscovery produced none, import known modules directly
-    if not recommender_registry.list_for_context(RecContext.global_feed):
-        try:
-            import importlib
-            importlib.import_module('app.recommendations.recommenders.baseline_popularity.popularity')
-            importlib.import_module('app.recommendations.recommenders.random_recent.random_recent')
-        except Exception as e:  # pragma: no cover - defensive
-            print('[recommenders] fallback import error', e, flush=True)
-    _recommenders_initialized = True
+"""Recommenders are initialized at FastAPI startup (see main._init_recommenders)."""
+
+def _validate_config(defn: RecommenderDefinition, raw: dict) -> tuple[dict, list[str]]:
+    """Apply defaults + type/constraint validation for config fields.
+
+    Currently lenient: returns (validated_config, warnings). Future enhancement
+    could raise instead. Only fields declared in defn.config are retained; extras
+    are ignored (with a warning).
+    """
+    if not defn.config:
+        return raw or {}, []
+    spec: dict[str, RecommenderConfigField] = {c.name: c for c in defn.config}
+    out: dict = {}
+    warnings: list[str] = []
+    incoming = raw or {}
+    for name, field in spec.items():
+        if name in incoming:
+            val = incoming[name]
+        else:
+            val = field.default
+        # Basic numeric constraint enforcement
+        if field.type in ('number','slider') and val is not None:
+            try:
+                fval = float(val)
+                if field.min is not None and fval < field.min:
+                    warnings.append(f'config.{name} below min; clamped')
+                    fval = field.min
+                if field.max is not None and fval > field.max:
+                    warnings.append(f'config.{name} above max; clamped')
+                    fval = field.max
+                if field.type == 'number':
+                    # Keep numeric type
+                    val = fval
+                else:
+                    val = fval
+            except (TypeError, ValueError):
+                warnings.append(f'config.{name} invalid numeric; using default')
+                val = field.default
+        if field.required and val is None:
+            warnings.append(f'config.{name} required but missing')
+        out[name] = val
+    # Extras detection
+    for k in incoming.keys():
+        if k not in spec:
+            warnings.append(f'config.{k} ignored (undeclared)')
+    return out, warnings
 
 @router.get('/recommenders', response_model=RecommenderListResponse)
 async def list_recommenders(context: RecContext = Query(...)):
-    _ensure_recommenders()
     defs = recommender_registry.list_for_context(context)
     if not defs:
         return RecommenderListResponse(context=context, recommenders=[], defaultRecommenderId='')
@@ -136,7 +110,6 @@ async def list_recommenders(context: RecContext = Query(...)):
 
 @router.post('/query', response_model=RecommendationQueryResponse)
 async def query_recommendations(payload: RecommendationQueryBody = Body(...)):
-    _ensure_recommenders()
     resolved = recommender_registry.get(payload.recommenderId)
     if not resolved:
         raise HTTPException(status_code=404, detail='Recommender not found')
@@ -149,100 +122,79 @@ async def query_recommendations(payload: RecommendationQueryBody = Body(...)):
     seed_ids = payload.seedSceneIds or []
     if not definition.allows_multi_seed and len(seed_ids) > 1:
         seed_ids = seed_ids[:1]
+    # Config validation (lenient warnings)
+    validated_config, cfg_warnings = _validate_config(definition, payload.config or {})
     req = NewRecommendationRequest(
         context=payload.context,
         recommenderId=payload.recommenderId,
-        config=payload.config,
+        config=validated_config,
         seedSceneIds=seed_ids,
-        limit=payload.limit
+        limit=payload.limit,
+        offset=payload.offset or 0,
     )
-    scenes = await handler({}, req)  # ctx dict placeholder
-    meta = { 'total': len(scenes), 'hasMore': False }
-    return RecommendationQueryResponse(recommenderId=payload.recommenderId, scenes=scenes, meta=meta)
-
-# -----------------------------------------------------------------------------------------
-
-
-def _simulate_base_ids(limit: int) -> list[int]:
-    ids: list[int] = []
-    while len(ids) < limit:
-        ids.extend(BASE_IDS)
-    return ids[:limit]
-
-
-def _query_stash_scenes(context: RecommendationContext | None, algorithm: str, params: Dict[str, Any] | None, limit: int) -> list[int]:
-    """Attempt to use stashapp-tools if available; fallback to simulated corpus.
-
-    For demonstration we do not execute real GraphQL complexity; just stub patterns:
-      - by_performer: return synthetic id range based on performer id hash
-      - by_tag: synthetic id range based on tag id hash
-    """
-    # If stash interface present you could do something like:
-    # si = StashInterface(conn={...}) and then si.find_scenes({...}) collecting IDs.
-    ids: list[int] = []
-    if algorithm == 'by_performer' and context and context.entityId and context.page == 'performers':
-        base = int(context.entityId)
-        for i in range(limit):
-            ids.append(base * 10 + i)
-    elif algorithm == 'by_tag' and context and context.entityId and context.page == 'tags':
-        base = int(context.entityId)
-        for i in range(limit):
-            ids.append(base * 100 + i)
+    warnings: list[str] = []
+    warnings.extend(cfg_warnings)
+    try:
+        raw_result = await handler({}, req)  # ctx dict placeholder
+    except Exception as e:  # bubble error gracefully
+        raise HTTPException(status_code=500, detail=f'recommender_execution_failed: {e}')
+    # Handler may return either a list[scene] OR a dict with keys: scenes, total, has_more
+    if isinstance(raw_result, dict):
+        raw_scenes = raw_result.get('scenes', [])
+        handler_total = raw_result.get('total')
+        handler_has_more = raw_result.get('has_more')
     else:
-        ids = _simulate_base_ids(limit)
-    return ids
-
-
-@router.post('/scenes', response_model=SceneRecommendationsResponse)
-async def recommend_scenes(payload: SceneRecommendationsRequest = Body(...)):
-    start = time.time()
-    algo = payload.algorithm.lower()
-    limit = min(payload.limit, 200)
-
-    # Paging: interpret cursor as offset (simple demo)
-    offset = 0
-    if payload.cursor:
+        raw_scenes = raw_result  # type: ignore
+        handler_total = None
+        handler_has_more = None
+    validated: list[dict] = []
+    for idx, sc in enumerate(raw_scenes):  # type: ignore
         try:
-            offset = int(payload.cursor)
-        except ValueError:
-            offset = 0
-
-    raw_ids: list[int]
-    if algo in ('by_performer', 'by_tag'):
-        raw_ids = _query_stash_scenes(payload.context, algo, payload.params or {}, limit + offset)
-    else:
-        raw_ids = _simulate_base_ids(limit + offset)
-
-    # Slice window after offset
-    ids = raw_ids[offset: offset + limit]
-
-    # Influence ordering for basic algorithms
-    if algo == 'recent':
-        ids = list(reversed(ids))
-    elif algo == 'popular':
-        ids = sorted(ids, key=lambda i: (i % 3, i))
-    elif algo == 'random':
-        rng = random.Random(payload.seed if payload.seed is not None else random.randint(0, 1_000_000))
-        rng.shuffle(ids)
-    elif algo not in ('similarity', 'by_performer', 'by_tag'):
-        algo = 'similarity'
-
-    # Apply min_score pseudo-filter: cut portion if high
-    if payload.min_score > 0.8:
-        ids = ids[: max(1, int(len(ids) * 0.6))]
-
-    # Next cursor: only if more data would exist (demo: assume max 1000 synthetic rows)
-    next_cursor: str | None = None
-    MAX_SYNTH = 1000
-    if offset + limit < min(MAX_SYNTH, len(raw_ids)):
-        next_cursor = str(offset + limit)
-
-    took_ms = int((time.time() - start) * 1000)
-    return SceneRecommendationsResponse(
-        ids=ids,
-        algorithm=algo,
-        total=len(ids),
-        took_ms=took_ms,
-        note='demo recommendations',
-        next_cursor=next_cursor
-    )
+            model = SceneModel.parse_obj(sc)
+            validated.append(model.dict())
+        except ValidationError as ve:
+            warnings.append(f'scene[{idx}] validation failed: {ve.errors()[0].get("loc")}')
+    # Pagination slicing (offset-based). If recommender does not support pagination we still slice deterministically in handler order.
+    offset = payload.offset or 0
+    if offset < 0:
+        offset = 0
+    limit = payload.limit or len(validated)
+    total_available = handler_total if isinstance(handler_total, int) and handler_total >= len(validated) else len(validated)
+    # If handler already handled pagination (indicated by handler_total or handler_has_more), trust it and do not re-slice
+    if handler_total is not None or handler_has_more is not None:
+        page_slice = validated
+        has_more = bool(handler_has_more)
+        # Derive has_more if only total provided
+        if handler_has_more is None and handler_total is not None:
+            has_more = offset + len(validated) < handler_total
+        # Guarantee floor: total cannot be less than the highest index we have displayed
+        computed_floor = offset + len(validated)
+        total_value = handler_total if handler_total is not None else (offset + len(validated) + (1 if has_more else 0))
+        if total_value < computed_floor:
+            total_value = computed_floor
+        next_offset = (offset + len(validated)) if has_more else None
+        meta = {
+            'total': total_value,
+            'offset': offset,
+            'limit': limit,
+            'nextOffset': next_offset,
+            'hasMore': has_more,
+        }
+        return RecommendationQueryResponse(recommenderId=payload.recommenderId, scenes=page_slice, meta=meta, warnings=warnings or None)
+    # Fallback: slice in API layer
+    end = offset + limit
+    page_slice = validated[offset:end]
+    has_more = end < len(validated)
+    next_offset = end if has_more else None
+    computed_floor = offset + len(page_slice)
+    total_val = total_available
+    if total_val < computed_floor:
+        total_val = computed_floor
+    meta = {
+        'total': total_val,
+        'offset': offset,
+        'limit': limit,
+        'nextOffset': next_offset,
+        'hasMore': has_more,
+    }
+    return RecommendationQueryResponse(recommenderId=payload.recommenderId, scenes=page_slice, meta=meta, warnings=warnings or None)

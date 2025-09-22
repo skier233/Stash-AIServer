@@ -6,6 +6,8 @@ from app.api import actions as actions_router
 from app.api import tasks as tasks_router
 from app.api import ws as ws_router
 from app.api import recommendations as recommendations_router
+from app.recommendations.registry import autodiscover as _auto_discover_recommenders, recommender_registry
+from app.recommendations.models import RecContext
 from app.tasks.manager import manager
 from app.db.session import engine, Base
 import importlib, pkgutil, pathlib, hashlib, os, sys
@@ -68,3 +70,17 @@ async def root():
 @app.on_event('startup')
 async def _start_task_manager():
     await manager.start()
+
+@app.on_event('startup')
+async def _init_recommenders():
+    """Pre-load recommender modules at startup so first request is fast and
+    failures surface early."""
+    _auto_discover_recommenders()
+    if not recommender_registry.list_for_context(RecContext.global_feed):
+        try:
+            import importlib
+            importlib.import_module('app.recommendations.recommenders.baseline_popularity.popularity')
+            importlib.import_module('app.recommendations.recommenders.random_recent.random_recent')
+        except Exception as e:
+            print('[recommenders] startup fallback import error', e, flush=True)
+    print(f"[recommenders] initialized count={len(recommender_registry._defs)}", flush=True)

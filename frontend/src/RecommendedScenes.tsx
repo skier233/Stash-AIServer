@@ -13,6 +13,8 @@
 //  • Centralized fetch + prune logic
 //  • Wrapped debug logs behind w.AIDebug
 (function(){
+  const BUILD_VERSION = 'rec-pagination-v2-' + new Date().toISOString();
+  try { console.info('[RecommendedScenes] Loaded bundle version', BUILD_VERSION); } catch(_) {}
   const w:any = window as any;
   const PluginApi = w.PluginApi; if(!PluginApi || !PluginApi.React) return;
   const React = PluginApi.React; const { useState, useMemo, useEffect, useRef } = React;
@@ -149,8 +151,11 @@
     const [zoomIndex, setZoomIndex] = useState(()=> readInitial(LS_ZOOM_KEY, 'z', 1));
     const [itemsPerPage, setItemsPerPage] = useState(()=> readInitial(LS_PER_PAGE_KEY, 'perPage', 40));
     const [page, setPage] = useState(()=> readInitial(LS_PAGE_KEY, 'p', 1));
+  // Scenes for current page only (server paginated)
   const [scenes, setScenes] = useState([] as BasicScene[]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false as boolean);
+  const [hasMore, setHasMore] = useState(false as boolean);
   const [error, setError] = useState(null as string|null);
     const zoomWidths = [280,340,480,640];
     const [componentRef, { width: containerWidth }] = useContainerDimensions();
@@ -163,7 +168,15 @@
 
   // filtered scenes (placeholder for future filters/search)
   const filteredScenes = useMemo(()=> scenes, [scenes]);
-  const totalPages = useMemo(()=> Math.max(1, Math.ceil(filteredScenes.length / itemsPerPage)), [filteredScenes.length, itemsPerPage]);
+  // totalPages is heuristic if hasMore: allow navigating one page past current computed value repeatedly
+  const totalPages = useMemo(()=>{
+    const base = Math.max(1, Math.ceil(total / itemsPerPage));
+    if(hasMore && page >= base) {
+      // Extend virtual page count so Next stays enabled
+      return page + 1; // allow exploring next page until backend signals no more
+    }
+    return base;
+  }, [total, itemsPerPage, hasMore, page]);
 
     // Sync & persist
     useEffect(()=>{ try { const usp = new URLSearchParams(location.search); usp.set('perPage', String(itemsPerPage)); usp.set('z', String(zoomIndex)); if(page>1) usp.set('p', String(page)); else usp.delete('p'); const qs=usp.toString(); const desired=location.pathname + (qs? ('?'+qs):''); if(desired !== location.pathname + location.search) history.replaceState(null,'',desired); localStorage.setItem(LS_PER_PAGE_KEY,String(itemsPerPage)); localStorage.setItem(LS_ZOOM_KEY,String(zoomIndex)); localStorage.setItem(LS_PAGE_KEY,String(page)); } catch(_){ } }, [itemsPerPage, zoomIndex, page]);
@@ -205,44 +218,86 @@
     // (legacy algorithm effects removed)
 
     // Unified function to request recommendations (first page)
+    const latestRequestIdRef = React.useRef(0);
     const fetchRecommendations = React.useCallback(async ()=>{
+      const myId = ++latestRequestIdRef.current;
       setBackendStatus('loading');
       setLoading(true); setError(null);
       try {
         if(!recommenderId){ setBackendStatus('idle'); setLoading(false); return; }
         const ctx = pageAPI?.get ? pageAPI.get() : null; // reserved for future context mapping
-        const body:any = { context: 'global_feed', recommenderId, limit: 200, config:{} };
+        const offset = (page-1) * itemsPerPage;
+        const body:any = { context: 'global_feed', recommenderId, limit: itemsPerPage, offset, config:{} };
         if(ctx){ body.context = 'global_feed'; }
         const url = `${backendBase}/api/v1/recommendations/query`;
         if((w as any).AIDebug) console.log('[RecommendedScenes] query', body);
         const res = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
         if(res.ok){
           const j = await res.json();
+          if(myId !== latestRequestIdRef.current){
+            if((w as any).AIDebug) console.log('[RecommendedScenes] stale response ignored', {myId, current: latestRequestIdRef.current});
+            return;
+          }
           if(Array.isArray(j.scenes)){
             const norm = j.scenes.map((s:any)=> normalizeScene(s)).filter(Boolean) as BasicScene[];
             setScenes(norm);
+            const serverTotal = (j.meta && typeof j.meta.total==='number') ? j.meta.total : norm.length;
+            const floorTotal = offset + norm.length;
+            const metaTotal = serverTotal < floorTotal ? floorTotal : serverTotal;
+            setTotal(metaTotal);
+            const hm = !!(j.meta && j.meta.hasMore);
+            setHasMore(hm);
+            if((w as any).AIDebug) console.log('[RecommendedScenes] meta', j.meta, {page, itemsPerPage, computedPages: Math.ceil(metaTotal / itemsPerPage), hasMore: hm});
             setBackendStatus('ok');
             setLoading(false);
             return;
           }
         }
+        if(myId !== latestRequestIdRef.current){ return; }
         setBackendStatus('error');
       } catch(_e){ setBackendStatus('error'); setError('Failed to load scenes'); }
+      if(myId === latestRequestIdRef.current){
       setLoading(false);
-    }, [recommenderId, backendBase, pageAPI]);
+      }
+    }, [recommenderId, backendBase, pageAPI, page, itemsPerPage]);
 
     // Fetch whenever recommender changes
-    useEffect(()=>{ if(!discoveryAttempted) return; if(!recommenderId) return; setScenes([]); fetchRecommendations(); }, [recommenderId, discoveryAttempted, fetchRecommendations]);
+  // When recommender changes, reset page then fetch (single sequence without double calling prior fetch)
+  const prevRecommenderRef = React.useRef(null as any);
+  useEffect(()=>{
+    if(!discoveryAttempted) return;
+    if(!recommenderId) return;
+    if(prevRecommenderRef.current !== recommenderId){
+      prevRecommenderRef.current = recommenderId;
+      setPage(1);
+      // fetch after synchronous state update using microtask
+      queueMicrotask(()=> fetchRecommendations());
+      return;
+    }
+  }, [recommenderId, discoveryAttempted, fetchRecommendations]);
 
     // Expose manual refresh
     const manualRefresh = () => { if((w as any).AIDebug) console.log('[RecommendedScenes] manual refresh'); fetchRecommendations(); };
 
   // Clamp page when per-page changes
-  useEffect(()=>{ const totalPagesInner = Math.max(1, Math.ceil(scenes.length / itemsPerPage)); if(page>totalPagesInner) setPage(totalPagesInner); }, [itemsPerPage, scenes.length, page]);
+  useEffect(()=>{
+    if(loading) return; // avoid clamp while fetch pending
+    if(!hasMore){
+      const maxPages = Math.max(1, Math.ceil(total / itemsPerPage));
+      if(page>maxPages){
+        if((w as any).AIDebug) console.log('[RecommendedScenes] clamp page', {page, maxPages});
+        setPage(maxPages);
+      }
+    }
+  }, [itemsPerPage, total, page, hasMore, loading]);
 
-  const paginatedScenes = useMemo(()=>{ const start=(page-1)*itemsPerPage; return filteredScenes.slice(start, start+itemsPerPage); }, [filteredScenes, page, itemsPerPage]);
-    const startIndex = useMemo(()=> (filteredScenes.length? (page-1)*itemsPerPage + 1 : 0), [filteredScenes.length, page, itemsPerPage]);
-    const endIndex = useMemo(()=> Math.min(filteredScenes.length, page*itemsPerPage), [filteredScenes.length, page, itemsPerPage]);
+  useEffect(()=>{ if((w as any).AIDebug) console.log('[RecommendedScenes] page change', {page, itemsPerPage, total, hasMore}); }, [page, itemsPerPage, total, hasMore]);
+  // Fetch when page or itemsPerPage change (offset-based pagination)
+  useEffect(()=>{ if(!discoveryAttempted) return; if(!recommenderId) return; fetchRecommendations(); }, [page, itemsPerPage, discoveryAttempted, recommenderId, fetchRecommendations]);
+
+  const paginatedScenes = filteredScenes; // server already paginated
+  const startIndex = useMemo(()=> (total? (page-1)*itemsPerPage + 1 : 0), [total, page, itemsPerPage]);
+  const endIndex = useMemo(()=> Math.min(total, page*itemsPerPage), [total, page, itemsPerPage]);
     const { totalDuration, totalSizeBytes } = useMemo(()=>{ let duration=0, size=0; for(const sc of filteredScenes){ const files = sc.files||[]; let longest=0; for(const f of files){ if(typeof f?.duration==='number') longest=Math.max(longest,f.duration); if(typeof f?.size==='number') size+=f.size; } duration+=longest; } return { totalDuration:duration, totalSizeBytes:size }; }, [filteredScenes]);
     function formatDuration(seconds:number){ if(!seconds) return '0s'; const MIN=60,H=3600,D=86400,M=30*D; let rem=seconds; const months=Math.floor(rem/M); rem%=M; const days=Math.floor(rem/D); rem%=D; const hours=Math.floor(rem/H); rem%=H; const mins=Math.floor(rem/MIN); const parts:string[]=[]; if(months) parts.push(months+'M'); if(days) parts.push(days+'D'); if(hours) parts.push(hours+'h'); if(mins) parts.push(mins+'m'); return parts.length? parts.join(' '): seconds+'s'; }
     function formatSize(bytes:number){ if(!bytes) return '0 B'; const units=['B','KiB','MiB','GiB','TiB','PiB']; let i=0,val=bytes; while(val>1024 && i<units.length-1){ val/=1024; i++; } return (i>=3? val.toFixed(1): Math.round(val))+' '+units[i]; }
@@ -263,7 +318,7 @@
     useEffect(()=>{ if((w as any).AIDebug && cardWidth) log('layout', { containerWidth, zoomIndex, preferredWidth: zoomWidths[zoomIndex], cardWidth }); }, [containerWidth, zoomIndex, cardWidth, paginatedScenes]);
 
     function PaginationControl({ position }:{ position:'top'|'bottom' }){
-      const disabledFirst = page<=1; const disabledLast = page>=totalPages;
+  const disabledFirst = page<=1; const disabledLast = page>=totalPages && !hasMore;
       const controls = React.createElement('div',{ key:'pc', role:'group', className:'pagination btn-group' }, [
         React.createElement('button',{key:'first', disabled:disabledFirst, className:'btn btn-secondary', onClick:()=>setPage(1)}, '«'),
   React.createElement('button',{key:'prev', disabled:disabledFirst, className:'btn btn-secondary', onClick:()=>setPage((p:number)=>Math.max(1,p-1))}, '<'),
@@ -275,8 +330,8 @@
   React.createElement('button',{key:'next', disabled:disabledLast, className:'btn btn-secondary', onClick:()=>setPage((p:number)=>Math.min(totalPages,p+1))}, '>'),
         React.createElement('button',{key:'last', disabled:disabledLast, className:'btn btn-secondary', onClick:()=>setPage(totalPages)}, '»')
       ]);
-      const statsFragment = totalDuration>0 ? ` (${formatDuration(totalDuration)} - ${formatSize(totalSizeBytes)})` : '';
-      const info = React.createElement('span',{ key:'info', className:'filter-container text-muted paginationIndex center-text w-100 text-center mt-1'}, `${startIndex}-${endIndex} of ${filteredScenes.length}${statsFragment}`);
+  const statsFragment = totalDuration>0 ? ` (${formatDuration(totalDuration)} - ${formatSize(totalSizeBytes)})` : '';
+  const info = React.createElement('span',{ key:'info', className:'filter-container text-muted paginationIndex center-text w-100 text-center mt-1'}, `${startIndex}-${endIndex} of ${total}${statsFragment}`);
       return React.createElement('div',{ className:'d-flex flex-column align-items-center w-100 pagination-footer mt-2' }, position==='top'? [controls, info] : [info, controls]);
     }
 
@@ -300,7 +355,7 @@
       ])
     ]);
 
-    const backendBadge = backendStatus==='ok' ? '✅ backend' : backendStatus==='loading' ? '… backend' : backendStatus==='error' ? '⚠ backend fallback' : '';
+  const backendBadge = backendStatus==='ok' ? '✅ backend' : backendStatus==='loading' ? '… backend' : backendStatus==='error' ? '⚠ backend fallback' : '';
 
     // While recommender discovery hasn't finished, suppress legacy UI to avoid flash
     if(!discoveryAttempted){

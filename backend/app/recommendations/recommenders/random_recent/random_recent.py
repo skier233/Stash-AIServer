@@ -3,7 +3,7 @@ from typing import Dict, Any
 import random, time
 from app.recommendations.registry import recommender
 from app.recommendations.models import RecContext, RecommendationRequest
-from app.utils.stash import fetch_scenes_by_tag
+from app.utils.stash import fetch_scenes_by_tag_paginated
 
 @recommender(
     id='random_recent',
@@ -15,14 +15,22 @@ from app.utils.stash import fetch_scenes_by_tag
     exposes_scores=False
 )
 async def random_recent(ctx: Dict[str, Any], request: RecommendationRequest):
-    limit = request.limit or 80
-    # Pull scenes from tag 932 and then shuffle for variability
-    scenes = fetch_scenes_by_tag(932, limit * 3)  # over-fetch then downsample
-    random.seed(int(time.time() // 5))  # changes every 5s
+    limit = request.limit or 40
+    offset = request.offset or 0
+    # Fetch a window slightly larger than requested to keep randomness within page but stable across quick refetches
+    fetch_limit = limit
+    scenes, approx_total, has_more = fetch_scenes_by_tag_paginated(932, offset, fetch_limit)
+    # Shuffle deterministically within a 5-second bucket so pagination stable during quick navigation
+    seed_bucket = int(time.time() // 5)
+    random.seed(seed_bucket + offset)
     random.shuffle(scenes)
-    scenes = scenes[:limit]
     for idx, sc in enumerate(scenes):
         sc.setdefault('debug_meta', {})
-        sc['debug_meta']['rank'] = idx
+        sc['debug_meta']['rank'] = offset + idx
+        sc['debug_meta']['seed_bucket'] = seed_bucket
         sc['debug_meta']['source'] = 'random_recent'
-    return scenes
+    return {
+        'scenes': scenes,
+        'total': approx_total,
+        'has_more': has_more
+    }

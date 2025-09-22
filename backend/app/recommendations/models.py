@@ -35,10 +35,10 @@ class RecommenderDefinition(BaseModel):
 class SceneModel(BaseModel):
     """Hydrated scene contract returned to frontend.
 
-    This is intentionally minimal; additional fields can be appended later
-    without breaking existing consumers as long as they remain optional on
-    the frontend. Keeping a Pydantic model here ensures uniform shape across
-    all recommenders and centralizes any normalization logic we later add.
+    Extra fields are allowed so recommenders can attach experimental metadata
+    (e.g., score, debug_meta, explanation). Core fields are validated so other
+    developers immediately see shape errors instead of silently shipping an
+    incompatible payload to the UI.
     """
     id: int
     title: Optional[str] = None
@@ -48,6 +48,8 @@ class SceneModel(BaseModel):
     performers: List[Dict[str, Any]] = Field(default_factory=list)
     tags: List[Dict[str, Any]] = Field(default_factory=list)
     files: List[Dict[str, Any]] = Field(default_factory=list)
+    score: Optional[float] = Field(None, description="Optional relevance score (0-1 or model-dependent)")
+    debug_meta: Optional[Dict[str, Any]] = None
 
     @validator('paths', pre=True, always=True)
     def ensure_paths(cls, v):  # type: ignore
@@ -57,6 +59,9 @@ class SceneModel(BaseModel):
         v.setdefault('preview', None)
         return v
 
+    class Config:
+        extra = 'allow'
+
 RecommendationResult = List[Dict[str, Any]]
 
 class RecommendationRequest(BaseModel):
@@ -65,5 +70,6 @@ class RecommendationRequest(BaseModel):
     config: Dict[str, Any] = {}
     seedSceneIds: List[int] | None = None
     limit: int | None = None
+    offset: int | None = 0
 
 RecommenderHandler = Callable[[Dict[str, Any], RecommendationRequest], RecommendationResult | Awaitable[RecommendationResult]]
