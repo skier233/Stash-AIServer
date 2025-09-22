@@ -11,7 +11,8 @@ class RecContext(str, Enum):
 class RecommenderConfigField(BaseModel):
     name: str
     label: str
-    type: str = Field(..., description="number|slider|select|boolean|text|tags|performers|enum")
+    # Added 'search' (styled search field variant of text)
+    type: str = Field(..., description="number|slider|select|boolean|text|search|tags|performers|enum")
     default: Any = None
     required: bool = False
     min: float | None = None

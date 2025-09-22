@@ -166,6 +166,284 @@
   const [discoveryAttempted, setDiscoveryAttempted] = useState(false);
   const pageAPI:any = (w as any).AIPageContext; // for contextual recommendation requests
 
+  // ---------------- Config State (per recommender) -----------------
+  const [configValues, setConfigValues] = useState({} as any);
+  const configCacheRef = useRef({} as any);
+  const configValuesRef = useRef({} as any);
+  const [showConfig, setShowConfig] = useState(true as any);
+  // Generic tick to force config panel rerender (for tag mode changes)
+  const [configRerenderTick, setConfigRerenderTick] = useState(0);
+  function forceConfigRerender(){ setConfigRerenderTick((t:number)=> t+1); }
+  const textDebounceTimersRef = useRef({} as any);
+  const compositeRawRef = useRef({} as any); // raw text for tags/performers inputs
+  useEffect(()=>{ (configValuesRef as any).current = configValues; }, [configValues]);
+  const currentRecommender = React.useMemo(()=> (recommenders||[])?.find((r:any)=> r.id===recommenderId), [recommenders, recommenderId]);
+
+  // ---------------- Fallback Tag Include/Exclude Selector -----------------
+  // Used only if neither TagSelect nor TagIDSelect native components are exposed.
+  const TagIncludeExcludeFallback = React.useCallback(({ value, onChange, fieldName }: { value:any; onChange:(next:any)=>void; fieldName:string }) => {
+    const v = value || {};
+    const include:number[] = Array.isArray(v) ? v : Array.isArray(v.include) ? v.include : [];
+    const exclude:number[] = Array.isArray(v) ? [] : Array.isArray(v.exclude) ? v.exclude : [];
+    const stateKey = fieldName + '__fbTagState';
+    if(!compositeRawRef.current[stateKey]){
+      compositeRawRef.current[stateKey] = { mode:'include', search:'', suggestions:[], loading:false, lastTerm:'', debounceTimer:null as any, error:null as string|null };
+    }
+    const st = compositeRawRef.current[stateKey];
+
+    function setPartial(p:any){ Object.assign(st, p); forceConfigRerender(); }
+
+    // Inject styles once
+    if(typeof document!=='undefined' && !document.getElementById('ai-tag-fallback-style')){
+      const s=document.createElement('style'); s.id='ai-tag-fallback-style'; s.textContent=`
+        .ai-tag-fallback { background:#24272b; border:1px solid #2f3337; border-radius:4px; padding:6px; font-size:12px; }
+        .ai-tag-fallback .chips-row { gap:4px; }
+        .ai-tag-fallback .tag-chip { background:#d0d7de; color:#111; border-radius:3px; padding:2px 6px; display:inline-flex; align-items:center; font-size:11px; font-weight:500; }
+        .ai-tag-fallback .tag-chip.exclude { background:#733; color:#eee; }
+        .ai-tag-fallback .tag-chip button { background:transparent; border:none; margin-left:4px; cursor:pointer; color:inherit; font-size:11px; line-height:1; }
+        .ai-tag-fallback .mode-bar button { flex:1; }
+        .ai-tag-fallback .suggestions { position:relative; }
+        .ai-tag-fallback .suggestions-list { position:absolute; z-index:20; top:100%; left:0; right:0; background:#1f2225; border:1px solid #333; max-height:180px; overflow:auto; border-radius:3px; }
+        .ai-tag-fallback .suggestions-list div { padding:4px 6px; cursor:pointer; font-size:11px; }
+        .ai-tag-fallback .suggestions-list div:hover { background:#2d3236; }
+        .ai-tag-fallback .empty-suggest { padding:4px 6px; font-size:11px; color:#889; }
+      `; document.head.appendChild(s); }
+
+    function removeTag(id:number, list:'include'|'exclude'){
+      const nextInclude = list==='include'? include.filter(i=>i!==id): include;
+      const nextExclude = list==='exclude'? exclude.filter(i=>i!==id): exclude;
+      onChange({ include: nextInclude, exclude: nextExclude });
+    }
+
+    function addTag(id:number){
+      if(st.mode==='include'){
+        if(!include.includes(id)) onChange({ include: [...include,id], exclude });
+      } else {
+        if(!exclude.includes(id)) onChange({ include, exclude:[...exclude,id] });
+      }
+    }
+
+    function search(term:string){
+      if(st.debounceTimer) clearTimeout(st.debounceTimer);
+      setPartial({ search: term });
+      st.debounceTimer = setTimeout(async()=>{
+        const q = st.search.trim();
+        if(!q){ setPartial({ suggestions:[], error:null, lastTerm:'' }); return; }
+        if(q === st.lastTerm) return;
+        setPartial({ loading:true, error:null });
+        try {
+          // Updated query: Stash schema typically exposes findTags(tag_filter, filter)
+          const gql = `query TagSuggest($term: String!) { findTags(filter: { per_page: 20 }, tag_filter: { name: { value: $term, modifier: INCLUDES } }) { tags { id name } } }`;
+          const res = await fetch('/graphql', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({query:gql, variables:{ term: q }}) });
+          if(!res.ok) throw new Error('HTTP '+res.status);
+          const json = await res.json();
+          if(json.errors){ throw new Error(json.errors.map((e:any)=> e.message).join('; ')); }
+          const tags = json?.data?.findTags?.tags || [];
+          setPartial({ suggestions: tags, lastTerm:q, loading:false, error: tags.length? null: null });
+        } catch(e:any){ setPartial({ error: 'Search failed', loading:false }); }
+      }, 250);
+    }
+
+    const chips: any[] = [];
+    include.forEach(id=> chips.push(React.createElement('span',{ key:'i'+id, className:'tag-chip include' }, [String(id), React.createElement('button',{ key:'x', onClick:()=> removeTag(id,'include'), title:'Remove' }, '×')])));
+    exclude.forEach(id=> chips.push(React.createElement('span',{ key:'e'+id, className:'tag-chip exclude' }, [String(id), React.createElement('button',{ key:'x', onClick:()=> removeTag(id,'exclude'), title:'Remove' }, '×')])));
+
+    const suggestionsList = st.search && (st.suggestions.length || st.loading || st.error) ? React.createElement('div',{ className:'suggestions-list', key:'list' },
+      st.loading ? React.createElement('div',{ className:'empty-suggest'}, 'Searching…') :
+      st.error ? React.createElement('div',{ className:'empty-suggest'}, st.error) :
+      st.suggestions.length ? st.suggestions.map((tg:any)=> React.createElement('div',{ key:tg.id, onClick:()=> addTag(parseInt(tg.id,10)) }, tg.name+' (#'+tg.id+')')) :
+      React.createElement('div',{ className:'empty-suggest'}, 'No matches')
+    ) : null;
+
+    return React.createElement('div',{ className:'ai-tag-fallback d-flex flex-column w-100' }, [
+      React.createElement('div',{ key:'chips', className:'chips-row d-flex flex-wrap mb-1' }, chips.length? chips : React.createElement('span',{ className:'text-muted small'}, 'No tags selected')), 
+      React.createElement('div',{ key:'mode', className:'mode-bar btn-group mb-1' }, [
+        React.createElement('button',{ key:'inc', type:'button', className:'btn btn-sm '+(st.mode==='include'?'btn-primary':'btn-secondary'), onClick:()=> setPartial({ mode:'include'}) }, '+ Include'),
+        React.createElement('button',{ key:'exc', type:'button', className:'btn btn-sm '+(st.mode==='exclude'?'btn-danger':'btn-secondary'), onClick:()=> setPartial({ mode:'exclude'}) }, '- Exclude')
+      ]),
+      React.createElement('div',{ key:'searchWrap', className:'suggestions position-relative' }, [
+        React.createElement('input',{ key:'inp', type:'text', className:'form-control form-control-sm', value: st.search, placeholder:'Search tags…', onChange:(e:any)=> search(e.target.value) }),
+        suggestionsList
+      ])
+    ]);
+  }, [forceConfigRerender]);
+
+  // Initialize defaults when recommender changes
+  useEffect(()=>{
+    if(!currentRecommender) return;
+    const defs = (currentRecommender as any).config || [];
+    let cached = configCacheRef.current[currentRecommender.id];
+    if(!cached){
+      cached = {};
+      for(const field of defs){
+        cached[field.name] = field.default;
+        if(field.type==='tags' || field.type==='performers'){
+          compositeRawRef.current[field.name] = '';
+        }
+      }
+      configCacheRef.current[currentRecommender.id] = cached;
+    }
+    setConfigValues({...cached});
+  }, [currentRecommender]);
+
+  function scheduleFetchAfterConfigChange(previousPage:number){
+    // If page changed to 1 because of config change, we rely on page effect; otherwise manual fetch
+    if(previousPage === 1){
+      // manual fetch to reflect immediate change
+      queueMicrotask(()=> fetchRecommendations());
+    }
+  }
+
+  function applyConfigImmediate(update:any){
+    setConfigValues((v:any)=>{ const next = { ...v, ...update }; (configValuesRef as any).current = next; if(recommenderId){ (configCacheRef as any).current[recommenderId] = next; } return next; });
+  }
+
+  function updateConfigField(name:string, value:any, opts?:{ debounce?: boolean; field?: any }){
+    const field = opts?.field;
+    const prevPage = page;
+    // Debounced text fields: update local state immediately but delay fetch
+    if(opts?.debounce){
+      applyConfigImmediate({ [name]: value });
+      if(textDebounceTimersRef.current[name]) clearTimeout(textDebounceTimersRef.current[name]);
+      textDebounceTimersRef.current[name] = setTimeout(()=>{
+        // ensure still active recommender
+        scheduleFetchAfterConfigChange(prevPage);
+      }, 400);
+    } else {
+      applyConfigImmediate({ [name]: value });
+      scheduleFetchAfterConfigChange(prevPage);
+    }
+    if(prevPage !== 1) setPage(1); // reset to first page
+  }
+
+  function parseIdList(raw:string):number[]{
+    return raw.split(',').map(s=> s.trim()).filter(s=> s.length>0).map(s=> parseInt(s,10)).filter(n=> !isNaN(n) && n>=0);
+  }
+
+  function renderConfigPanel(){
+    if(!currentRecommender || !Array.isArray((currentRecommender as any).config) || !(currentRecommender as any).config.length) return null;
+    const defs:any[] = (currentRecommender as any).config;
+    // Inject style once
+    if(typeof document!=='undefined' && !document.getElementById('ai-rec-config-style')){
+      const st = document.createElement('style');
+      st.id='ai-rec-config-style';
+      st.textContent = `
+        .ai-rec-config { font-size:12px; }
+        .ai-rec-config .form-group { position:relative; }
+        .ai-rec-config .form-group label { font-weight:500; }
+        .ai-rec-config .switch-inline { display:flex; align-items:center; gap:0.5rem; }
+        .ai-rec-config .range-wrapper { display:flex; align-items:center; gap:0.75rem; }
+        .ai-rec-config .range-value { min-width:42px; text-align:center; font-size:11px; padding:2px 6px; background:#2c2f33; border:1px solid #373a3e; border-radius:4px; }
+        .ai-rec-config .config-row { margin-left:-6px; margin-right:-6px; }
+        .ai-rec-config .config-col { padding:0 6px; }
+        @media (min-width: 992px){ .ai-rec-config .config-col { flex: 0 0 33.333%; max-width:33.333%; } }
+        @media (min-width: 768px) and (max-width: 991.98px){ .ai-rec-config .config-col { flex: 0 0 50%; max-width:50%; } }
+        @media (max-width: 767.98px){ .ai-rec-config .config-col { flex:0 0 100%; max-width:100%; } }
+      `;
+      document.head.appendChild(st);
+    }
+
+    const rows = defs.map(field => {
+      const val = configValues[field.name];
+      const id = 'cfg_'+field.name;
+      let control:any = null;
+      switch(field.type){
+        case 'number':
+          control = React.createElement('input',{ id, type:'number', className:'text-input form-control', value: val??'', min: field.min, max: field.max, step: field.step||1, onChange:(e:any)=> updateConfigField(field.name, e.target.value===''? null: Number(e.target.value)) });
+          break;
+        case 'slider':
+          control = React.createElement('div',{ className:'range-wrapper' }, [
+            React.createElement('input',{ key:'rng', id, type:'range', className:'zoom-slider ml-1 form-control-range flex-grow-1', value: val ?? field.default ?? 0, min: field.min, max: field.max, step: field.step||1, onChange:(e:any)=> updateConfigField(field.name, Number(e.target.value)) }),
+            React.createElement('div',{ key:'val', className:'range-value'}, String(val ?? field.default ?? 0))
+          ]);
+          break;
+        case 'select':
+        case 'enum':
+          control = React.createElement('select',{ id, className:'input-control form-control', value: val ?? field.default ?? '', onChange:(e:any)=> updateConfigField(field.name, e.target.value) }, (field.options||[]).map((o:any)=> React.createElement('option',{ key:o.value, value:o.value }, o.label||o.value)));
+          break;
+        case 'boolean':
+          control = React.createElement('div',{ className:'custom-control custom-switch'}, [
+            React.createElement('input',{ key:'chk', id, type:'checkbox', className:'custom-control-input', checked: !!val, onChange:(e:any)=> updateConfigField(field.name, e.target.checked) }),
+            React.createElement('label',{ key:'lb', htmlFor:id, className:'custom-control-label', title: field.help||'' }, field.label ? '' : null)
+          ]);
+          break;
+        case 'text':
+          control = React.createElement('input',{ id, type:'text', className:'text-input form-control', value: val ?? '', placeholder: field.help || '', onChange:(e:any)=> updateConfigField(field.name, e.target.value, { debounce:true, field }) });
+          break;
+        case 'search':
+          control = React.createElement('div',{ className:'clearable-input-group search-term-input'}, [
+            React.createElement('input',{ key:'in', id, type:'text', className:'clearable-text-field form-control', value: val ?? '', placeholder: field.help || 'Search…', onChange:(e:any)=> updateConfigField(field.name, e.target.value, { debounce:true, field }) })
+          ]);
+          break;
+        case 'tags': {
+          // Preferred UX: dual include/exclude selectors. Try TagSelect first; fallback to TagIDSelect.
+          const TagSelectComp:any = (window as any).PluginApi?.components?.TagSelect || (window as any).TagSelect || null;
+          const TagIDSelectComp:any = (window as any).PluginApi?.components?.TagIDSelect || (window as any).TagIDSelect || (window as any).TagSelectID || null;
+          let includeIds:number[] = []; let excludeIds:number[] = [];
+          if(Array.isArray(val)) includeIds = val; else if(val && typeof val==='object'){ includeIds = Array.isArray(val.include)? val.include: []; excludeIds = Array.isArray(val.exclude)? val.exclude: []; }
+          if(TagSelectComp){
+            const cacheKey = field.name + '__objCache';
+            if(!compositeRawRef.current[cacheKey]) compositeRawRef.current[cacheKey] = { include: [], exclude: [], byId: {} };
+            const cache = compositeRawRef.current[cacheKey];
+            function syncCache(listType:'include'|'exclude', ids:number[]){
+              cache[listType] = cache[listType].filter((o:any)=> ids.includes(parseInt(o.id,10)));
+              ids.forEach(id=>{ const sid=String(id); if(!cache.byId[sid]){ const obj={ id: sid, name: cache.byId[sid]?.name || sid, aliases: [] }; cache.byId[sid]=obj; cache[listType].push(obj); } });
+            }
+            syncCache('include', includeIds);
+            syncCache('exclude', excludeIds);
+            const handleSelectInclude = (items:any[])=>{ cache.include = items; items.forEach((it:any)=> cache.byId[it.id]=it); includeIds = items.map((it:any)=> parseInt(it.id,10)).filter((n:number)=>!isNaN(n)); updateConfigField(field.name, { include: includeIds, exclude: excludeIds }); };
+            const handleSelectExclude = (items:any[])=>{ cache.exclude = items; items.forEach((it:any)=> cache.byId[it.id]=it); excludeIds = items.map((it:any)=> parseInt(it.id,10)).filter((n:number)=>!isNaN(n)); updateConfigField(field.name, { include: includeIds, exclude: excludeIds }); };
+            control = React.createElement('div',{ className:'d-flex flex-column w-100'}, [
+              React.createElement('div',{ key:'inclbl', className:'small text-muted mb-1' }, 'Include'),
+              React.createElement(TagSelectComp, { key:'incsel', isMulti:true, values: cache.include, onSelect: handleSelectInclude, className:'w-100 tag-select-include' }),
+              React.createElement('div',{ key:'exclbl', className:'small text-muted mb-1 mt-2' }, 'Exclude'),
+        React.createElement(TagSelectComp, { key:'excsel', isMulti:true, values: cache.exclude, onSelect: handleSelectExclude, className:'w-100 tag-select-exclude' })
+            ]);
+          } else if(TagIDSelectComp){
+            // Fallback to ID-based selector components (still provide search + tag name resolution internally)
+            const handleSelectIncludeIDs = (ids:any[])=>{ includeIds = (ids||[]).map((n:any)=> parseInt(n.id||n,10)).filter((n:number)=>!isNaN(n)); updateConfigField(field.name, { include: includeIds, exclude: excludeIds }); };
+            const handleSelectExcludeIDs = (ids:any[])=>{ excludeIds = (ids||[]).map((n:any)=> parseInt(n.id||n,10)).filter((n:number)=>!isNaN(n)); updateConfigField(field.name, { include: includeIds, exclude: excludeIds }); };
+            // Normalize to stringify form TagIDSelect might expect (array of numbers or objects with id?)
+            const includeVals = includeIds;
+            const excludeVals = excludeIds;
+            control = React.createElement('div',{ className:'d-flex flex-column w-100'}, [
+              React.createElement('div',{ key:'inclbl', className:'small text-muted mb-1' }, 'Include'),
+              React.createElement(TagIDSelectComp, { key:'incsel', isMulti:true, values: includeVals, onSelect: handleSelectIncludeIDs, className:'w-100 tagid-select-include' }),
+              React.createElement('div',{ key:'exclbl', className:'small text-muted mb-1 mt-2' }, 'Exclude'),
+        React.createElement(TagIDSelectComp, { key:'excsel', isMulti:true, values: excludeVals, onSelect: handleSelectExcludeIDs, className:'w-100 tagid-select-exclude' })
+            ]);
+          } else {
+            // Custom searchable include/exclude fallback with chips.
+            control = React.createElement(TagIncludeExcludeFallback, { fieldName: field.name, value: { include: includeIds, exclude: excludeIds }, onChange:(next:any)=> updateConfigField(field.name, next) });
+          }
+          break; }
+        case 'performers': {
+          // Performer native selector not yet integrated; keep fallback for now.
+          const raw = compositeRawRef.current[field.name] ?? '';
+          control = React.createElement('input',{ id, type:'text', className:'text-input form-control', value: raw, placeholder:'Performer IDs comma-separated', onChange:(e:any)=>{ compositeRawRef.current[field.name] = e.target.value; updateConfigField(field.name, parseIdList(e.target.value)); } });
+          break; }
+        default:
+          control = React.createElement('div',{ className:'text-muted small'}, 'Unsupported: '+field.type);
+      }
+      const showLabelAbove = field.type !== 'boolean';
+      const labelNode = showLabelAbove ? React.createElement('label',{ htmlFor:id, className:'small d-flex justify-content-between mb-1' }, [
+        React.createElement('span',{ key:'t' }, field.label || field.name),
+        (field.type==='number' || field.type==='slider') && (field.min!=null || field.max!=null) ? React.createElement('span',{ key:'rng', className:'text-muted ml-2'}, `${field.min??''}${field.min!=null||field.max!=null?'–':''}${field.max??''}`) : null
+      ]) : null;
+      return React.createElement('div',{ key:field.name, className:'config-col form-group mb-2 d-flex flex-column' }, [labelNode, control]);
+    });
+
+    return React.createElement('div',{ className:'ai-rec-config border rounded p-2 mb-2 w-100', style:{background:'#202225', borderColor:'#2a2d30'}}, [
+      React.createElement('div',{ key:'hdr', className:'d-flex justify-content-between align-items-center mb-2'}, [
+        React.createElement('strong',{ key:'t', className:'small'}, 'Configuration'),
+        React.createElement('div',{ key:'actions', className:'d-flex align-items-center gap-2'}, [
+          React.createElement('button',{ key:'tgl', className:'btn btn-secondary btn-sm', onClick:()=> setShowConfig((s:any)=>!s) }, showConfig? 'Hide':'Show')
+        ])
+      ]),
+      showConfig ? React.createElement('div',{ key:'body', className:'config-row d-flex flex-wrap'}, rows) : null
+    ]);
+  }
+
   // filtered scenes (placeholder for future filters/search)
   const filteredScenes = useMemo(()=> scenes, [scenes]);
   // totalPages is heuristic if hasMore: allow navigating one page past current computed value repeatedly
@@ -227,7 +505,7 @@
         if(!recommenderId){ setBackendStatus('idle'); setLoading(false); return; }
         const ctx = pageAPI?.get ? pageAPI.get() : null; // reserved for future context mapping
         const offset = (page-1) * itemsPerPage;
-        const body:any = { context: 'global_feed', recommenderId, limit: itemsPerPage, offset, config:{} };
+        const body:any = { context: 'global_feed', recommenderId, limit: itemsPerPage, offset, config: configValuesRef.current || {} };
         if(ctx){ body.context = 'global_feed'; }
         const url = `${backendBase}/api/v1/recommendations/query`;
         if((w as any).AIDebug) console.log('[RecommendedScenes] query', body);
@@ -259,7 +537,7 @@
       if(myId === latestRequestIdRef.current){
       setLoading(false);
       }
-    }, [recommenderId, backendBase, pageAPI, page, itemsPerPage]);
+  }, [recommenderId, backendBase, pageAPI, page, itemsPerPage]);
 
     // Fetch whenever recommender changes
   // When recommender changes, reset page then fetch (single sequence without double calling prior fetch)
@@ -302,9 +580,20 @@
     function formatDuration(seconds:number){ if(!seconds) return '0s'; const MIN=60,H=3600,D=86400,M=30*D; let rem=seconds; const months=Math.floor(rem/M); rem%=M; const days=Math.floor(rem/D); rem%=D; const hours=Math.floor(rem/H); rem%=H; const mins=Math.floor(rem/MIN); const parts:string[]=[]; if(months) parts.push(months+'M'); if(days) parts.push(days+'D'); if(hours) parts.push(hours+'h'); if(mins) parts.push(mins+'m'); return parts.length? parts.join(' '): seconds+'s'; }
     function formatSize(bytes:number){ if(!bytes) return '0 B'; const units=['B','KiB','MiB','GiB','TiB','PiB']; let i=0,val=bytes; while(val>1024 && i<units.length-1){ val/=1024; i++; } return (i>=3? val.toFixed(1): Math.round(val))+' '+units[i]; }
 
-    const componentsToLoad = [PluginApi.loadableComponents?.SceneCard].filter(Boolean);
+    const componentsToLoad = [
+      PluginApi.loadableComponents?.SceneCard,
+      // Attempt to also pre-load Tag selectors if they are loadable (some builds expose these)
+      PluginApi.loadableComponents?.TagIDSelect || PluginApi.loadableComponents?.TagSelect
+    ].filter(Boolean);
     const componentsLoading = PluginApi.hooks?.useLoadComponents ? PluginApi.hooks.useLoadComponents(componentsToLoad) : false;
-    const { SceneCard } = PluginApi.components || {};
+    const { SceneCard, TagIDSelect, TagSelect } = PluginApi.components || {} as any;
+    // Attempt alternate resolution if not found (some builds may expose under different keys or on window)
+    const _w:any = window as any;
+    const ResolvedTagIDSelect = TagIDSelect || _w.TagIDSelect || _w.TagSelectID || null;
+    const ResolvedTagSelect = TagSelect || _w.TagSelect || null;
+    if((w as any).AIDebug && !ResolvedTagIDSelect && !ResolvedTagSelect){
+      console.debug('[RecommendedScenes] Tag selector components not found; falling back to text input');
+    }
     const grid = useMemo(()=>{
       if(loading || componentsLoading) return React.createElement('div',{ style:{marginTop:24}}, 'Loading scenes...');
       if(error) return React.createElement('div',{ style:{marginTop:24, color:'#c66'}}, error);
@@ -365,6 +654,7 @@
     return React.createElement(React.Fragment,null,[
   backendBadge? React.createElement('div',{key:'bstat', className:'text-center small text-muted mb-1'}, backendBadge): null,
   toolbar,
+      renderConfigPanel(),
       React.createElement(PaginationControl,{ key:'pgt', position:'top'}),
       grid,
       React.createElement(PaginationControl,{ key:'pgb', position:'bottom'})
