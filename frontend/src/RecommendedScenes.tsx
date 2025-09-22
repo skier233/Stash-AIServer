@@ -17,6 +17,12 @@
   const PluginApi = w.PluginApi; if(!PluginApi || !PluginApi.React) return;
   const React = PluginApi.React; const { useState, useMemo, useEffect, useRef } = React;
   const GQL = (PluginApi as any).graphql || (PluginApi as any).GQL || {};
+  // TODO(recommendations-migration): Migrate this component to use the new
+  // /api/v1/recommendations/recommenders + /api/v1/recommendations/query
+  // hydrated scene endpoints instead of the legacy /algorithms + /scenes
+  // ID-only workflow. Once migrated we can remove the client-side per-ID
+  // GraphQL hydration loop and rely entirely on backend-provided hydrated
+  // scenes (SceneModel) for faster first paint.
   
   // Upstream grid hooks copied from GridCard.tsx for exact parity
   function useDebounce(fn:any, delay:number) {
@@ -113,6 +119,7 @@
 
   interface BasicSceneFile { duration?:number; size?:number; }
   interface BasicScene { id:number; title?:string; rating100?:number; rating?:number; files?:BasicSceneFile[]; [k:string]:any }
+  interface RecommenderDef { id:string; label:string; description?:string; config?:any[]; contexts?:string[]; }
 
   // Initial broad scene field list (pruned adaptively if schema rejects fields)
   let SCENE_FIELDS = [
@@ -134,7 +141,7 @@
 
   function normalizeScene(sc:any):BasicScene|undefined{
     if(!sc || typeof sc!=='object') return undefined;
-    const arrayFields = ['performers','tags','markers','scene_markers','galleries','images','files'];
+  const arrayFields = ['performers','tags','markers','scene_markers','galleries','images','files','groups'];
     arrayFields.forEach(f=>{ if(sc[f]==null) sc[f]=[]; else if(!Array.isArray(sc[f])) sc[f]=[sc[f]].filter(Boolean); });
     if(!sc.studio) sc.studio = null;
     if(sc.rating100 == null && typeof sc.rating === 'number') sc.rating100 = sc.rating * 20;
@@ -186,8 +193,20 @@
       try { const raw = localStorage.getItem(key); if(raw!=null){ const n=parseInt(raw,10); if(!isNaN(n)) return n; } } catch(_){ }
       return fallback;
     }
+  // Dynamic algorithm discovery + parameter state (legacy path) & new recommender discovery
+  interface AlgoParam { name:string; type:'number'|'string'|'enum'|'boolean'; label?:string; min?:number; max?:number; step?:number; options?:Array<{value:string; label?:string}>; default?:any; }
+  interface AlgorithmDef { name:string; label?:string; description?:string; params?:AlgoParam[]; }
+  const [algorithms, setAlgorithms] = useState(null as any as (AlgorithmDef[]|null)); // legacy algorithms endpoint
+  const [algorithmsError, setAlgorithmsError] = useState(null as any as (string|null));
   const [algorithm, setAlgorithm] = useState('similarity');
+  const [algoParams, setAlgoParams] = useState({} as Record<string, any>);
   const [minScore, setMinScore] = useState(0.5);
+  // New recommender API state
+  /** @type {[RecommenderDef[]|null, Function]} */
+  const [recommenders, setRecommenders] = useState(/** @type {any} */(null));
+  /** @type {[string|null, Function]} */
+  const [recommenderId, setRecommenderId] = useState(/** @type {any} */(null));
+  const [usingNewAPI, setUsingNewAPI] = useState(false);
     const [zoomIndex, setZoomIndex] = useState(()=> readInitial(LS_ZOOM_KEY, 'z', 1));
     const [itemsPerPage, setItemsPerPage] = useState(()=> readInitial(LS_PER_PAGE_KEY, 'perPage', 40));
     const [page, setPage] = useState(()=> readInitial(LS_PAGE_KEY, 'p', 1));
@@ -197,9 +216,12 @@
     const zoomWidths = [280,340,480,640];
     const [componentRef, { width: containerWidth }] = useContainerDimensions();
     const cardWidth = useCardWidth(containerWidth, zoomIndex, zoomWidths);
-    // fetch IDs (mock until backend provider integrated)
-  const [sceneIds, setSceneIds] = useState(TEST_SCENE_IDS as number[]);
+  // fetch IDs (mock until new backend recommender query flow integrated)
+  const [sceneIds, setSceneIds] = useState(TEST_SCENE_IDS as number[]); // legacy hydration path
+  const [recCursor, setRecCursor] = useState(undefined as string|undefined); // backend paging cursor (if provided)
   const [backendStatus, setBackendStatus] = useState('idle' as 'idle'|'loading'|'ok'|'error');
+  const [discoveryAttempted, setDiscoveryAttempted] = useState(false);
+  const pageAPI:any = (w as any).AIPageContext; // for contextual recommendation requests
 
   // filtered scenes (placeholder for future filters/search)
   const filteredScenes = useMemo(()=> scenes, [scenes]);
@@ -218,35 +240,149 @@
       return (loc || 'http://localhost:8000').replace(/\/$/, '');
     }, []);
 
-    // Fetch recommended IDs from backend when algorithm/minScore changes, then load scenes via GraphQL
+    // Attempt new recommender discovery first; fallback to legacy algorithms if unavailable
     useEffect(()=>{ (async()=>{
-      setBackendStatus('loading');
-      let ids:number[] = [];
+      if(recommenders!==null) return;
       try {
-        // Attempt backend fetch
-        const body = JSON.stringify({ algorithm, min_score: minScore, limit: 200 });
-        const url = `${backendBase}/api/v1/recommendations/scenes`;
-        if ((w as any).AIDebug) console.log('[RecommendedScenes] fetch recommendations', url, body);
-        const res = await fetch(url, { method:'POST', headers:{ 'Content-Type':'application/json' }, body });
-        if(res.ok){
-          const j = await res.json();
-          if(Array.isArray(j.ids) && j.ids.length){ ids = j.ids.map((n:any)=> parseInt(n,10)).filter((n:number)=> !isNaN(n)); }
-          setBackendStatus('ok');
-        } else {
-          if ((w as any).AIDebug) console.warn('[RecommendedScenes] backend status', res.status);
-          setBackendStatus('error');
+        const ctxPage = pageAPI?.get?.()?.page;
+        // map page to RecContext (minimal mapping for now)
+        const recContext = 'global_feed';
+        const url = `${backendBase}/api/v1/recommendations/recommenders?context=${encodeURIComponent(recContext)}`;
+        const res = await fetch(url);
+        if(!res.ok) throw new Error('status '+res.status);
+        const j = await res.json();
+        if(j && Array.isArray(j.recommenders)){
+          setRecommenders(j.recommenders as RecommenderDef[]);
+          const def = (j.defaultRecommenderId && (j.recommenders as any[]).find(r=>r.id===j.defaultRecommenderId)) || j.recommenders[0];
+          if(def) { if((w as any).AIDebug) console.log('[RecommendedScenes] new recommender default', def.id); setRecommenderId(def.id); setUsingNewAPI(true); }
+          setDiscoveryAttempted(true);
+          return; // skip marking empty
         }
-      } catch(e){ setBackendStatus('error'); }
-      if(!ids.length){
-        // Fallback to existing local mock / shuffled for variance
-        ids = [...TEST_SCENE_IDS];
+      } catch(_e){ /* swallow and allow legacy path */ }
+      setRecommenders([]); // mark attempted empty
+      setDiscoveryAttempted(true);
+    })(); }, [recommenders, backendBase, pageAPI]);
+
+
+    // Discover legacy algorithms only AFTER recommender discovery fully attempted & failed
+    useEffect(()=>{ (async()=>{
+      // Block until recommender discovery finishes; prevents legacy UI "flash" before new API decides
+      if(!discoveryAttempted) return;              // still discovering new API
+      if(usingNewAPI) return;                      // new API active => never load legacy list
+      if(algorithms!==null) return;                // already loaded/attempted
+      if(recommenders && recommenders.length>0) return; // recommender list exists (even if not activated) => no legacy
+      try {
+        const url = `${backendBase}/api/v1/recommendations/algorithms`;
+        const res = await fetch(url, { method:'GET' });
+        if(!res.ok) throw new Error('status '+res.status);
+        const j = await res.json();
+        if(Array.isArray(j)) {
+          setAlgorithms(j.map((raw:any):AlgorithmDef=>({
+            name: String(raw.name||raw.id||'').trim()||'unknown',
+            label: raw.label || raw.name || raw.id,
+            description: raw.description,
+            params: Array.isArray(raw.params)? raw.params.map((p:any):AlgoParam=>({
+              name: String(p.name||'').trim(),
+              type: (p.type||'string').toLowerCase(),
+              label: p.label||p.name,
+              min: typeof p.min==='number'? p.min: undefined,
+              max: typeof p.max==='number'? p.max: undefined,
+              step: typeof p.step==='number'? p.step: undefined,
+              options: Array.isArray(p.options)? p.options.map((o:any)=>({value:String(o.value), label:o.label||o.value})): undefined,
+              default: p.default
+            })): []
+          })));
+        } else if (Array.isArray(j.algorithms)) {
+          setAlgorithms(j.algorithms as AlgorithmDef[]);
+        } else throw new Error('unexpected payload');
+      } catch(e:any){
+        setAlgorithmsError(e?.message||'Failed to load algorithms');
+        // Fallback: static minimal list mirrors legacy hard-coded options
+        setAlgorithms([
+          { name:'similarity', label:'Similarity', params:[{ name:'min_score', type:'number', min:0, max:1, step:0.05, default:0.5 }]},
+          { name:'recent', label:'Recent', params:[]},
+          { name:'popular', label:'Popular', params:[]}
+        ]);
       }
-      setSceneIds(ids);
-    })(); }, [algorithm, minScore, backendBase]);
+    })(); }, [algorithms, backendBase, usingNewAPI, discoveryAttempted, recommenders]);
+
+    // Ensure algoParams has defaults when algorithm changes or algorithms list loads
+    useEffect(()=>{
+      if(usingNewAPI) return; // legacy algorithm param defaulting
+      if(!algorithms) return; const def = algorithms.find((a:AlgorithmDef)=>a.name===algorithm) || algorithms[0]; if(!def) return;
+      const next:Record<string, any> = { ...algoParams };
+      (def.params||[]).forEach((p:AlgoParam)=>{ if(next[p.name]==null) next[p.name] = p.default!=null? p.default : (p.type==='number'? 0 : p.type==='boolean'? false : ''); });
+      setAlgoParams(next);
+      if(def.params?.some((p:AlgoParam)=>p.name==='min_score')){ const val = next['min_score']; if(typeof val==='number') setMinScore(val); }
+    }, [algorithms, algorithm, usingNewAPI]);
+
+    // Unified function to request recommendations (first page)
+    const fetchRecommendations = React.useCallback(async ()=>{
+      setBackendStatus('loading');
+      try {
+        const ctx = pageAPI?.get ? pageAPI.get() : null;
+        if(usingNewAPI){
+          if(!recommenderId){ if((w as any).AIDebug) console.log('[RecommendedScenes] newAPI skip: no recommenderId'); setBackendStatus('idle'); return; }
+          const body:any = { context: 'global_feed', recommenderId, limit: 200, config:{} };
+          if(ctx){ body.context = 'global_feed'; }
+          const url = `${backendBase}/api/v1/recommendations/query`;
+          if((w as any).AIDebug) console.log('[RecommendedScenes] newAPI query', body);
+          const res = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+          if(res.ok){
+            const j = await res.json();
+            if(Array.isArray(j.scenes)){
+              const norm = j.scenes.map((s:any)=> normalizeScene(s)).filter(Boolean) as BasicScene[];
+              setScenes(norm);
+              setBackendStatus('ok');
+              return; // success path (do not fall through)
+            } else if((w as any).AIDebug) console.warn('[RecommendedScenes] newAPI unexpected payload', j);
+          } else {
+            if((w as any).AIDebug) console.warn('[RecommendedScenes] newAPI status', res.status);
+            if(res.status === 404 || res.status === 501){
+              if((w as any).AIDebug) console.warn('[RecommendedScenes] disabling newAPI fallback to legacy');
+              setUsingNewAPI(false);
+            }
+          }
+          // Keep usingNewAPI true on soft failure so user can retry; fall through to legacy only if disabled.
+          if(usingNewAPI) { setBackendStatus('error'); return; }
+        }
+
+        // Legacy path (only executes if not using new API)
+        let ids:number[] = [];
+        const def = algorithms?.find((a:AlgorithmDef)=>a.name===algorithm);
+        const body:any = { algorithm, limit:200, min_score: minScore };
+        if(ctx){ body.context = { page: ctx.page, entityId: ctx.entityId, isDetailView: ctx.isDetailView, selectedIds: ctx.selectedIds||[] }; }
+        if(def && def.params){ const paramPayload:Record<string,any>={}; def.params.forEach((p:AlgoParam)=>{ if(algoParams[p.name]!=null) paramPayload[p.name]=algoParams[p.name]; }); body.params = paramPayload; }
+        const url = `${backendBase}/api/v1/recommendations/scenes`;
+        if ((w as any).AIDebug) console.log('[RecommendedScenes] legacy fetch', body);
+        const res = await fetch(url, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+        if(res.ok){ const j = await res.json(); if(Array.isArray(j.ids) && j.ids.length){ ids = j.ids.map((n:any)=> parseInt(n,10)).filter((n:number)=> !isNaN(n)); } setBackendStatus('ok'); }
+        else { setBackendStatus('error'); }
+        if(!ids.length){ ids = [...TEST_SCENE_IDS]; }
+        const orderedUnique = (()=>{ const seen=new Set<number>(); const out:number[]=[]; for(const i of ids){ if(!seen.has(i)){ seen.add(i); out.push(i);} } return out; })();
+        setSceneIds(orderedUnique);
+      } catch(_e){ setBackendStatus('error'); }
+    }, [usingNewAPI, recommenderId, backendBase, pageAPI, algorithms, algorithm, minScore, algoParams]);
+
+    // Fetch whenever recommender changes (new API path)
+    useEffect(()=>{
+      if(usingNewAPI && recommenderId && discoveryAttempted){
+        // Clear current scenes to prevent stale rendering while new fetch in-flight
+        setScenes([]);
+        if((w as any).AIDebug) console.log('[RecommendedScenes] recommender changed -> refetch', recommenderId);
+        fetchRecommendations();
+      }
+    }, [usingNewAPI, recommenderId, discoveryAttempted, fetchRecommendations]);
+
+    // Initial & dependency-based recommendation fetch (legacy path only)
+    useEffect(()=>{ if(!discoveryAttempted) return; if(usingNewAPI) return; fetchRecommendations(); }, [discoveryAttempted, usingNewAPI, algorithm, minScore, backendBase, fetchRecommendations]);
+
+    // Expose manual refresh with context
+  const manualRefresh = () => { if((w as any).AIDebug) console.log('[RecommendedScenes] manual refresh'); fetchRecommendations(); };
 
     // Fetch scenes whenever sceneIds changes
-    useEffect(()=>{ (async()=>{ setLoading(true); setError(null); try { const ids = sceneIds; const seen = new Set<number>(); const unique = ids.filter((i:number)=>{ if(seen.has(i)) return false; seen.add(i); return true; }); let singleQuery = `query FindScene($id: ID!){ findScene(id:$id){ ${SCENE_FIELDS} } }`; const client = (PluginApi as any).graphqlClient || (PluginApi as any).client || (PluginApi as any).apiClient; const results:BasicScene[] = []; for(const id of unique){ try { const sc = await fetchScene(client, id, singleQuery); if(sc) results.push(sc); } catch(e:any){ const msg = e?.message || ''; if(pruneSchemaFromError(msg)){ singleQuery = `query FindScene($id: ID!){ findScene(id:$id){ ${SCENE_FIELDS} } }`; try { const retry = await fetchScene(client, id, singleQuery); if(retry) results.push(retry); } catch(e2:any){ warn('retry failed', id, e2?.message); } } else warn('fetch failed', id, msg); } }
-      const byId:Record<number,BasicScene> = {}; results.forEach((r:BasicScene)=>{byId[r.id]=r;}); setScenes(ids.map((i:number)=> byId[i]).filter(Boolean)); } catch(e:any){ setError(e?.message||'Failed to load scenes'); } finally { setLoading(false); } })(); }, [sceneIds]);
+    useEffect(()=>{ if(usingNewAPI) return; (async()=>{ setLoading(true); setError(null); try { const ids = sceneIds; const seen = new Set<number>(); const unique = ids.filter((i:number)=>{ if(seen.has(i)) return false; seen.add(i); return true; }); let singleQuery = `query FindScene($id: ID!){ findScene(id:$id){ ${SCENE_FIELDS} } }`; const client = (PluginApi as any).graphqlClient || (PluginApi as any).client || (PluginApi as any).apiClient; const results:BasicScene[] = []; for(const id of unique){ try { const sc = await fetchScene(client, id, singleQuery); if(sc) results.push(sc); } catch(e:any){ const msg = e?.message || ''; if(pruneSchemaFromError(msg)){ singleQuery = `query FindScene($id: ID!){ findScene(id:$id){ ${SCENE_FIELDS} } }`; try { const retry = await fetchScene(client, id, singleQuery); if(retry) results.push(retry); } catch(e2:any){ warn('retry failed', id, e2?.message); } } else warn('fetch failed', id, msg); } }
+      const byId:Record<number,BasicScene> = {}; results.forEach((r:BasicScene)=>{byId[r.id]=r;}); setScenes(ids.map((i:number)=> byId[i]).filter(Boolean)); } catch(e:any){ setError(e?.message||'Failed to load scenes'); } finally { setLoading(false); } })(); }, [sceneIds, usingNewAPI]);
 
   // Clamp page when per-page changes
   useEffect(()=>{ const totalPagesInner = Math.max(1, Math.ceil(scenes.length / itemsPerPage)); if(page>totalPagesInner) setPage(totalPagesInner); }, [itemsPerPage, scenes.length, page]);
@@ -291,28 +427,60 @@
       return React.createElement('div',{ className:'d-flex flex-column align-items-center w-100 pagination-footer mt-2' }, position==='top'? [controls, info] : [info, controls]);
     }
 
+    const algoSelect = usingNewAPI
+      ? React.createElement('select', { key:'rec', className:'btn-secondary form-control form-control-sm', value:recommenderId||'', onChange:(e:any)=>{ setRecommenderId(e.target.value); }},
+          (recommenders||[]).map((r:any)=> React.createElement('option',{ key:r.id, value:r.id }, r.label || r.id))
+        )
+      : React.createElement('select', { key:'alg', className:'btn-secondary form-control form-control-sm', value:algorithm, onChange:(e:any)=>{ setAlgorithm(e.target.value); }},
+          (algorithms||[{name:'similarity', label:'Similarity'},{name:'recent', label:'Recent'},{name:'popular', label:'Popular'}]).map((a:AlgorithmDef)=> React.createElement('option',{ key:a.name, value:a.name }, a.label||a.name))
+        );
+    // Dynamic params (excluding min_score which keeps legacy width & style)
+    const paramInputs: any[] = [];
+  const currentAlgo = (algorithms||[]).find((a:AlgorithmDef)=>a.name===algorithm);
+  if(!usingNewAPI && currentAlgo && currentAlgo.params){
+      currentAlgo.params.forEach((p:any)=>{
+        if(p.name==='min_score') return; // handled separately
+        const commonProps = { key:p.name, className:'form-control form-control-sm', style:{ width: p.type==='number'? 80: 110, marginLeft:4 }, title: p.description||p.label||p.name };
+        let input:any = null;
+        if(p.type==='number'){
+          input = React.createElement('input',{ ...commonProps, type:'number', step:p.step||0.01, min:p.min, max:p.max, value: algoParams[p.name] ?? '', onChange:(e:any)=> setAlgoParams((prev:Record<string,any>)=> ({...prev, [p.name]: e.target.value===''? undefined : Number(e.target.value) }))});
+        } else if(p.type==='boolean'){
+          input = React.createElement('select',{ ...commonProps, value: String(!!algoParams[p.name]), onChange:(e:any)=> setAlgoParams((prev:Record<string,any>)=> ({...prev, [p.name]: e.target.value==='true'})) }, [
+            React.createElement('option',{key:'true', value:'true'}, 'True'),
+            React.createElement('option',{key:'false', value:'false'}, 'False')
+          ]);
+        } else if(p.type==='enum' && Array.isArray(p.options)){
+          input = React.createElement('select',{ ...commonProps, value: algoParams[p.name] ?? (p.options[0]?.value||''), onChange:(e:any)=> setAlgoParams((prev:Record<string,any>)=> ({...prev, [p.name]: e.target.value })) }, p.options.map((o:any)=> React.createElement('option',{ key:o.value, value:o.value }, o.label||o.value)));
+        } else { // string fallback
+          input = React.createElement('input',{ ...commonProps, type:'text', value: algoParams[p.name] ?? '', onChange:(e:any)=> setAlgoParams((prev:Record<string,any>)=> ({...prev, [p.name]: e.target.value }))});
+        }
+        paramInputs.push(input);
+      });
+    }
+  const minScoreInput = !usingNewAPI ? React.createElement('input',{ key:'score', className:'form-control form-control-sm', style:{width:70}, type:'number', step:0.05, min:0, max:1, value:minScore, onChange:(e:any)=> { const v=Number(e.target.value); setMinScore(v); setAlgoParams((prev:Record<string,any>)=> ({...prev, min_score:v })); }}) : null;
     const toolbar = React.createElement('div',{ key:'toolbar', role:'toolbar', className:'filtered-list-toolbar btn-toolbar flex-wrap w-100 mb-1 justify-content-center' }, [
       React.createElement('div',{ key:'cluster', className:'d-flex flex-wrap justify-content-center align-items-center gap-2'}, [
-        React.createElement('div',{ key:'algGroup', role:'group', className:'mr-2 mb-2 btn-group'}, [
-          React.createElement('select',{ key:'alg', className:'btn-secondary form-control form-control-sm', value:algorithm, onChange:(e:any)=> setAlgorithm(e.target.value)}, [
-            React.createElement('option',{key:'similarity', value:'similarity'}, 'Similarity'),
-            React.createElement('option',{key:'recent', value:'recent'}, 'Recent'),
-            React.createElement('option',{key:'popular', value:'popular'}, 'Popular')
-          ]),
-          React.createElement('input',{ key:'score', className:'form-control form-control-sm', style:{width:70}, type:'number', step:0.05, min:0, max:1, value:minScore, onChange:(e:any)=> setMinScore(Number(e.target.value))})
-        ]),
+  React.createElement('div',{ key:'algGroup', role:'group', className:'mr-2 mb-2 btn-group'}, [algoSelect, ...(minScoreInput? [minScoreInput]: []), ...paramInputs]),
         React.createElement('div',{ key:'ps', className:'page-size-selector mr-2 mb-2'}, React.createElement('select',{ className:'btn-secondary form-control', value:itemsPerPage, onChange:(e:any)=>{ setItemsPerPage(Number(e.target.value)); setPage(1);} }, [20,40,80,120].map(n=> React.createElement('option',{key:n, value:n}, n)))) ,
         React.createElement('div',{ key:'zoomWrap', className:'mx-2 mb-2 d-inline-flex align-items-center'}, [
           React.createElement('input',{ key:'zr', min:0, max:3, type:'range', className:'zoom-slider ml-1 form-control-range', value:zoomIndex, onChange:(e:any)=> setZoomIndex(Number(e.target.value)) })
         ]),
         React.createElement('div',{ key:'act', role:'group', className:'mb-2 btn-group'}, [
-          React.createElement(Button,{ key:'refresh', className:'btn btn-secondary minimal', disabled:loading, title:'Refresh', onClick:()=>{ setAlgorithm((a:string)=>a); setSceneIds((s:number[])=>[...s]); }}, '↻'),
-          React.createElement(Button,{ key:'reset', className:'btn btn-secondary minimal', title:'Reset', onClick:()=>{ setAlgorithm('similarity'); setMinScore(0.5); setItemsPerPage(40); setZoomIndex(1); setSceneIds(TEST_SCENE_IDS); setPage(1); }}, 'Reset')
+          React.createElement(Button,{ key:'refresh', className:'btn btn-secondary minimal', disabled:loading, title:'Refresh', onClick:manualRefresh }, '↻')
+        ])
+        , backendStatus==='error' && React.createElement('div',{ key:'err', className:'mb-2 ml-2 small text-danger d-flex align-items-center' }, [
+          React.createElement('span',{ key:'lbl', style:{marginRight:6}}, 'Backend failed'),
+          React.createElement(Button,{ key:'retry', className:'btn btn-secondary minimal btn-sm', disabled:loading, onClick:()=> manualRefresh() }, 'Retry')
         ])
       ])
     ]);
 
     const backendBadge = backendStatus==='ok' ? '✅ backend' : backendStatus==='loading' ? '… backend' : backendStatus==='error' ? '⚠ backend fallback' : '';
+
+    // While recommender discovery hasn't finished, suppress legacy UI to avoid flash
+    if(!discoveryAttempted && !usingNewAPI){
+      return React.createElement('div',{ className:'text-center mt-4'}, 'Loading recommendation engine…');
+    }
 
     return React.createElement(React.Fragment,null,[
   backendBadge? React.createElement('div',{key:'bstat', className:'text-center small text-muted mb-1'}, backendBadge): null,

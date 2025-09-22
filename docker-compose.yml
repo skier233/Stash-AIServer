@@ -13,4 +13,8 @@ services:
       - ./backend/data:/app/data
     environment:
       - PYTHONPATH=/app
+      - STASH_API_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOiJza2kyMyIsImlhdCI6MTY2OTA2MjU4NCwic3ViIjoiQVBJS2V5In0.0QWitnVF0c0n8vjKDXN3c1Of7ZDreOyWg3iUcjlVzYw
+      # Inside this container 'localhost:3000' points to the container itself, not the host stash.
+      # Use Docker host gateway DNS name (works on recent Docker Desktop) so stash hydration works.
+      - STASH_INTERNAL_URL=http://host.docker.internal:3000
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
