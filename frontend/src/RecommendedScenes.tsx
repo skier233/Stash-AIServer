@@ -427,29 +427,8 @@
       return ()=> document.removeEventListener('keydown', onKey);
     }, [onCancel]);
 
-    return React.createElement('div', { style: { position: 'relative' } }, [
-      React.createElement('div', { key: 'title', style: { fontWeight: 'bold', marginBottom: '6px', paddingRight: '20px' } }, `Configure: ${tagName}`),
-      React.createElement('button', { 
-        key: 'close-btn', 
-        onClick: (e: any) => { 
-          e.stopPropagation(); 
-          canceledRef.current = true; 
-          onCancel(); 
-        },
-        style: { 
-          position: 'absolute', 
-          top: '0', 
-          right: '0', 
-          background: 'transparent', 
-          border: 'none', 
-          color: '#fff', 
-          cursor: 'pointer', 
-          fontSize: '14px', 
-          padding: '2px 4px',
-          borderRadius: '2px'
-        },
-        title: 'Close without saving'
-      }, '×'),
+    return React.createElement('div', { style: { position: 'relative', minWidth: '200px' } }, [
+      React.createElement('div', { key: 'title', style: { fontWeight: 'bold', marginBottom: '6px' } }, `Configure: ${tagName}`),
       React.createElement('div', { key: 'type', className: 'constraint-type' }, [
         React.createElement('label', { key: 'label' }, 'Type: '),
         React.createElement('select', { 
@@ -458,7 +437,26 @@
           onChange: (e: any) => handleTypeChange(e.target.value)
         }, constraintTypes.map(ct => React.createElement('option', { key: ct.value, value: ct.value }, ct.label)))
       ]),
-      renderOptions()
+      renderOptions(),
+      React.createElement('div', { key: 'actions', style: { display: 'flex', justifyContent: 'flex-end', marginTop: '8px', gap: '4px' } }, [
+        React.createElement('button', {
+          key: 'save',
+          onClick: (e: any) => {
+            e.stopPropagation();
+            onSave(localConstraint);
+          },
+          style: {
+            padding: '4px 8px',
+            fontSize: '10px',
+            border: 'none',
+            borderRadius: '3px',
+            cursor: 'pointer',
+            background: '#2e7d32',
+            color: '#fff'
+          },
+          title: 'Save changes'
+        }, 'Save')
+      ])
     ]);
   }, []);
 
@@ -752,16 +750,16 @@
       const chipClass = `tag-chip overlap ${setType}`;
       const groupKey = allTagIds.sort().join('-');
       
-      return React.createElement('span', { key: `co-${setType}-${groupKey}`, className: chipClass, style: { display:'inline-flex', alignItems:'center', gap:6, maxWidth:400, padding:'4px 8px' } }, [
-        React.createElement('span', { key: 'constraint-prefix', className: 'co-occurrence-constraint-info', style: { flex: '0 0 auto', marginRight: 6, fontSize: '10px' } }, `[${min}-${max}${unit}]`),
-        React.createElement('span', { key: 'tags', className: 'co-occurrence-tags', style: { display:'inline-flex', gap:6, alignItems:'center', overflow:'hidden', whiteSpace:'nowrap', textOverflow:'ellipsis', flex: '1 1 auto', minWidth: 0 } }, 
+      return React.createElement('span', { key: `co-${setType}-${groupKey}`, className: chipClass, style: { display:'inline-flex', alignItems:'center', maxWidth:450, padding:'4px 8px', gap:'6px' } }, [
+        React.createElement('span', { key: 'constraint-prefix', className: 'co-occurrence-constraint-info', style: { flexShrink:0, fontSize: '10px', fontWeight: 'bold', marginRight:'4px' } }, `[${min}-${max}${unit}]`),
+        React.createElement('span', { key: 'tags', className: 'co-occurrence-tags', style: { flex:1, minWidth:0, display:'flex', alignItems:'center', gap:'6px' } }, 
           allTagNames.map((name, idx) => 
             React.createElement('span', { 
               key: allTagIds[idx], 
               className: 'co-tag-item',
-              style: { display:'inline-flex', alignItems:'center', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', maxWidth: 150, marginRight: idx < allTagIds.length - 1 ? 4 : 0 }
+              style: { display:'flex', alignItems:'center', whiteSpace:'nowrap', flexShrink:0 }
             }, [
-              React.createElement('span', { key: 'n', style: { overflow:'hidden', textOverflow:'ellipsis', display:'inline-block', maxWidth: 100 }, title: name }, name),
+              React.createElement('span', { key: 'n', style: { maxWidth: 120, overflow:'hidden', textOverflow:'ellipsis' }, title: name }, name),
               React.createElement('button', {
                 key: 'x',
                 onClick: (e: any) => {
@@ -783,12 +781,12 @@
             ])
           )
         ),
-        React.createElement('div', { key: 'actions', style: { display:'inline-flex', gap:4, flex: '0 0 auto', marginLeft:4 } }, [
+        React.createElement('span', { key: 'actions', style: { flexShrink:0, display:'flex', alignItems:'center', gap:'4px' } }, [
           React.createElement('button', { 
             key: 'gear', 
             className: 'constraint-btn', 
             onClick: (e: any) => showConstraintPopup(primaryId, e), 
-            title: 'Configure group constraint' 
+            title: 'Configure group constraint'
           }, '⚙'),
           React.createElement('button', { 
             key: 'remove-group', 
@@ -807,9 +805,10 @@
     include.forEach(id=> {
       const constraint = getTagConstraint(id);
       
-      // Skip if this tag is part of a co-occurrence group already processed
-      if (constraint.type === 'overlap' && constraint.overlap && constraint.overlap.coTags && constraint.overlap.coTags.length > 0) {
-        const groupKey = [id, ...constraint.overlap.coTags].sort().join('-');
+      // Skip if this tag is part of a co-occurrence group already processed, or if it's ANY overlap constraint
+      if (constraint.type === 'overlap' && constraint.overlap) {
+        const coTags = constraint.overlap.coTags || [];
+        const groupKey = [id, ...coTags].sort().join('-');
         if (processedOverlapGroups.has(groupKey)) {
           return; // Skip, already rendered as part of the group
         }
@@ -832,20 +831,22 @@
         constraintText = ` [×${constraint.importance.toFixed(1)}]`;
       }
       
-      chips.push(React.createElement('span',{ key:'i'+id, className: chipClass, style: { display:'inline-flex', alignItems:'center', gap:'4px', maxWidth:'250px' } }, [
-        React.createElement('span', { key: 'text', className: 'chip-text', style: { overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:'1', minWidth:'0' } }, tagName + constraintText),
-        React.createElement('div', { key: 'actions', className: 'chip-actions', style: { display:'flex', gap:'2px', flexShrink:'0', marginLeft:'4px' } }, [
+      chips.push(React.createElement('span',{ key:'i'+id, className: chipClass, style: { display:'inline-flex', alignItems:'center', gap:'4px', maxWidth:'300px' } }, [
+        React.createElement('span', { key: 'text', className: 'chip-text', style: { overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:'1', minWidth:'0' } }, tagName),
+        constraintText ? React.createElement('span', { key: 'constraint', style: { fontSize:'10px', color:'#aaa', flexShrink:'0' } }, constraintText) : null,
+        React.createElement('div', { key: 'actions', className: 'chip-actions', style: { display:'flex', gap:'2px', flexShrink:'0' } }, [
           React.createElement('button',{ key:'gear', className:'constraint-btn', onClick:(e:any)=> showConstraintPopup(id, e), title:'Configure constraint' }, '⚙'),
           React.createElement('button',{ key:'x', onClick:(e:any)=>{ e.stopPropagation(); removeTag(id,'include'); }, title:'Remove', style: { background:'transparent', border:'none', cursor:'pointer', padding:'0 0 0 2px', fontSize:'13px', lineHeight:'1', color:'inherit' } }, '×')
         ])
-      ]));
+      ].filter(Boolean)));
     });
     exclude.forEach(id=> {
       const constraint = getTagConstraint(id);
       
-      // Skip if this tag is part of a co-occurrence group already processed
-      if (constraint.type === 'overlap' && constraint.overlap && constraint.overlap.coTags && constraint.overlap.coTags.length > 0) {
-        const groupKey = [id, ...constraint.overlap.coTags].sort().join('-');
+      // Skip if this tag is part of a co-occurrence group already processed, or if it's ANY overlap constraint
+      if (constraint.type === 'overlap' && constraint.overlap) {
+        const coTags = constraint.overlap.coTags || [];
+        const groupKey = [id, ...coTags].sort().join('-');
         if (processedOverlapGroups.has(groupKey)) {
           return; // Skip, already rendered as part of the group
         }
@@ -868,13 +869,16 @@
         constraintText = ` [×${constraint.importance.toFixed(1)}]`;
       }
       
-      chips.push(React.createElement('span',{ key:'e'+id, className: chipClass, style: { display:'inline-flex', alignItems:'center', gap:'4px', maxWidth:'250px' } }, [
-        React.createElement('span', { key: 'text', className: 'chip-text', style: { overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:'1', minWidth:'0' } }, tagName + constraintText),
-        React.createElement('div', { key: 'actions', className: 'chip-actions', style: { display:'flex', gap:'2px', flexShrink:'0', marginLeft:'4px' } }, [
+      // Use consistent spacing - all constraints get the same padding
+      
+      chips.push(React.createElement('span',{ key:'e'+id, className: chipClass, style: { display:'inline-flex', alignItems:'center', gap:'4px', maxWidth:'300px' } }, [
+        React.createElement('span', { key: 'text', className: 'chip-text', style: { overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:'1', minWidth:'0' } }, tagName),
+        constraintText ? React.createElement('span', { key: 'constraint', style: { fontSize:'10px', color:'#aaa', flexShrink:'0' } }, constraintText) : null,
+        React.createElement('div', { key: 'actions', className: 'chip-actions', style: { display:'flex', gap:'2px', flexShrink:'0' } }, [
           React.createElement('button',{ key:'gear', className:'constraint-btn', onClick:(e:any)=> showConstraintPopup(id, e), title:'Configure constraint' }, '⚙'),
           React.createElement('button',{ key:'x', onClick:(e:any)=>{ e.stopPropagation(); removeTag(id,'exclude'); }, title:'Remove', style: { background:'transparent', border:'none', cursor:'pointer', padding:'0 0 0 2px', fontSize:'13px', lineHeight:'1', color:'inherit' } }, '×')
         ])
-      ]));
+      ].filter(Boolean)));
     });
 
     const suggestionsList = (searchState.showDropdown || searchState.search) && (searchState.suggestions.length || searchState.loading || searchState.error) ? React.createElement('div',{ className:'suggestions-list', key:'list' },
