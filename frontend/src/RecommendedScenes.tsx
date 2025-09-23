@@ -179,8 +179,8 @@
   useEffect(()=>{ (configValuesRef as any).current = configValues; }, [configValues]);
   const currentRecommender = React.useMemo(()=> (recommenders||[])?.find((r:any)=> r.id===recommenderId), [recommenders, recommenderId]);
 
-  // ---------------- Fallback Tag Include/Exclude Selector -----------------
-  // Used only if neither TagSelect nor TagIDSelect native components are exposed.
+  // ---------------- Fallback Tag Include/Exclude Selector (Unified) -----------------
+  // Sole implementation: single bar with inline mode toggle (+ include / - exclude) and chips inline.
   const TagIncludeExcludeFallback = React.useCallback(({ value, onChange, fieldName }: { value:any; onChange:(next:any)=>void; fieldName:string }) => {
     const v = value || {};
     const include:number[] = Array.isArray(v) ? v : Array.isArray(v.include) ? v.include : [];
@@ -196,17 +196,21 @@
     // Inject styles once
     if(typeof document!=='undefined' && !document.getElementById('ai-tag-fallback-style')){
       const s=document.createElement('style'); s.id='ai-tag-fallback-style'; s.textContent=`
-        .ai-tag-fallback { background:#24272b; border:1px solid #2f3337; border-radius:4px; padding:6px; font-size:12px; }
-        .ai-tag-fallback .chips-row { gap:4px; }
-        .ai-tag-fallback .tag-chip { background:#d0d7de; color:#111; border-radius:3px; padding:2px 6px; display:inline-flex; align-items:center; font-size:11px; font-weight:500; }
-        .ai-tag-fallback .tag-chip.exclude { background:#733; color:#eee; }
-        .ai-tag-fallback .tag-chip button { background:transparent; border:none; margin-left:4px; cursor:pointer; color:inherit; font-size:11px; line-height:1; }
-        .ai-tag-fallback .mode-bar button { flex:1; }
-        .ai-tag-fallback .suggestions { position:relative; }
-        .ai-tag-fallback .suggestions-list { position:absolute; z-index:20; top:100%; left:0; right:0; background:#1f2225; border:1px solid #333; max-height:180px; overflow:auto; border-radius:3px; }
-        .ai-tag-fallback .suggestions-list div { padding:4px 6px; cursor:pointer; font-size:11px; }
+        .ai-tag-fallback { position:relative; background:#24272b; border:1px solid #2f3337; border-radius:4px; padding:4px 6px; font-size:12px; min-height:34px; display:flex; flex-wrap:wrap; align-items:center; gap:4px; cursor:text; }
+        .ai-tag-fallback.unified:focus-within { border-color:#3d4348; box-shadow:0 0 0 2px rgba(90,150,255,0.15); }
+        .ai-tag-fallback .mode-toggle { padding:2px 6px; font-size:11px; line-height:1.1; border-radius:3px; border:1px solid transparent; cursor:pointer; font-weight:600; }
+        .ai-tag-fallback .mode-toggle.include { background:#1f3d23; border-color:#2d6a36; color:#8ee19b; }
+        .ai-tag-fallback .mode-toggle.exclude { background:#4a1b1b; border-color:#a33; color:#f08a8a; }
+        .ai-tag-fallback .tag-chip { display:inline-flex; align-items:center; gap:4px; border-radius:3px; padding:2px 6px; font-size:11px; font-weight:500; border:1px solid; }
+        .ai-tag-fallback .tag-chip.include { background:#1f4d2a; border-color:#2e7d32; color:#cfe8d0; }
+        .ai-tag-fallback .tag-chip.exclude { background:#5c1f1f; border-color:#b33; color:#f5d0d0; }
+        .ai-tag-fallback .tag-chip button { background:transparent; border:none; cursor:pointer; padding:0 0 0 2px; font-size:13px; line-height:1; color:inherit; }
+        .ai-tag-fallback input.tag-input { flex:1; min-width:120px; border:none; outline:none; background:transparent; color:#fff; padding:2px 4px; font-size:12px; }
+        .ai-tag-fallback input.tag-input::placeholder { color:#667; }
+        .ai-tag-fallback .suggestions-list { position:absolute; z-index:30; left:-1px; right:-1px; top:100%; margin-top:2px; background:#1f2225; border:1px solid #333; max-height:220px; overflow:auto; border-radius:4px; box-shadow:0 4px 12px rgba(0,0,0,0.45); }
+        .ai-tag-fallback .suggestions-list div { padding:5px 8px; cursor:pointer; font-size:11px; }
         .ai-tag-fallback .suggestions-list div:hover { background:#2d3236; }
-        .ai-tag-fallback .empty-suggest { padding:4px 6px; font-size:11px; color:#889; }
+        .ai-tag-fallback .empty-suggest { padding:6px 8px; font-size:11px; color:#889; }
       `; document.head.appendChild(s); }
 
     function removeTag(id:number, list:'include'|'exclude'){
@@ -221,6 +225,8 @@
       } else {
         if(!exclude.includes(id)) onChange({ include, exclude:[...exclude,id] });
       }
+      // Clear search & suggestions after add
+      setPartial({ search:'', suggestions:[], lastTerm:'' });
     }
 
     function search(term:string){
@@ -243,28 +249,35 @@
         } catch(e:any){ setPartial({ error: 'Search failed', loading:false }); }
       }, 250);
     }
-
     const chips: any[] = [];
-    include.forEach(id=> chips.push(React.createElement('span',{ key:'i'+id, className:'tag-chip include' }, [String(id), React.createElement('button',{ key:'x', onClick:()=> removeTag(id,'include'), title:'Remove' }, '×')])));
-    exclude.forEach(id=> chips.push(React.createElement('span',{ key:'e'+id, className:'tag-chip exclude' }, [String(id), React.createElement('button',{ key:'x', onClick:()=> removeTag(id,'exclude'), title:'Remove' }, '×')])));
+    include.forEach(id=> chips.push(React.createElement('span',{ key:'i'+id, className:'tag-chip include' }, [String(id), React.createElement('button',{ key:'x', onClick:(e:any)=>{ e.stopPropagation(); removeTag(id,'include'); }, title:'Remove' }, '×')])));
+    exclude.forEach(id=> chips.push(React.createElement('span',{ key:'e'+id, className:'tag-chip exclude' }, [String(id), React.createElement('button',{ key:'x', onClick:(e:any)=>{ e.stopPropagation(); removeTag(id,'exclude'); }, title:'Remove' }, '×')])));
 
     const suggestionsList = st.search && (st.suggestions.length || st.loading || st.error) ? React.createElement('div',{ className:'suggestions-list', key:'list' },
       st.loading ? React.createElement('div',{ className:'empty-suggest'}, 'Searching…') :
       st.error ? React.createElement('div',{ className:'empty-suggest'}, st.error) :
-      st.suggestions.length ? st.suggestions.map((tg:any)=> React.createElement('div',{ key:tg.id, onClick:()=> addTag(parseInt(tg.id,10)) }, tg.name+' (#'+tg.id+')')) :
+      st.suggestions.length ? st.suggestions.map((tg:any)=> React.createElement('div',{ key:tg.id, onClick:(e:any)=>{ e.stopPropagation(); addTag(parseInt(tg.id,10)); } }, tg.name+' (#'+tg.id+')')) :
       React.createElement('div',{ className:'empty-suggest'}, 'No matches')
     ) : null;
 
-    return React.createElement('div',{ className:'ai-tag-fallback d-flex flex-column w-100' }, [
-      React.createElement('div',{ key:'chips', className:'chips-row d-flex flex-wrap mb-1' }, chips.length? chips : React.createElement('span',{ className:'text-muted small'}, 'No tags selected')), 
-      React.createElement('div',{ key:'mode', className:'mode-bar btn-group mb-1' }, [
-        React.createElement('button',{ key:'inc', type:'button', className:'btn btn-sm '+(st.mode==='include'?'btn-primary':'btn-secondary'), onClick:()=> setPartial({ mode:'include'}) }, '+ Include'),
-        React.createElement('button',{ key:'exc', type:'button', className:'btn btn-sm '+(st.mode==='exclude'?'btn-danger':'btn-secondary'), onClick:()=> setPartial({ mode:'exclude'}) }, '- Exclude')
-      ]),
-      React.createElement('div',{ key:'searchWrap', className:'suggestions position-relative' }, [
-        React.createElement('input',{ key:'inp', type:'text', className:'form-control form-control-sm', value: st.search, placeholder:'Search tags…', onChange:(e:any)=> search(e.target.value) }),
-        suggestionsList
-      ])
+    function onKeyDown(e:any){
+      if(e.key==='Enter'){
+        if(st.suggestions.length){ addTag(parseInt(st.suggestions[0].id,10)); e.preventDefault(); return; }
+        const raw = st.search.trim();
+        if(/^[0-9]+$/.test(raw)){ addTag(parseInt(raw,10)); e.preventDefault(); return; }
+      } else if(e.key==='Backspace' && !st.search){
+        if(st.mode==='include' && include.length){ removeTag(include[include.length-1],'include'); }
+        else if(st.mode==='exclude' && exclude.length){ removeTag(exclude[exclude.length-1],'exclude'); }
+      }
+    }
+
+    const modeBtn = React.createElement('button',{ key:'mode', type:'button', className:'mode-toggle '+st.mode, onClick:(e:any)=>{ e.stopPropagation(); setPartial({ mode: st.mode==='include'?'exclude':'include' }); }, title:'Toggle include/exclude (current '+st.mode+')' }, st.mode==='include'? '+':'-');
+
+    return React.createElement('div',{ className:'ai-tag-fallback unified w-100', onClick:()=>{ /* focus input by dispatching event */ const el:any=document.querySelector('.ai-tag-fallback.unified input.tag-input'); if(el) el.focus(); } }, [
+      modeBtn,
+      chips.length? chips : React.createElement('span',{ key:'ph', className:'text-muted small'}, 'No tags'),
+      React.createElement('input',{ key:'inp', type:'text', className:'tag-input', value: st.search, placeholder:'Search tags…', onChange:(e:any)=> search(e.target.value), onKeyDown, onClick:(e:any)=> e.stopPropagation() }),
+      suggestionsList
     ]);
   }, [forceConfigRerender]);
 
@@ -376,46 +389,11 @@
           ]);
           break;
         case 'tags': {
-          // Preferred UX: dual include/exclude selectors. Try TagSelect first; fallback to TagIDSelect.
-          const TagSelectComp:any = (window as any).PluginApi?.components?.TagSelect || (window as any).TagSelect || null;
-          const TagIDSelectComp:any = (window as any).PluginApi?.components?.TagIDSelect || (window as any).TagIDSelect || (window as any).TagSelectID || null;
+          // Always use custom fallback - no native TagSelect/TagIDSelect components
           let includeIds:number[] = []; let excludeIds:number[] = [];
           if(Array.isArray(val)) includeIds = val; else if(val && typeof val==='object'){ includeIds = Array.isArray(val.include)? val.include: []; excludeIds = Array.isArray(val.exclude)? val.exclude: []; }
-          if(TagSelectComp){
-            const cacheKey = field.name + '__objCache';
-            if(!compositeRawRef.current[cacheKey]) compositeRawRef.current[cacheKey] = { include: [], exclude: [], byId: {} };
-            const cache = compositeRawRef.current[cacheKey];
-            function syncCache(listType:'include'|'exclude', ids:number[]){
-              cache[listType] = cache[listType].filter((o:any)=> ids.includes(parseInt(o.id,10)));
-              ids.forEach(id=>{ const sid=String(id); if(!cache.byId[sid]){ const obj={ id: sid, name: cache.byId[sid]?.name || sid, aliases: [] }; cache.byId[sid]=obj; cache[listType].push(obj); } });
-            }
-            syncCache('include', includeIds);
-            syncCache('exclude', excludeIds);
-            const handleSelectInclude = (items:any[])=>{ cache.include = items; items.forEach((it:any)=> cache.byId[it.id]=it); includeIds = items.map((it:any)=> parseInt(it.id,10)).filter((n:number)=>!isNaN(n)); updateConfigField(field.name, { include: includeIds, exclude: excludeIds }); };
-            const handleSelectExclude = (items:any[])=>{ cache.exclude = items; items.forEach((it:any)=> cache.byId[it.id]=it); excludeIds = items.map((it:any)=> parseInt(it.id,10)).filter((n:number)=>!isNaN(n)); updateConfigField(field.name, { include: includeIds, exclude: excludeIds }); };
-            control = React.createElement('div',{ className:'d-flex flex-column w-100'}, [
-              React.createElement('div',{ key:'inclbl', className:'small text-muted mb-1' }, 'Include'),
-              React.createElement(TagSelectComp, { key:'incsel', isMulti:true, values: cache.include, onSelect: handleSelectInclude, className:'w-100 tag-select-include' }),
-              React.createElement('div',{ key:'exclbl', className:'small text-muted mb-1 mt-2' }, 'Exclude'),
-        React.createElement(TagSelectComp, { key:'excsel', isMulti:true, values: cache.exclude, onSelect: handleSelectExclude, className:'w-100 tag-select-exclude' })
-            ]);
-          } else if(TagIDSelectComp){
-            // Fallback to ID-based selector components (still provide search + tag name resolution internally)
-            const handleSelectIncludeIDs = (ids:any[])=>{ includeIds = (ids||[]).map((n:any)=> parseInt(n.id||n,10)).filter((n:number)=>!isNaN(n)); updateConfigField(field.name, { include: includeIds, exclude: excludeIds }); };
-            const handleSelectExcludeIDs = (ids:any[])=>{ excludeIds = (ids||[]).map((n:any)=> parseInt(n.id||n,10)).filter((n:number)=>!isNaN(n)); updateConfigField(field.name, { include: includeIds, exclude: excludeIds }); };
-            // Normalize to stringify form TagIDSelect might expect (array of numbers or objects with id?)
-            const includeVals = includeIds;
-            const excludeVals = excludeIds;
-            control = React.createElement('div',{ className:'d-flex flex-column w-100'}, [
-              React.createElement('div',{ key:'inclbl', className:'small text-muted mb-1' }, 'Include'),
-              React.createElement(TagIDSelectComp, { key:'incsel', isMulti:true, values: includeVals, onSelect: handleSelectIncludeIDs, className:'w-100 tagid-select-include' }),
-              React.createElement('div',{ key:'exclbl', className:'small text-muted mb-1 mt-2' }, 'Exclude'),
-        React.createElement(TagIDSelectComp, { key:'excsel', isMulti:true, values: excludeVals, onSelect: handleSelectExcludeIDs, className:'w-100 tagid-select-exclude' })
-            ]);
-          } else {
-            // Custom searchable include/exclude fallback with chips.
-            control = React.createElement(TagIncludeExcludeFallback, { fieldName: field.name, value: { include: includeIds, exclude: excludeIds }, onChange:(next:any)=> updateConfigField(field.name, next) });
-          }
+          // Custom searchable include/exclude fallback with chips.
+          control = React.createElement(TagIncludeExcludeFallback, { fieldName: field.name, value: { include: includeIds, exclude: excludeIds }, onChange:(next:any)=> updateConfigField(field.name, next) });
           break; }
         case 'performers': {
           // Performer native selector not yet integrated; keep fallback for now.
