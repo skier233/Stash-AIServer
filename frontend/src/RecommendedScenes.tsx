@@ -181,10 +181,181 @@
 
   // ---------------- Fallback Tag Include/Exclude Selector (Unified) -----------------
   // Sole implementation: single bar with inline mode toggle (+ include / - exclude) and chips inline.
-  const TagIncludeExcludeFallback = React.useCallback(({ value, onChange, fieldName }: { value:any; onChange:(next:any)=>void; fieldName:string }) => {
+  // Constraint Editor Component
+  const ConstraintEditor = React.useCallback(({ tagId, constraint, tagName, onSave, onCancel }: any) => {
+    const [localConstraint, setLocalConstraint] = React.useState(constraint);
+
+    // Reset local state when constraint prop changes (e.g., when switching constraint types)
+    React.useEffect(() => {
+      setLocalConstraint(constraint);
+    }, [constraint]);
+
+    const constraintTypes = [
+      { value: 'presence', label: 'Include/Exclude' },
+      { value: 'duration', label: 'Duration Filter' },
+      { value: 'overlap', label: 'Co-occurrence' },
+      { value: 'importance', label: 'Importance Weight' }
+    ];
+
+    function handleTypeChange(newType: string) {
+      let newConstraint: any = { type: newType };
+      
+      // Initialize default values for each constraint type
+      switch(newType) {
+        case 'presence':
+          newConstraint.presence = 'include';
+          break;
+        case 'duration':
+          newConstraint.duration = { min: 10, max: 60, unit: 'percent' };
+          break;
+        case 'overlap':
+          newConstraint.overlap = { minDuration: 5, maxDuration: 30, unit: 'percent' };
+          break;
+        case 'importance':
+          newConstraint.importance = 0.5;
+          break;
+      }
+      
+      setLocalConstraint(newConstraint);
+    }
+
+    function renderOptions() {
+      switch(localConstraint.type) {
+        case 'presence':
+          return React.createElement('div', { className: 'constraint-options' }, [
+            React.createElement('label', { key: 'label' }, 'Mode: '),
+            React.createElement('select', { 
+              key: 'select',
+              value: localConstraint.presence || 'include',
+              onChange: (e: any) => setLocalConstraint((prev: any) => ({ ...prev, presence: e.target.value }))
+            }, [
+              React.createElement('option', { key: 'inc', value: 'include' }, 'Include'),
+              React.createElement('option', { key: 'exc', value: 'exclude' }, 'Exclude')
+            ])
+          ]);
+        case 'duration':
+          return React.createElement('div', { className: 'constraint-options' }, [
+            React.createElement('div', { key: 'range' }, [
+              React.createElement('label', { key: 'label' }, 'Duration: '),
+              React.createElement('input', { 
+                key: 'min', type: 'number', placeholder: 'Min',
+                value: localConstraint.duration?.min || '',
+                onChange: (e: any) => setLocalConstraint((prev: any) => ({ 
+                  ...prev, 
+                  duration: { ...prev.duration, min: e.target.value ? Number(e.target.value) : undefined }
+                }))
+              }),
+              React.createElement('span', { key: 'dash' }, ' - '),
+              React.createElement('input', { 
+                key: 'max', type: 'number', placeholder: 'Max',
+                value: localConstraint.duration?.max || '',
+                onChange: (e: any) => setLocalConstraint((prev: any) => ({ 
+                  ...prev, 
+                  duration: { ...prev.duration, max: e.target.value ? Number(e.target.value) : undefined }
+                }))
+              })
+            ]),
+            React.createElement('div', { key: 'unit' }, [
+              React.createElement('label', { key: 'label' }, 'Unit: '),
+              React.createElement('select', { 
+                key: 'select',
+                value: localConstraint.duration?.unit || 'percent',
+                onChange: (e: any) => setLocalConstraint((prev: any) => ({ 
+                  ...prev, 
+                  duration: { ...prev.duration, unit: e.target.value }
+                }))
+              }, [
+                React.createElement('option', { key: 'pct', value: 'percent' }, '% of video'),
+                React.createElement('option', { key: 'sec', value: 'seconds' }, 'Seconds')
+              ])
+            ])
+          ]);
+        case 'overlap':
+          return React.createElement('div', { className: 'constraint-options' }, [
+            React.createElement('div', { key: 'info' }, 'Co-occurrence with other tags'),
+            React.createElement('div', { key: 'range' }, [
+              React.createElement('label', { key: 'label' }, 'Min overlap: '),
+              React.createElement('input', { 
+                key: 'min', type: 'number', placeholder: 'Min',
+                value: localConstraint.overlap?.minDuration || '',
+                onChange: (e: any) => setLocalConstraint((prev: any) => ({ 
+                  ...prev, 
+                  overlap: { ...prev.overlap, minDuration: e.target.value ? Number(e.target.value) : undefined }
+                }))
+              }),
+              React.createElement('span', { key: 'dash' }, ' - '),
+              React.createElement('input', { 
+                key: 'max', type: 'number', placeholder: 'Max',
+                value: localConstraint.overlap?.maxDuration || '',
+                onChange: (e: any) => setLocalConstraint((prev: any) => ({ 
+                  ...prev, 
+                  overlap: { ...prev.overlap, maxDuration: e.target.value ? Number(e.target.value) : undefined }
+                }))
+              })
+            ]),
+            React.createElement('div', { key: 'unit' }, [
+              React.createElement('label', { key: 'label' }, 'Unit: '),
+              React.createElement('select', { 
+                key: 'select',
+                value: localConstraint.overlap?.unit || 'percent',
+                onChange: (e: any) => setLocalConstraint((prev: any) => ({ 
+                  ...prev, 
+                  overlap: { ...prev.overlap, unit: e.target.value }
+                }))
+              }, [
+                React.createElement('option', { key: 'pct', value: 'percent' }, '% of video'),
+                React.createElement('option', { key: 'sec', value: 'seconds' }, 'Seconds')
+              ])
+            ])
+          ]);
+        case 'importance':
+          return React.createElement('div', { className: 'constraint-options' }, [
+            React.createElement('label', { key: 'label' }, 'Weight (0.0 - 1.0): '),
+            React.createElement('input', { 
+              key: 'input', type: 'number', step: '0.1', min: '0', max: '1',
+              value: localConstraint.importance || 0.5,
+              onChange: (e: any) => setLocalConstraint((prev: any) => ({ ...prev, importance: Number(e.target.value) }))
+            })
+          ]);
+        default:
+          return null;
+      }
+    }
+
+    return React.createElement('div', {}, [
+      React.createElement('div', { key: 'title', style: { fontWeight: 'bold', marginBottom: '6px' } }, `Configure: ${tagName}`),
+      React.createElement('div', { key: 'type', className: 'constraint-type' }, [
+        React.createElement('label', { key: 'label' }, 'Type: '),
+        React.createElement('select', { 
+          key: 'select',
+          value: localConstraint.type,
+          onChange: (e: any) => handleTypeChange(e.target.value)
+        }, constraintTypes.map(ct => React.createElement('option', { key: ct.value, value: ct.value }, ct.label)))
+      ]),
+      renderOptions(),
+      React.createElement('div', { key: 'actions', className: 'constraint-actions' }, [
+        React.createElement('button', { 
+          key: 'save', className: 'btn-save',
+          onClick: () => {
+            console.log('Save button clicked, localConstraint:', localConstraint);
+            onSave(localConstraint);
+          }
+        }, 'Save'),
+        React.createElement('button', { 
+          key: 'cancel', className: 'btn-cancel',
+          onClick: onCancel
+        }, 'Cancel')
+      ])
+    ]);
+  }, []);
+
+  const TagIncludeExcludeFallback = ({ value, onChange, fieldName }: { value:any; onChange:(next:any)=>void; fieldName:string }) => {
     const v = value || {};
     const include:number[] = Array.isArray(v) ? v : Array.isArray(v.include) ? v.include : [];
     const exclude:number[] = Array.isArray(v) ? [] : Array.isArray(v.exclude) ? v.exclude : [];
+    
+    // Enhanced value structure for constraints
+    const constraints = v.constraints || {};
     
     // Use React state instead of ref-based state to avoid focus issues
     const [searchState, setSearchState] = React.useState({
@@ -195,6 +366,8 @@
       error: null as string|null,
       showDropdown: false
     });
+    
+    const [constraintPopup, setConstraintPopup] = React.useState(null as any);
     
     const nameMapKey = fieldName + '__tagNameMap';
     if(!compositeRawRef.current[nameMapKey]){
@@ -211,29 +384,68 @@
         .ai-tag-fallback .mode-toggle { padding:2px 6px; font-size:11px; line-height:1.1; border-radius:3px; border:1px solid transparent; cursor:pointer; font-weight:600; }
         .ai-tag-fallback .mode-toggle.include { background:#1f3d23; border-color:#2d6a36; color:#8ee19b; }
         .ai-tag-fallback .mode-toggle.exclude { background:#4a1b1b; border-color:#a33; color:#f08a8a; }
-        .ai-tag-fallback .tag-chip { display:inline-flex; align-items:center; gap:4px; border-radius:3px; padding:2px 6px; font-size:11px; font-weight:500; border:1px solid; }
+        .ai-tag-fallback .tag-chip { display:inline-flex; align-items:center; gap:2px; border-radius:3px; padding:2px 6px; font-size:11px; font-weight:500; border:1px solid; position:relative; }
         .ai-tag-fallback .tag-chip.include { background:#1f4d2a; border-color:#2e7d32; color:#cfe8d0; }
         .ai-tag-fallback .tag-chip.exclude { background:#5c1f1f; border-color:#b33; color:#f5d0d0; }
+        .ai-tag-fallback .tag-chip.duration { background:#2a3f5f; border-color:#4a90e2; color:#cfe8ff; }
+        .ai-tag-fallback .tag-chip.overlap { background:#5f3f2a; border-color:#e2904a; color:#ffeacf; }
+        .ai-tag-fallback .tag-chip.importance { background:#5f2a5f; border-color:#9b4a9b; color:#f5d0f5; }
         .ai-tag-fallback .tag-chip button { background:transparent; border:none; cursor:pointer; padding:0 0 0 2px; font-size:13px; line-height:1; color:inherit; }
+        .ai-tag-fallback .tag-chip .constraint-btn { background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.2); border-radius:2px; padding:1px 3px; font-size:9px; margin-left:2px; cursor:pointer; }
+        .ai-tag-fallback .tag-chip .constraint-btn:hover { background:rgba(255,255,255,0.2); }
         .ai-tag-fallback input.tag-input { flex:1; min-width:120px; border:none; outline:none; background:transparent; color:#fff; padding:2px 4px; font-size:12px; }
         .ai-tag-fallback input.tag-input::placeholder { color:#667; }
         .ai-tag-fallback .suggestions-list { position:absolute; z-index:30; left:-1px; right:-1px; top:100%; margin-top:2px; background:#1f2225; border:1px solid #333; max-height:220px; overflow:auto; border-radius:4px; box-shadow:0 4px 12px rgba(0,0,0,0.45); }
         .ai-tag-fallback .suggestions-list div { padding:5px 8px; cursor:pointer; font-size:11px; }
         .ai-tag-fallback .suggestions-list div:hover { background:#2d3236; }
         .ai-tag-fallback .empty-suggest { padding:6px 8px; font-size:11px; color:#889; }
+        .constraint-popup { position:fixed; z-index:100; background:#1a1d21; border:1px solid #333; border-radius:6px; padding:8px; box-shadow:0 4px 12px rgba(0,0,0,0.6); font-size:11px; min-width:200px; }
+        .constraint-popup .constraint-type { margin-bottom:6px; }
+        .constraint-popup .constraint-type select { width:100%; padding:2px 4px; background:#24272b; border:1px solid #333; border-radius:3px; color:#fff; font-size:11px; }
+        .constraint-popup .constraint-options { margin-bottom:6px; }
+        .constraint-popup .constraint-options input, .constraint-popup .constraint-options select { width:60px; padding:2px 4px; background:#24272b; border:1px solid #333; border-radius:3px; color:#fff; font-size:10px; margin:1px; }
+        .constraint-popup .constraint-actions { display:flex; gap:4px; }
+        .constraint-popup .constraint-actions button { padding:3px 6px; font-size:10px; border:none; border-radius:3px; cursor:pointer; }
+        .constraint-popup .btn-save { background:#2e7d32; color:#fff; }
+        .constraint-popup .btn-cancel { background:#666; color:#fff; }
       `; document.head.appendChild(s); }
 
     function removeTag(id:number, list:'include'|'exclude'){
-      const nextInclude = list==='include'? include.filter(i=>i!==id): include;
-      const nextExclude = list==='exclude'? exclude.filter(i=>i!==id): exclude;
-      onChange({ include: nextInclude, exclude: nextExclude });
+      const nextInclude = list==='include'? include.filter((i:any)=>i!==id): include;
+      const nextExclude = list==='exclude'? exclude.filter((i:any)=>i!==id): exclude;
+      // Also remove constraints for this tag
+      const nextConstraints = {...constraints};
+      delete nextConstraints[id];
+      onChange({ include: nextInclude, exclude: nextExclude, constraints: nextConstraints });
+    }
+
+    function updateTagConstraint(tagId: number, constraint: any) {
+      console.log('Updating constraint for tag', tagId, 'with constraint:', constraint);
+      const nextConstraints = {...constraints, [tagId]: constraint};
+      console.log('New constraints object:', { include, exclude, constraints: nextConstraints });
+      onChange({ include, exclude, constraints: nextConstraints });
+    }
+
+    function getTagConstraint(tagId: number) {
+      const constraint = constraints[tagId] || { type: 'presence', presence: include.includes(tagId) ? 'include' : 'exclude' };
+      console.log('Getting constraint for tag', tagId, ':', constraint);
+      return constraint;
+    }
+
+    function showConstraintPopup(tagId: number, event: any) {
+      const rect = event.target.getBoundingClientRect();
+      setConstraintPopup({
+        tagId,
+        position: { x: rect.left, y: rect.bottom + 5 }
+      });
+      event.stopPropagation();
     }
 
     function addTag(id:number, name?:string){
       if(searchState.mode==='include'){
-        if(!include.includes(id)) onChange({ include: [...include,id], exclude });
+        if(!include.includes(id)) onChange({ include: [...include,id], exclude, constraints });
       } else {
-        if(!exclude.includes(id)) onChange({ include, exclude:[...exclude,id] });
+        if(!exclude.includes(id)) onChange({ include, exclude:[...exclude,id], constraints });
       }
       // Store tag name for display if provided
       if(name) {
@@ -280,20 +492,71 @@
         if (!target.closest('.ai-tag-fallback.unified')) {
           setSearchState((prev: any) => ({ ...prev, showDropdown: false }));
         }
+        // Close constraint popup when clicking outside
+        if (!target.closest('.constraint-popup') && !target.closest('.constraint-btn')) {
+          setConstraintPopup(null);
+        }
       }
-      if (searchState.showDropdown) {
+      if (searchState.showDropdown || constraintPopup) {
         document.addEventListener('click', handleClickOutside);
         return () => document.removeEventListener('click', handleClickOutside);
       }
-    }, [searchState.showDropdown]);
+    }, [searchState.showDropdown, constraintPopup]);
+
     const chips: any[] = [];
     include.forEach(id=> {
       const tagName = tagNameMap[id] || `Tag ${id}`;
-      chips.push(React.createElement('span',{ key:'i'+id, className:'tag-chip include' }, [tagName, React.createElement('button',{ key:'x', onClick:(e:any)=>{ e.stopPropagation(); removeTag(id,'include'); }, title:'Remove' }, '×')]));
+      const constraint = getTagConstraint(id);
+      const chipClass = `tag-chip ${constraint.type === 'presence' ? 'include' : constraint.type}`;
+      
+      // Add constraint indicator text
+      let constraintText = '';
+      if (constraint.type === 'duration' && constraint.duration) {
+        const min = constraint.duration.min || 0;
+        const max = constraint.duration.max || '∞';
+        const unit = constraint.duration.unit === 'percent' ? '%' : 's';
+        constraintText = ` [${min}-${max}${unit}]`;
+      } else if (constraint.type === 'overlap' && constraint.overlap) {
+        const min = constraint.overlap.minDuration || 0;
+        const max = constraint.overlap.maxDuration || '∞';
+        const unit = constraint.overlap.unit === 'percent' ? '%' : 's';
+        constraintText = ` [overlap ${min}-${max}${unit}]`;
+      } else if (constraint.type === 'importance' && constraint.importance !== undefined) {
+        constraintText = ` [×${constraint.importance.toFixed(1)}]`;
+      }
+      
+      chips.push(React.createElement('span',{ key:'i'+id, className: chipClass }, [
+        tagName + constraintText,
+        React.createElement('button',{ key:'gear', className:'constraint-btn', onClick:(e:any)=> showConstraintPopup(id, e), title:'Configure constraint' }, '⚙'),
+        React.createElement('button',{ key:'x', onClick:(e:any)=>{ e.stopPropagation(); removeTag(id,'include'); }, title:'Remove' }, '×')
+      ]));
     });
     exclude.forEach(id=> {
       const tagName = tagNameMap[id] || `Tag ${id}`;
-      chips.push(React.createElement('span',{ key:'e'+id, className:'tag-chip exclude' }, [tagName, React.createElement('button',{ key:'x', onClick:(e:any)=>{ e.stopPropagation(); removeTag(id,'exclude'); }, title:'Remove' }, '×')]));
+      const constraint = getTagConstraint(id);
+      const chipClass = `tag-chip ${constraint.type === 'presence' ? 'exclude' : constraint.type}`;
+      
+      // Add constraint indicator text
+      let constraintText = '';
+      if (constraint.type === 'duration' && constraint.duration) {
+        const min = constraint.duration.min || 0;
+        const max = constraint.duration.max || '∞';
+        const unit = constraint.duration.unit === 'percent' ? '%' : 's';
+        constraintText = ` [${min}-${max}${unit}]`;
+      } else if (constraint.type === 'overlap' && constraint.overlap) {
+        const min = constraint.overlap.minDuration || 0;
+        const max = constraint.overlap.maxDuration || '∞';
+        const unit = constraint.overlap.unit === 'percent' ? '%' : 's';
+        constraintText = ` [overlap ${min}-${max}${unit}]`;
+      } else if (constraint.type === 'importance' && constraint.importance !== undefined) {
+        constraintText = ` [×${constraint.importance.toFixed(1)}]`;
+      }
+      
+      chips.push(React.createElement('span',{ key:'e'+id, className: chipClass }, [
+        tagName + constraintText,
+        React.createElement('button',{ key:'gear', className:'constraint-btn', onClick:(e:any)=> showConstraintPopup(id, e), title:'Configure constraint' }, '⚙'),
+        React.createElement('button',{ key:'x', onClick:(e:any)=>{ e.stopPropagation(); removeTag(id,'exclude'); }, title:'Remove' }, '×')
+      ]));
     });
 
     const suggestionsList = (searchState.showDropdown || searchState.search) && (searchState.suggestions.length || searchState.loading || searchState.error) ? React.createElement('div',{ className:'suggestions-list', key:'list' },
@@ -328,19 +591,43 @@
           removeTag(include[include.length-1],'include');
         }
       } else if(e.key==='Escape'){
-        setSearchState((prev: any) => ({ ...prev, showDropdown: false, search: '', suggestions: [] }));
+        if(constraintPopup) {
+          setConstraintPopup(null);
+        } else {
+          setSearchState((prev: any) => ({ ...prev, showDropdown: false, search: '', suggestions: [] }));
+        }
       }
     }
 
     const modeBtn = React.createElement('button',{ key:'mode', type:'button', className:'mode-toggle '+searchState.mode, onClick:(e:any)=>{ e.stopPropagation(); setSearchState((prev: any) => ({ ...prev, mode: prev.mode==='include'?'exclude':'include' })); }, title:'Toggle include/exclude (current '+searchState.mode+')' }, searchState.mode==='include'? '+':'-');
 
+    // Constraint popup component
+    const constraintPopupEl = constraintPopup ? React.createElement('div', {
+      className: 'constraint-popup',
+      style: { left: constraintPopup.position.x + 'px', top: constraintPopup.position.y + 'px' },
+      onClick: (e: any) => e.stopPropagation()
+    }, [
+      React.createElement(ConstraintEditor, {
+        key: 'editor',
+        tagId: constraintPopup.tagId,
+        constraint: getTagConstraint(constraintPopup.tagId),
+        tagName: tagNameMap[constraintPopup.tagId] || `Tag ${constraintPopup.tagId}`,
+        onSave: (constraint: any) => {
+          updateTagConstraint(constraintPopup.tagId, constraint);
+          setConstraintPopup(null);
+        },
+        onCancel: () => setConstraintPopup(null)
+      })
+    ]) : null;
+
     return React.createElement('div',{ className:'ai-tag-fallback unified w-100', onClick:()=>{ /* focus input by dispatching event */ const el:any=document.querySelector('.ai-tag-fallback.unified input.tag-input'); if(el) el.focus(); } }, [
       modeBtn,
       chips.length? chips : React.createElement('span',{ key:'ph', className:'text-muted small'}, 'No tags'),
       React.createElement('input',{ key:'inp', type:'text', className:'tag-input', value: searchState.search, placeholder:'Search tags…', onChange:(e:any)=> search(e.target.value), onKeyDown, onFocus: onInputFocus, onClick:(e:any)=> e.stopPropagation() }),
-      suggestionsList
+      suggestionsList,
+      constraintPopupEl
     ]);
-  }, []);
+  };
 
   // Initialize defaults when recommender changes
   useEffect(()=>{
@@ -451,10 +738,16 @@
           break;
         case 'tags': {
           // Always use custom fallback - no native TagSelect/TagIDSelect components
-          let includeIds:number[] = []; let excludeIds:number[] = [];
-          if(Array.isArray(val)) includeIds = val; else if(val && typeof val==='object'){ includeIds = Array.isArray(val.include)? val.include: []; excludeIds = Array.isArray(val.exclude)? val.exclude: []; }
+          let includeIds:number[] = []; let excludeIds:number[] = []; let constraints:any = {};
+          if(Array.isArray(val)) {
+            includeIds = val; 
+          } else if(val && typeof val==='object'){ 
+            includeIds = Array.isArray(val.include)? val.include: []; 
+            excludeIds = Array.isArray(val.exclude)? val.exclude: []; 
+            constraints = val.constraints || {};
+          }
           // Custom searchable include/exclude fallback with chips.
-          control = React.createElement(TagIncludeExcludeFallback, { fieldName: field.name, value: { include: includeIds, exclude: excludeIds }, onChange:(next:any)=> updateConfigField(field.name, next) });
+          control = React.createElement(TagIncludeExcludeFallback, { fieldName: field.name, value: { include: includeIds, exclude: excludeIds, constraints }, onChange:(next:any)=> updateConfigField(field.name, next) });
           break; }
         case 'performers': {
           // Performer native selector not yet integrated; keep fallback for now.
