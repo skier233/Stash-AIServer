@@ -185,18 +185,23 @@
     const v = value || {};
     const include:number[] = Array.isArray(v) ? v : Array.isArray(v.include) ? v.include : [];
     const exclude:number[] = Array.isArray(v) ? [] : Array.isArray(v.exclude) ? v.exclude : [];
-    const stateKey = fieldName + '__fbTagState';
+    
+    // Use React state instead of ref-based state to avoid focus issues
+    const [searchState, setSearchState] = React.useState({
+      mode: 'include' as 'include'|'exclude',
+      search: '',
+      suggestions: [] as any[],
+      loading: false,
+      error: null as string|null,
+      showDropdown: false
+    });
+    
     const nameMapKey = fieldName + '__tagNameMap';
-    if(!compositeRawRef.current[stateKey]){
-      compositeRawRef.current[stateKey] = { mode:'include', search:'', suggestions:[], loading:false, lastTerm:'', debounceTimer:null as any, error:null as string|null, showDropdown:false };
-    }
     if(!compositeRawRef.current[nameMapKey]){
       compositeRawRef.current[nameMapKey] = {};
     }
-    const st = compositeRawRef.current[stateKey];
     const tagNameMap = compositeRawRef.current[nameMapKey];
-
-    function setPartial(p:any){ Object.assign(st, p); forceConfigRerender(); }
+    const debounceTimerRef = React.useRef(null as any);
 
     // Inject styles once
     if(typeof document!=='undefined' && !document.getElementById('ai-tag-fallback-style')){
@@ -225,7 +230,7 @@
     }
 
     function addTag(id:number, name?:string){
-      if(st.mode==='include'){
+      if(searchState.mode==='include'){
         if(!include.includes(id)) onChange({ include: [...include,id], exclude });
       } else {
         if(!exclude.includes(id)) onChange({ include, exclude:[...exclude,id] });
@@ -235,16 +240,15 @@
         tagNameMap[id] = name;
       }
       // Clear search & suggestions after add
-      setPartial({ search:'', suggestions:[], lastTerm:'', showDropdown:false });
+      setSearchState((prev: any) => ({ ...prev, search:'', suggestions:[], showDropdown:false }));
     }
 
     function search(term:string){
-      if(st.debounceTimer) clearTimeout(st.debounceTimer);
-      setPartial({ search: term });
-      st.debounceTimer = setTimeout(async()=>{
-        const q = st.search.trim();
-        if(q === st.lastTerm) return;
-        setPartial({ loading:true, error:null, showDropdown:true });
+      if(debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+      setSearchState((prev: any) => ({ ...prev, search: term }));
+      debounceTimerRef.current = setTimeout(async()=>{
+        const q = term.trim();
+        setSearchState((prev: any) => ({ ...prev, loading:true, error:null, showDropdown:true }));
         try {
           // Updated query: show all tags if no search term, or filter by name
           const gql = q 
@@ -256,15 +260,15 @@
           const json = await res.json();
           if(json.errors){ throw new Error(json.errors.map((e:any)=> e.message).join('; ')); }
           const tags = json?.data?.findTags?.tags || [];
-          setPartial({ suggestions: tags, lastTerm:q, loading:false, error: tags.length? null: null });
-        } catch(e:any){ setPartial({ error: 'Search failed', loading:false }); }
+          setSearchState((prev: any) => ({ ...prev, suggestions: tags, loading:false, error: tags.length? null: null }));
+        } catch(e:any){ setSearchState((prev: any) => ({ ...prev, error: 'Search failed', loading:false })); }
       }, 250);
     }
 
     function onInputFocus(){
-      if(!st.showDropdown && !st.search.trim()){
+      if(!searchState.showDropdown){
         // Show popular tags or empty search when focused
-        setPartial({ showDropdown: true });
+        setSearchState((prev: any) => ({ ...prev, showDropdown: true }));
         search(''); // This will trigger a search for all tags
       }
     }
@@ -274,14 +278,14 @@
       function handleClickOutside(event: Event) {
         const target = event.target as Element;
         if (!target.closest('.ai-tag-fallback.unified')) {
-          setPartial({ showDropdown: false });
+          setSearchState((prev: any) => ({ ...prev, showDropdown: false }));
         }
       }
-      if (st.showDropdown) {
+      if (searchState.showDropdown) {
         document.addEventListener('click', handleClickOutside);
         return () => document.removeEventListener('click', handleClickOutside);
       }
-    }, [st.showDropdown]);
+    }, [searchState.showDropdown]);
     const chips: any[] = [];
     include.forEach(id=> {
       const tagName = tagNameMap[id] || `Tag ${id}`;
@@ -292,46 +296,51 @@
       chips.push(React.createElement('span',{ key:'e'+id, className:'tag-chip exclude' }, [tagName, React.createElement('button',{ key:'x', onClick:(e:any)=>{ e.stopPropagation(); removeTag(id,'exclude'); }, title:'Remove' }, '×')]));
     });
 
-    const suggestionsList = (st.showDropdown || st.search) && (st.suggestions.length || st.loading || st.error) ? React.createElement('div',{ className:'suggestions-list', key:'list' },
-      st.loading ? React.createElement('div',{ className:'empty-suggest'}, 'Searching…') :
-      st.error ? React.createElement('div',{ className:'empty-suggest'}, st.error) :
-      st.suggestions.length ? st.suggestions.map((tg:any)=> React.createElement('div',{ key:tg.id, onClick:(e:any)=>{ e.stopPropagation(); addTag(parseInt(tg.id,10), tg.name); } }, tg.name+' (#'+tg.id+')')) :
+    const suggestionsList = (searchState.showDropdown || searchState.search) && (searchState.suggestions.length || searchState.loading || searchState.error) ? React.createElement('div',{ className:'suggestions-list', key:'list' },
+      searchState.loading ? React.createElement('div',{ className:'empty-suggest'}, 'Searching…') :
+      searchState.error ? React.createElement('div',{ className:'empty-suggest'}, searchState.error) :
+      searchState.suggestions.length ? searchState.suggestions.map((tg:any)=> React.createElement('div',{ key:tg.id, onClick:(e:any)=>{ e.stopPropagation(); addTag(parseInt(tg.id,10), tg.name); } }, tg.name+' (#'+tg.id+')')) :
       React.createElement('div',{ className:'empty-suggest'}, 'No matches')
     ) : null;
 
     function onKeyDown(e:any){
       if(e.key==='Enter'){
-        if(st.suggestions.length){ 
-          const firstTag = st.suggestions[0];
+        if(searchState.suggestions.length){ 
+          const firstTag = searchState.suggestions[0];
           addTag(parseInt(firstTag.id,10), firstTag.name); 
           e.preventDefault(); 
           return; 
         }
-        const raw = st.search.trim();
+        const raw = searchState.search.trim();
         if(/^[0-9]+$/.test(raw)){ addTag(parseInt(raw,10)); e.preventDefault(); return; }
-      } else if(e.key==='Backspace' && !st.search){
-        // Always remove from current mode's list
-        if(st.mode==='include' && include.length){ 
+      } else if(e.key==='Backspace' && !searchState.search){
+        // Remove from current mode's list, or fallback to the other mode if current is empty
+        e.preventDefault();
+        if(searchState.mode==='include' && include.length){ 
           removeTag(include[include.length-1],'include'); 
-          e.preventDefault();
-        } else if(st.mode==='exclude' && exclude.length){ 
+        } else if(searchState.mode==='exclude' && exclude.length){ 
           removeTag(exclude[exclude.length-1],'exclude'); 
-          e.preventDefault();
+        } else if(searchState.mode==='include' && !include.length && exclude.length){
+          // If include mode but no include tags, remove from exclude
+          removeTag(exclude[exclude.length-1],'exclude');
+        } else if(searchState.mode==='exclude' && !exclude.length && include.length){
+          // If exclude mode but no exclude tags, remove from include
+          removeTag(include[include.length-1],'include');
         }
       } else if(e.key==='Escape'){
-        setPartial({ showDropdown: false, search: '', suggestions: [] });
+        setSearchState((prev: any) => ({ ...prev, showDropdown: false, search: '', suggestions: [] }));
       }
     }
 
-    const modeBtn = React.createElement('button',{ key:'mode', type:'button', className:'mode-toggle '+st.mode, onClick:(e:any)=>{ e.stopPropagation(); setPartial({ mode: st.mode==='include'?'exclude':'include' }); }, title:'Toggle include/exclude (current '+st.mode+')' }, st.mode==='include'? '+':'-');
+    const modeBtn = React.createElement('button',{ key:'mode', type:'button', className:'mode-toggle '+searchState.mode, onClick:(e:any)=>{ e.stopPropagation(); setSearchState((prev: any) => ({ ...prev, mode: prev.mode==='include'?'exclude':'include' })); }, title:'Toggle include/exclude (current '+searchState.mode+')' }, searchState.mode==='include'? '+':'-');
 
     return React.createElement('div',{ className:'ai-tag-fallback unified w-100', onClick:()=>{ /* focus input by dispatching event */ const el:any=document.querySelector('.ai-tag-fallback.unified input.tag-input'); if(el) el.focus(); } }, [
       modeBtn,
       chips.length? chips : React.createElement('span',{ key:'ph', className:'text-muted small'}, 'No tags'),
-      React.createElement('input',{ key:'inp', type:'text', className:'tag-input', value: st.search, placeholder:'Search tags…', onChange:(e:any)=> search(e.target.value), onKeyDown, onFocus: onInputFocus, onClick:(e:any)=> e.stopPropagation() }),
+      React.createElement('input',{ key:'inp', type:'text', className:'tag-input', value: searchState.search, placeholder:'Search tags…', onChange:(e:any)=> search(e.target.value), onKeyDown, onFocus: onInputFocus, onClick:(e:any)=> e.stopPropagation() }),
       suggestionsList
     ]);
-  }, [forceConfigRerender]);
+  }, []);
 
   // Initialize defaults when recommender changes
   useEffect(()=>{
