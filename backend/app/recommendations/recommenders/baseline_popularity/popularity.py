@@ -17,7 +17,7 @@ import math
         { 'name':'include_studio','label':'Include Studio Name','type':'boolean','default':True },
         { 'name':'note','label':'Annotate','type':'text','default':'baseline run'},
         { 'name':'search_query','label':'Search','type':'search','default':'','help':'Sample search style input' },
-    { 'name':'focus_tags','label':'Focus Tags','type':'tags','default':[],'tag_combination':'and', 'constraint_types':['presence','duration'], 'allowed_combination_modes':['or'] },
+    { 'name':'focus_tags','label':'Focus Tags','type':'tags','default':[],'tag_combination':'and', 'constraint_types':['presence','duration'], 'allowed_combination_modes':['or', 'and'] },
     { 'name':'filter_tags','label':'Filter Tags','type':'tags','default':[],'tag_combination':'or', 'constraint_types':['overlap','importance'], 'allowed_combination_modes':['and'] },
     { 'name':'exclude_tags','label':'Exclude Tags','type':'tags','default':[],'tag_combination':'not-applicable', 'constraint_types':['presence'], 'allowed_combination_modes':['not-applicable'] },
         { 'name':'boost_performers','label':'Boost Performers','type':'performers','default':[] },

@@ -470,14 +470,18 @@
     
     // Use React state instead of ref-based state to avoid focus issues
     // Determine allowed combination modes: default to ['and','or'] unless field restricts.
-    // Resolve allowed modes: prefer an explicit allowedCombinationModes array, otherwise if the field provided
-    // a single initialTagCombination treat that as the only allowed mode. If neither provided, fall back to ['and','or'].
-    const resolvedAllowedModes = Array.isArray(allowedCombinationModes) && allowedCombinationModes.length > 0
-      ? allowedCombinationModes
-      : (typeof initialTagCombination !== 'undefined' ? [initialTagCombination] : ['and','or']);
-    // If the stored value includes a tag_combination, prefer it; otherwise fall back to initialTagCombination or defaults
-    const valueMode = (v && typeof v.tag_combination !== 'undefined') ? v.tag_combination : undefined;
-    const initialMode = (valueMode === 'not-applicable' || (initialTagCombination === 'not-applicable')) ? 'not-applicable' : (valueMode || initialTagCombination || resolvedAllowedModes[0]) as 'and'|'or'|'not-applicable';
+    // Normalize and resolve allowed modes: prefer explicit allowedCombinationModes; else use initialTagCombination; else default ['and','or'].
+    const normalizeMode = (m:any)=> (m==null? undefined : String(m).toLowerCase());
+    const allowedNorm = Array.isArray(allowedCombinationModes) && allowedCombinationModes.length > 0
+      ? allowedCombinationModes.map(normalizeMode).filter(Boolean) as string[]
+      : [];
+    const initLC = typeof initialTagCombination === 'string' ? normalizeMode(initialTagCombination) : undefined;
+    const resolvedAllowedModes = (allowedNorm.length > 0 ? allowedNorm : (typeof initLC !== 'undefined' ? [initLC] : ['and','or'])) as ('and'|'or'|'not-applicable')[];
+    // Determine initial mode from provided value or defaults; treat null/undefined/invalid as first allowed.
+    const rawValueMode:any = (v && Object.prototype.hasOwnProperty.call(v,'tag_combination')) ? v.tag_combination : undefined;
+    const valueMode = normalizeMode(rawValueMode);
+    const isValidMode = (m:any)=> m==='and' || m==='or' || m==='not-applicable';
+    const initialMode = (isValidMode(valueMode) ? valueMode : (isValidMode(initLC) ? initLC : resolvedAllowedModes[0])) as 'and'|'or'|'not-applicable';
     const [searchState, setSearchState] = React.useState({
       search: '',
       suggestions: [] as any[],
@@ -518,12 +522,13 @@
 
     // Sync combinationMode from external value changes (persisted value may arrive asynchronously)
     React.useEffect(()=>{
-      const externalMode = v && v.tag_combination;
-      if(typeof externalMode !== 'undefined' && externalMode !== searchState.combinationMode){
+      const externalModeRaw = v && Object.prototype.hasOwnProperty.call(v,'tag_combination') ? v.tag_combination : undefined;
+      const externalMode = normalizeMode(externalModeRaw);
+      if(externalMode && externalMode !== searchState.combinationMode && (externalMode==='and' || externalMode==='or' || externalMode==='not-applicable')){
         setSearchState((prev:any)=> ({ ...prev, combinationMode: externalMode }));
         console.log('[TagFallback] synced combinationMode from value:', externalMode);
       }
-    }, [v && v.tag_combination]);
+    }, [v && (v as any).tag_combination]);
     
   const [constraintPopup, setConstraintPopup] = React.useState(null as any);
     
@@ -939,7 +944,7 @@
         onChange({ include, exclude, constraints, tag_combination: nextMode });
       } : undefined, 
       title: toggleClickable ? `Toggle combination mode (current: ${searchState.combinationMode})` : `Combination mode: ${searchState.combinationMode} (fixed)`
-    }, searchState.combinationMode.toUpperCase()) : null;
+    }, (searchState.combinationMode ? String(searchState.combinationMode).toUpperCase() : '')) : null;
 
     // Constraint popup component
     const constraintPopupEl = constraintPopup ? React.createElement('div', {
@@ -1033,17 +1038,26 @@
       const st = document.createElement('style');
       st.id='ai-rec-config-style';
       st.textContent = `
-        .ai-rec-config { font-size:12px; }
-        .ai-rec-config .form-group { position:relative; }
-        .ai-rec-config .form-group label { font-weight:500; }
-        .ai-rec-config .switch-inline { display:flex; align-items:center; gap:0.5rem; }
-        .ai-rec-config .range-wrapper { display:flex; align-items:center; gap:0.75rem; }
-        .ai-rec-config .range-value { min-width:42px; text-align:center; font-size:11px; padding:2px 6px; background:#2c2f33; border:1px solid #373a3e; border-radius:4px; }
-        .ai-rec-config .config-row { margin-left:-6px; margin-right:-6px; }
-        .ai-rec-config .config-col { padding:0 6px; }
-        @media (min-width: 992px){ .ai-rec-config .config-col { flex: 0 0 33.333%; max-width:33.333%; } }
-        @media (min-width: 768px) and (max-width: 991.98px){ .ai-rec-config .config-col { flex: 0 0 50%; max-width:50%; } }
-        @media (max-width: 767.98px){ .ai-rec-config .config-col { flex:0 0 100%; max-width:100%; } }
+        .ai-rec-config { font-size:12px; line-height:1.2; }
+        .ai-rec-config .config-row { margin-left:-4px; margin-right:-4px; }
+        .ai-rec-config .config-row > [class*="col-"] { padding-left:4px; padding-right:4px; }
+        .ai-rec-config .form-group { position:relative; margin-bottom:1px; }
+  .ai-rec-config .form-group label { font-weight:500; font-size:10px; margin-bottom:0; line-height:1.2; color:#999; }
+        /* unify control height to 33.5px and padding to 5.25px */
+        .ai-rec-config .form-control { font-size:11px; padding:5.25px 8px; height:33.5px; min-height:33.5px; }
+        .ai-rec-config .form-control-sm { padding:5.25px 8px; font-size:11px; height:33.5px; min-height:33.5px; }
+  .ai-rec-config input[type="range"] { height:16px; margin:0; }
+  .ai-rec-config .zoom-slider { width:100%; height:16px; }
+        .ai-rec-config .switch-inline { display:flex; align-items:center; gap:0.25rem; height:33.5px; }
+        .ai-rec-config .custom-control.custom-switch { display:flex; align-items:center; gap:6px; min-height:33.5px; }
+        .ai-rec-config .custom-control-label { line-height:1.1; }
+  .ai-rec-config .range-wrapper { display:flex; align-items:center; gap:0.25rem; height:33.5px; width:92px; }
+        .ai-rec-config .range-value { min-width:32px; text-align:center; font-size:10px; padding:1px 3px; background:#2c2f33; border:1px solid #373a3e; border-radius:2px; line-height:1.2; height:22px; display:flex; align-items:center; justify-content:center; }
+        .ai-rec-config .text-muted { font-size:10px; }
+        /* width utilities per policy: default cap 180px, tags 400px */
+        .ai-rec-config .w-num { width:72px; }
+        .ai-rec-config .w-180, .ai-rec-config .w-select, .ai-rec-config .w-text, .ai-rec-config .w-search { width:180px; max-width:180px; }
+        .ai-rec-config .w-tags { width:400px; max-width:400px; }
       `;
       document.head.appendChild(st);
     }
@@ -1054,17 +1068,17 @@
       let control:any = null;
       switch(field.type){
         case 'number':
-          control = React.createElement('input',{ id, type:'number', className:'text-input form-control', value: val??'', min: field.min, max: field.max, step: field.step||1, onChange:(e:any)=> updateConfigField(field.name, e.target.value===''? null: Number(e.target.value)) });
+          control = React.createElement('input',{ id, type:'number', className:'text-input form-control form-control-sm w-num', value: val??'', min: field.min, max: field.max, step: field.step||1, onChange:(e:any)=> updateConfigField(field.name, e.target.value===''? null: Number(e.target.value)) });
           break;
         case 'slider':
           control = React.createElement('div',{ className:'range-wrapper' }, [
-            React.createElement('input',{ key:'rng', id, type:'range', className:'zoom-slider ml-1 form-control-range flex-grow-1', value: val ?? field.default ?? 0, min: field.min, max: field.max, step: field.step||1, onChange:(e:any)=> updateConfigField(field.name, Number(e.target.value)) }),
+            React.createElement('input',{ key:'rng', id, type:'range', className:'zoom-slider', value: val ?? field.default ?? 0, min: field.min, max: field.max, step: field.step||1, onChange:(e:any)=> updateConfigField(field.name, Number(e.target.value)) }),
             React.createElement('div',{ key:'val', className:'range-value'}, String(val ?? field.default ?? 0))
           ]);
           break;
         case 'select':
         case 'enum':
-          control = React.createElement('select',{ id, className:'input-control form-control', value: val ?? field.default ?? '', onChange:(e:any)=> updateConfigField(field.name, e.target.value) }, (field.options||[]).map((o:any)=> React.createElement('option',{ key:o.value, value:o.value }, o.label||o.value)));
+          control = React.createElement('select',{ id, className:'input-control form-control form-control-sm w-select w-180', value: val ?? field.default ?? '', onChange:(e:any)=> updateConfigField(field.name, e.target.value) }, (field.options||[]).map((o:any)=> React.createElement('option',{ key:o.value, value:o.value }, o.label||o.value)));
           break;
         case 'boolean':
           control = React.createElement('div',{ className:'custom-control custom-switch'}, [
@@ -1073,11 +1087,11 @@
           ]);
           break;
         case 'text':
-          control = React.createElement('input',{ id, type:'text', className:'text-input form-control', value: val ?? '', placeholder: field.help || '', onChange:(e:any)=> updateConfigField(field.name, e.target.value, { debounce:true, field }) });
+          control = React.createElement('input',{ id, type:'text', className:'text-input form-control form-control-sm w-text w-180', value: val ?? '', placeholder: field.help || '', onChange:(e:any)=> updateConfigField(field.name, e.target.value, { debounce:true, field }) });
           break;
         case 'search':
-          control = React.createElement('div',{ className:'clearable-input-group search-term-input'}, [
-            React.createElement('input',{ key:'in', id, type:'text', className:'clearable-text-field form-control', value: val ?? '', placeholder: field.help || 'Search…', onChange:(e:any)=> updateConfigField(field.name, e.target.value, { debounce:true, field }) })
+          control = React.createElement('div',{ className:'clearable-input-group search-term-input w-180' }, [
+            React.createElement('input',{ key:'in', id, type:'text', className:'clearable-text-field form-control form-control-sm w-180', value: val ?? '', placeholder: field.help || 'Search…', onChange:(e:any)=> updateConfigField(field.name, e.target.value, { debounce:true, field }) })
           ]);
           break;
         case 'tags': {
@@ -1091,39 +1105,47 @@
             constraints = val.constraints || {};
           }
           // Custom searchable include/exclude fallback with chips.
-          control = React.createElement(TagIncludeExcludeFallback, { 
+          control = React.createElement('div', { className:'w-tags' }, React.createElement(TagIncludeExcludeFallback, { 
             fieldName: field.name, 
             value: { include: includeIds, exclude: excludeIds, constraints, tag_combination: val?.tag_combination }, 
             onChange:(next:any)=> updateConfigField(field.name, next),
             initialTagCombination: field.tag_combination,
             allowedConstraintTypes: field.constraint_types,
             allowedCombinationModes: field.allowed_combination_modes
-          });
+          }));
           break; }
         case 'performers': {
           // Performer native selector not yet integrated; keep fallback for now.
           const raw = compositeRawRef.current[field.name] ?? '';
-          control = React.createElement('input',{ id, type:'text', className:'text-input form-control', value: raw, placeholder:'Performer IDs comma-separated', onChange:(e:any)=>{ compositeRawRef.current[field.name] = e.target.value; updateConfigField(field.name, parseIdList(e.target.value)); } });
+          control = React.createElement('input',{ id, type:'text', className:'text-input form-control form-control-sm w-text', value: raw, placeholder:'Performer IDs comma-separated', onChange:(e:any)=>{ compositeRawRef.current[field.name] = e.target.value; updateConfigField(field.name, parseIdList(e.target.value)); } });
           break; }
         default:
           control = React.createElement('div',{ className:'text-muted small'}, 'Unsupported: '+field.type);
       }
       const showLabelAbove = field.type !== 'boolean';
-      const labelNode = showLabelAbove ? React.createElement('label',{ htmlFor:id, className:'small d-flex justify-content-between mb-1' }, [
-        React.createElement('span',{ key:'t' }, field.label || field.name),
+      // Make labels inline-block and only as wide as the control beneath to prevent blocking layout
+      const capWidth = field.type==='tags' ? 400 : (field.type==='slider' ? 92 : (['text','search','select','enum'].includes(field.type) ? 180 : undefined));
+      const labelStyle = capWidth ? { display:'inline-block', width: capWidth+'px', maxWidth: capWidth+'px' } : undefined;
+      const labelNode = showLabelAbove ? React.createElement('label',{ htmlFor:id, className:'form-label d-flex justify-content-between mb-0', style: labelStyle }, [
+        React.createElement('span',{ key:'t', style:{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' } }, field.label || field.name),
         (field.type==='number' || field.type==='slider') && (field.min!=null || field.max!=null) ? React.createElement('span',{ key:'rng', className:'text-muted ml-2'}, `${field.min??''}${field.min!=null||field.max!=null?'–':''}${field.max??''}`) : null
       ]) : null;
-      return React.createElement('div',{ key:field.name, className:'config-col form-group mb-2 d-flex flex-column' }, [labelNode, control]);
+      // Use auto-width columns for compact fields; let large/complex fields take normal grid width
+      const compactTypes = ['number', 'select', 'enum', 'boolean', 'slider', 'text', 'search', 'tags'];
+      const colClass = compactTypes.includes(field.type) ? 'col-auto mb-1' : 'col-lg-4 col-md-6 col-12 mb-1';
+      return React.createElement('div',{ key:field.name, className:colClass }, [
+        React.createElement('div', { className: 'form-group mb-0' }, [labelNode, control])
+      ]);
     });
 
-    return React.createElement('div',{ className:'ai-rec-config border rounded p-2 mb-2 w-100', style:{background:'#202225', borderColor:'#2a2d30'}}, [
-      React.createElement('div',{ key:'hdr', className:'d-flex justify-content-between align-items-center mb-2'}, [
+    return React.createElement('div',{ className:'ai-rec-config mb-1'}, [
+      React.createElement('div',{ key:'hdr', className:'d-flex justify-content-between align-items-center mb-1'}, [
         React.createElement('strong',{ key:'t', className:'small'}, 'Configuration'),
         React.createElement('div',{ key:'actions', className:'d-flex align-items-center gap-2'}, [
           React.createElement('button',{ key:'tgl', className:'btn btn-secondary btn-sm', onClick:()=> setShowConfig((s:any)=>!s) }, showConfig? 'Hide':'Show')
         ])
       ]),
-      showConfig ? React.createElement('div',{ key:'body', className:'config-row d-flex flex-wrap'}, rows) : null
+      showConfig ? React.createElement('div',{ key:'body', className:'config-row row'}, rows) : null
     ]);
   }
 
@@ -1313,7 +1335,7 @@
     const toolbar = React.createElement('div',{ key:'toolbar', role:'toolbar', className:'filtered-list-toolbar btn-toolbar flex-wrap w-100 mb-1 justify-content-center' }, [
       React.createElement('div',{ key:'cluster', className:'d-flex flex-wrap justify-content-center align-items-center gap-2'}, [
   React.createElement('div',{ key:'recGroup', role:'group', className:'mr-2 mb-2 btn-group'}, [recSelect]),
-        React.createElement('div',{ key:'ps', className:'page-size-selector mr-2 mb-2'}, React.createElement('select',{ className:'btn-secondary form-control', value:itemsPerPage, onChange:(e:any)=>{ setItemsPerPage(Number(e.target.value)); setPage(1);} }, [20,40,80,100].map(n=> React.createElement('option',{key:n, value:n}, n)))) ,
+        React.createElement('div',{ key:'ps', className:'page-size-selector mr-2 mb-2'}, React.createElement('select',{ className:'btn-secondary form-control form-control-sm', value:itemsPerPage, onChange:(e:any)=>{ setItemsPerPage(Number(e.target.value)); setPage(1);} }, [20,40,80,100].map(n=> React.createElement('option',{key:n, value:n}, n)))) ,
         React.createElement('div',{ key:'zoomWrap', className:'mx-2 mb-2 d-inline-flex align-items-center'}, [
           React.createElement('input',{ key:'zr', min:0, max:3, type:'range', className:'zoom-slider ml-1 form-control-range', value:zoomIndex, onChange:(e:any)=> setZoomIndex(Number(e.target.value)) })
         ]),
