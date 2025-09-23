@@ -10,4 +10,5 @@ ui:
     - dist/RecommendedScenes.js
   css:
     - AIOverhaul.css
+    - src/recommendedscenes.css
 interface: raw

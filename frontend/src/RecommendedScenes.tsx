@@ -134,10 +134,7 @@
 
   // Removed legacy per-ID fetch & schema pruning utilities.
 
-  const SceneCardFallback = (s:BasicScene) => React.createElement('div', { className:'scene-card stub', style:{background:'#1e1f22', border:'1px solid #333', borderRadius:4, padding:6}}, [
-    React.createElement('div',{key:'img', style:{background:'#2a2d30', height:90, marginBottom:6, display:'flex', alignItems:'center', justifyContent:'center', fontSize:12, color:'#777'}}, 'Scene '+s.id),
-    React.createElement('div',{key:'title', style:{fontSize:12, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}, s.title || ('ID '+s.id))
-  ]);
+  // Removed legacy SceneCardFallback (always use native SceneCard)
 
   const RecommendedScenesPage: any = () => {
     function readInitial(key:string, urlParam:string, fallback:number){
@@ -201,6 +198,25 @@
     const constraintTypes = Array.isArray(allowedConstraintTypes) && allowedConstraintTypes.length > 0
       ? allConstraintTypes.filter(ct => allowedConstraintTypes.includes(ct.value))
       : allConstraintTypes;
+
+    // Memoize expensive tag computations for overlap constraint
+    const overlapTagData = React.useMemo(() => {
+      if (localConstraint.type !== 'overlap') return { allCoOccurrencePrimaries: new Set(), availableTags: [] };
+      
+      // Get all currently selected tags (include + exclude) for co-occurrence selection
+      // Exclude primary tags from other co-occurrence groups
+      const allCoOccurrencePrimaries = new Set();
+      [...(value?.include || []), ...(value?.exclude || [])].forEach(id => {
+        const constraint = (value?.constraints || {})[id] || { type: 'presence' };
+        if (constraint.type === 'overlap' && constraint.overlap?.coTags?.length > 0 && id !== tagId) {
+          allCoOccurrencePrimaries.add(id);
+        }
+      });
+      const availableTags = [...(value?.include || []), ...(value?.exclude || [])]
+        .filter(id => id !== tagId && !allCoOccurrencePrimaries.has(id));
+      
+      return { allCoOccurrencePrimaries, availableTags };
+    }, [localConstraint.type, value?.include, value?.exclude, value?.constraints, tagId]);
 
     function handleTypeChange(newType: string) {
       let newConstraint: any = { type: newType };
@@ -276,24 +292,15 @@
             ])
           ]);
         case 'overlap':
-          // Get all currently selected tags (include + exclude) for co-occurrence selection
-          // Exclude primary tags from other co-occurrence groups
-          const allCoOccurrencePrimaries = new Set();
-          [...(value?.include || []), ...(value?.exclude || [])].forEach(id => {
-            const constraint = (value?.constraints || {})[id] || { type: 'presence' };
-            if (constraint.type === 'overlap' && constraint.overlap?.coTags?.length > 0 && id !== tagId) {
-              allCoOccurrencePrimaries.add(id);
-            }
-          });
-          const availableTags = [...(value?.include || []), ...(value?.exclude || [])]
-            .filter(id => id !== tagId && !allCoOccurrencePrimaries.has(id));
+          // Use memoized tag data to avoid expensive recomputation on every render
+          const { availableTags } = overlapTagData;
           const selectedCoTags = localConstraint.overlap?.coTags || [];
           
           return React.createElement('div', { className: 'constraint-options' }, [
             React.createElement('div', { key: 'info' }, 'Co-occurrence with other selected tags'),
             React.createElement('div', { key: 'tags-section' }, [
               React.createElement('label', { key: 'label' }, 'Selected for co-occurrence: '),
-              React.createElement('div', { key: 'selected-tags', style: { marginBottom: '6px', minHeight: '20px', border: '1px solid #444', borderRadius: '3px', padding: '2px' } }, 
+              React.createElement('div', { key: 'selected-tags', className: 'constraint-selected-tags' }, 
                 selectedCoTags.length > 0 ? selectedCoTags.map((coTagId: number) => {
                   const coTagName = (compositeRawRef.current[fieldName + '__tagNameMap'] || {})[coTagId] || `Tag ${coTagId}`;
                   return React.createElement('span', { 
@@ -330,9 +337,9 @@
                       }
                     }, '×')
                   ]);
-                }) : React.createElement('span', { style: { color: '#888', fontSize: '10px', padding: '2px' } }, 'No tags selected for co-occurrence')
+                }) : React.createElement('span', { className: 'constraint-selected-empty' }, 'No tags selected for co-occurrence')
               ),
-              availableTags.length > 0 ? React.createElement('div', { key: 'available-tags', style: { display: 'flex', flexWrap: 'wrap', gap: '1px', marginTop: '4px' } }, 
+              availableTags.length > 0 ? React.createElement('div', { key: 'available-tags', className: 'constraint-available-tags' }, 
                 availableTags.map((coTagId: number) => {
                   const coTagName = (compositeRawRef.current[fieldName + '__tagNameMap'] || {})[coTagId] || `Tag ${coTagId}`;
                   const isSelected = selectedCoTags.includes(coTagId);
@@ -346,16 +353,7 @@
                         overlap: { ...prev.overlap, coTags: newCoTags }
                       }));
                     },
-                    style: { 
-                      padding: '1px 4px', 
-                      background: '#2a3f5f', 
-                      color: '#fff', 
-                      border: 'none',
-                      borderRadius: '2px', 
-                      cursor: 'pointer',
-                      fontSize: '9px',
-                      lineHeight: '12px'
-                    } 
+                    className: 'constraint-tag-button'
                   }, coTagName);
                 })
               ) : null
@@ -427,8 +425,8 @@
       return ()=> document.removeEventListener('keydown', onKey);
     }, [onCancel]);
 
-    return React.createElement('div', { style: { position: 'relative', minWidth: '200px' } }, [
-      React.createElement('div', { key: 'title', style: { fontWeight: 'bold', marginBottom: '6px' } }, `Configure: ${tagName}`),
+    return React.createElement('div', { className: 'constraint-popup' }, [
+      React.createElement('div', { key: 'title', className: 'constraint-title' }, `Configure: ${tagName}`),
       React.createElement('div', { key: 'type', className: 'constraint-type' }, [
         React.createElement('label', { key: 'label' }, 'Type: '),
         React.createElement('select', { 
@@ -438,7 +436,7 @@
         }, constraintTypes.map(ct => React.createElement('option', { key: ct.value, value: ct.value }, ct.label)))
       ]),
       renderOptions(),
-      React.createElement('div', { key: 'actions', style: { display: 'flex', justifyContent: 'flex-end', marginTop: '8px', gap: '4px' } }, [
+      React.createElement('div', { key: 'actions', className: 'constraint-actions' }, [
         React.createElement('button', {
           key: 'save',
           onClick: (e: any) => {
@@ -460,7 +458,7 @@
     ]);
   }, []);
 
-  const TagIncludeExcludeFallback = ({ value, onChange, fieldName, initialTagCombination, allowedConstraintTypes, allowedCombinationModes }: { value:any; onChange:(next:any)=>void; fieldName:string; initialTagCombination?: string; allowedConstraintTypes?: string[]; allowedCombinationModes?: string[] }) => {
+  const TagIncludeExclude = ({ value, onChange, fieldName, initialTagCombination, allowedConstraintTypes, allowedCombinationModes }: { value:any; onChange:(next:any)=>void; fieldName:string; initialTagCombination?: string; allowedConstraintTypes?: string[]; allowedCombinationModes?: string[] }) => {
     const v = value || {};
     const include:number[] = Array.isArray(v) ? v : Array.isArray(v.include) ? v.include : [];
     const exclude:number[] = Array.isArray(v) ? [] : Array.isArray(v.exclude) ? v.exclude : [];
@@ -538,48 +536,6 @@
     }
     const tagNameMap = compositeRawRef.current[nameMapKey];
   const debounceTimerRef = React.useRef(null as any);
-
-    // Inject styles once
-    if(typeof document!=='undefined' && !document.getElementById('ai-tag-fallback-style')){
-      const s=document.createElement('style'); s.id='ai-tag-fallback-style'; s.textContent=`
-        .ai-tag-fallback { position:relative; background:#24272b; border:1px solid #2f3337; border-radius:4px; padding:4px 6px; font-size:12px; min-height:34px; display:flex; flex-wrap:wrap; align-items:center; gap:4px; cursor:text; }
-        .ai-tag-fallback.unified:focus-within { border-color:#3d4348; box-shadow:0 0 0 2px rgba(90,150,255,0.15); }
-        .ai-tag-fallback .combination-toggle { padding:2px 8px; font-size:11px; line-height:1.1; border-radius:3px; border:1px solid transparent; cursor:pointer; font-weight:600; min-width:32px; }
-        .ai-tag-fallback .combination-toggle.disabled { opacity:0.6; cursor:not-allowed; }
-        .ai-tag-fallback .combination-toggle.and { background:#1f3d23; border-color:#2d6a36; color:#8ee19b; }
-        .ai-tag-fallback .combination-toggle.or { background:#3d2a1f; border-color:#6a4a2d; color:#e2c19b; }
-        .ai-tag-fallback .mode-toggle { padding:2px 6px; font-size:11px; line-height:1.1; border-radius:3px; border:1px solid transparent; cursor:pointer; font-weight:600; }
-        .ai-tag-fallback .mode-toggle.include { background:#1f3d23; border-color:#2d6a36; color:#8ee19b; }
-        .ai-tag-fallback .mode-toggle.exclude { background:#4a1b1b; border-color:#a33; color:#f08a8a; }
-        .ai-tag-fallback .tag-chip { display:inline-flex; align-items:center; gap:2px; border-radius:3px; padding:2px 6px; font-size:11px; font-weight:500; border:1px solid; position:relative; max-width:250px; }
-        .ai-tag-fallback .tag-chip .chip-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0; }
-        .ai-tag-fallback .tag-chip .chip-actions { display:flex; gap:2px; flex-shrink:0; margin-left:4px; }
-        .ai-tag-fallback .tag-chip.include { background:#1f4d2a; border-color:#2e7d32; color:#cfe8d0; }
-        .ai-tag-fallback .tag-chip.exclude { background:#5c1f1f; border-color:#b33; color:#f5d0d0; }
-        .ai-tag-fallback .tag-chip.duration { background:#2a3f5f; border-color:#4a90e2; color:#cfe8ff; }
-        .ai-tag-fallback .tag-chip.overlap { background:#5f3f2a; border-color:#e2904a; color:#ffeacf; }
-        .ai-tag-fallback .tag-chip.importance { background:#5f2a5f; border-color:#9b4a9b; color:#f5d0f5; }
-        .ai-tag-fallback .tag-chip button { background:transparent; border:none; cursor:pointer; padding:0 0 0 2px; font-size:13px; line-height:1; color:inherit; }
-        .ai-tag-fallback .tag-chip .constraint-btn { background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.2); border-radius:2px; padding:1px 3px; font-size:9px; margin-left:2px; cursor:pointer; }
-        .ai-tag-fallback .tag-chip .constraint-btn:hover { background:rgba(255,255,255,0.2); }
-        .ai-tag-fallback input.tag-input { flex:1; min-width:120px; border:none; outline:none; background:transparent; color:#fff; padding:2px 4px; font-size:12px; }
-        .ai-tag-fallback input.tag-input::placeholder { color:#667; }
-        .ai-tag-fallback .suggestions-list { position:absolute; z-index:30; left:-1px; right:-1px; top:100%; margin-top:2px; background:#1f2225; border:1px solid #333; max-height:220px; overflow:auto; border-radius:4px; box-shadow:0 4px 12px rgba(0,0,0,0.45); }
-        .ai-tag-fallback .suggestions-list div { padding:5px 8px; cursor:pointer; font-size:11px; }
-        .ai-tag-fallback .suggestions-list div:hover { background:#2d3236; }
-        .ai-tag-fallback .empty-suggest { padding:6px 8px; font-size:11px; color:#889; }
-        .constraint-popup { position:fixed; z-index:100; background:#1a1d21; border:1px solid #333; border-radius:6px; padding:8px; box-shadow:0 4px 12px rgba(0,0,0,0.6); font-size:11px; min-width:200px; }
-        .constraint-popup .constraint-type { margin-bottom:6px; }
-        .constraint-popup .constraint-type select { width:100%; padding:2px 4px; background:#24272b; border:1px solid #333; border-radius:3px; color:#fff; font-size:11px; }
-        .constraint-popup .constraint-options { margin-bottom:6px; }
-        .constraint-popup .constraint-options input, .constraint-popup .constraint-options select { width:60px; padding:2px 4px; background:#24272b; border:1px solid #333; border-radius:3px; color:#fff; font-size:10px; margin:1px; }
-        .constraint-popup .constraint-actions { display:flex; gap:4px; }
-        .constraint-popup .constraint-actions button { padding:3px 6px; font-size:10px; border:none; border-radius:3px; cursor:pointer; }
-        .constraint-popup .btn-save { background:#2e7d32; color:#fff; }
-        .constraint-popup .btn-cancel { background:#666; color:#fff; }
-        .constraint-popup .close-btn { background:transparent; border:none; color:#fff; cursor:pointer; font-size:14px; position:absolute; top:2px; right:4px; padding:2px 4px; border-radius:2px; }
-        .constraint-popup .close-btn:hover { background:rgba(255,255,255,0.1); }
-      `; document.head.appendChild(s); }
 
     function removeTag(id:number, list:'include'|'exclude'){
       const nextInclude = list==='include'? include.filter((i:any)=>i!==id): include;
@@ -667,7 +623,20 @@
         if(preferredType === 'duration') init.duration = { min: 10, max: 60, unit: 'percent' };
         if(preferredType === 'overlap') init.overlap = { minDuration: 5, maxDuration: 30, unit: 'percent', coTags: [] };
         if(preferredType === 'importance') init.importance = 0.5;
-        setConstraintPopup({ tagId: id, position: { x: window.innerWidth/2 - 100, y: window.innerHeight/2 - 80 }, initialConstraint: init });
+        setConstraintPopup({ 
+          tagId: id, 
+          position: (() => {
+            // Try to position near the tag input element
+            const tagInput = document.querySelector('.ai-tag-fallback.unified input.tag-input') as HTMLElement;
+            if (tagInput) {
+              const rect = tagInput.getBoundingClientRect();
+              return { x: rect.left, y: rect.bottom + 5 };
+            }
+            // Fallback to center if tag input not found
+            return { x: window.innerWidth/2 - 100, y: window.innerHeight/2 - 80 };
+          })(),
+          initialConstraint: init 
+        });
         // store the name for display
         if(name) tagNameMap[id] = name;
         return;
@@ -755,16 +724,15 @@
       const chipClass = `tag-chip overlap ${setType}`;
       const groupKey = allTagIds.sort().join('-');
       
-      return React.createElement('span', { key: `co-${setType}-${groupKey}`, className: chipClass, style: { display:'inline-flex', alignItems:'center', maxWidth:450, padding:'4px 8px', gap:'6px' } }, [
-        React.createElement('span', { key: 'constraint-prefix', className: 'co-occurrence-constraint-info', style: { flexShrink:0, fontSize: '10px', fontWeight: 'bold', marginRight:'4px' } }, `[${min}-${max}${unit}]`),
-        React.createElement('span', { key: 'tags', className: 'co-occurrence-tags', style: { flex:1, minWidth:0, display:'flex', alignItems:'center', gap:'6px' } }, 
+      return React.createElement('span', { key: `co-${setType}-${groupKey}`, className: `${chipClass} co-chip` }, [
+        React.createElement('span', { key: 'constraint-prefix', className: 'co-constraint-info' }, `[${min}-${max}${unit}]`),
+        React.createElement('span', { key: 'tags', className: 'co-tags' }, 
           allTagNames.map((name, idx) => 
             React.createElement('span', { 
               key: allTagIds[idx], 
-              className: 'co-tag-item',
-              style: { display:'flex', alignItems:'center', whiteSpace:'nowrap', flexShrink:0 }
+              className: 'co-tag-item'
             }, [
-              React.createElement('span', { key: 'n', style: { maxWidth: 120, overflow:'hidden', textOverflow:'ellipsis' }, title: name }, name),
+              React.createElement('span', { key: 'n', className: 'co-tag-name', title: name }, name),
               React.createElement('button', {
                 key: 'x',
                 onClick: (e: any) => {
@@ -780,13 +748,13 @@
                     });
                   }
                 },
-                style: { background: 'transparent', border: 'none', color: '#fff', marginLeft: '4px', cursor: 'pointer', fontSize: '12px', padding: '0' },
+                className: 'co-tag-remove',
                 title: `Remove ${name} from group`
               }, '×')
             ])
           )
         ),
-        React.createElement('span', { key: 'actions', style: { flexShrink:0, display:'flex', alignItems:'center', gap:'4px' } }, [
+        React.createElement('span', { key: 'actions', className: 'co-actions' }, [
           React.createElement('button', { 
             key: 'gear', 
             className: 'constraint-btn', 
@@ -795,12 +763,11 @@
           }, '⚙'),
           React.createElement('button', { 
             key: 'remove-group', 
-            className: 'remove-group-btn',
             onClick: (e: any) => { 
               e.stopPropagation(); 
               removeTag(primaryId, setType); 
             }, 
-            style: { background: 'transparent', border: 'none', color: '#fff', cursor: 'pointer', fontSize: '12px', padding: '0' },
+            className: 'co-chip-remove',
             title: 'Remove entire group'
           }, '×')
         ])
@@ -836,12 +803,12 @@
         constraintText = ` [×${constraint.importance.toFixed(1)}]`;
       }
       
-      chips.push(React.createElement('span',{ key:'i'+id, className: chipClass, style: { display:'inline-flex', alignItems:'center', gap:'4px', maxWidth:'300px' } }, [
-        React.createElement('span', { key: 'text', className: 'chip-text', style: { overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:'1', minWidth:'0' } }, tagName),
-        constraintText ? React.createElement('span', { key: 'constraint', style: { fontSize:'10px', color:'#aaa', flexShrink:'0' } }, constraintText) : null,
-        React.createElement('div', { key: 'actions', className: 'chip-actions', style: { display:'flex', gap:'2px', flexShrink:'0' } }, [
+      chips.push(React.createElement('span',{ key:'i'+id, className: `${chipClass} tag-chip-flex` }, [
+        React.createElement('span', { key: 'text', className: 'tag-chip-text' }, tagName),
+        constraintText ? React.createElement('span', { key: 'constraint', className: 'tag-chip-constraint' }, constraintText) : null,
+        React.createElement('div', { key: 'actions', className: 'tag-chip-actions' }, [
           React.createElement('button',{ key:'gear', className:'constraint-btn', onClick:(e:any)=> showConstraintPopup(id, e), title:'Configure constraint' }, '⚙'),
-          React.createElement('button',{ key:'x', onClick:(e:any)=>{ e.stopPropagation(); removeTag(id,'include'); }, title:'Remove', style: { background:'transparent', border:'none', cursor:'pointer', padding:'0 0 0 2px', fontSize:'13px', lineHeight:'1', color:'inherit' } }, '×')
+          React.createElement('button',{ key:'x', onClick:(e:any)=>{ e.stopPropagation(); removeTag(id,'include'); }, title:'Remove', className: 'tag-chip-remove' }, '×')
         ])
       ].filter(Boolean)));
     });
@@ -876,12 +843,12 @@
       
       // Use consistent spacing - all constraints get the same padding
       
-      chips.push(React.createElement('span',{ key:'e'+id, className: chipClass, style: { display:'inline-flex', alignItems:'center', gap:'4px', maxWidth:'300px' } }, [
-        React.createElement('span', { key: 'text', className: 'chip-text', style: { overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:'1', minWidth:'0' } }, tagName),
-        constraintText ? React.createElement('span', { key: 'constraint', style: { fontSize:'10px', color:'#aaa', flexShrink:'0' } }, constraintText) : null,
-        React.createElement('div', { key: 'actions', className: 'chip-actions', style: { display:'flex', gap:'2px', flexShrink:'0' } }, [
+      chips.push(React.createElement('span',{ key:'e'+id, className: `${chipClass} tag-chip-flex` }, [
+        React.createElement('span', { key: 'text', className: 'tag-chip-text' }, tagName),
+        constraintText ? React.createElement('span', { key: 'constraint', className: 'tag-chip-constraint' }, constraintText) : null,
+        React.createElement('div', { key: 'actions', className: 'tag-chip-actions' }, [
           React.createElement('button',{ key:'gear', className:'constraint-btn', onClick:(e:any)=> showConstraintPopup(id, e), title:'Configure constraint' }, '⚙'),
-          React.createElement('button',{ key:'x', onClick:(e:any)=>{ e.stopPropagation(); removeTag(id,'exclude'); }, title:'Remove', style: { background:'transparent', border:'none', cursor:'pointer', padding:'0 0 0 2px', fontSize:'13px', lineHeight:'1', color:'inherit' } }, '×')
+          React.createElement('button',{ key:'x', onClick:(e:any)=>{ e.stopPropagation(); removeTag(id,'exclude'); }, title:'Remove', className: 'tag-chip-remove' }, '×')
         ])
       ].filter(Boolean)));
     });
@@ -1033,34 +1000,6 @@
   function renderConfigPanel(){
     if(!currentRecommender || !Array.isArray((currentRecommender as any).config) || !(currentRecommender as any).config.length) return null;
     const defs:any[] = (currentRecommender as any).config;
-    // Inject style once
-    if(typeof document!=='undefined' && !document.getElementById('ai-rec-config-style')){
-      const st = document.createElement('style');
-      st.id='ai-rec-config-style';
-      st.textContent = `
-        .ai-rec-config { font-size:12px; line-height:1.2; }
-        .ai-rec-config .config-row { margin-left:-4px; margin-right:-4px; }
-        .ai-rec-config .config-row > [class*="col-"] { padding-left:4px; padding-right:4px; }
-        .ai-rec-config .form-group { position:relative; margin-bottom:1px; }
-  .ai-rec-config .form-group label { font-weight:500; font-size:10px; margin-bottom:0; line-height:1.2; color:#999; }
-        /* unify control height to 33.5px and padding to 5.25px */
-        .ai-rec-config .form-control { font-size:11px; padding:5.25px 8px; height:33.5px; min-height:33.5px; }
-        .ai-rec-config .form-control-sm { padding:5.25px 8px; font-size:11px; height:33.5px; min-height:33.5px; }
-  .ai-rec-config input[type="range"] { height:16px; margin:0; }
-  .ai-rec-config .zoom-slider { width:100%; height:16px; }
-        .ai-rec-config .switch-inline { display:flex; align-items:center; gap:0.25rem; height:33.5px; }
-        .ai-rec-config .custom-control.custom-switch { display:flex; align-items:center; gap:6px; min-height:33.5px; }
-        .ai-rec-config .custom-control-label { line-height:1.1; }
-  .ai-rec-config .range-wrapper { display:flex; align-items:center; gap:0.25rem; height:33.5px; width:92px; }
-        .ai-rec-config .range-value { min-width:32px; text-align:center; font-size:10px; padding:1px 3px; background:#2c2f33; border:1px solid #373a3e; border-radius:2px; line-height:1.2; height:22px; display:flex; align-items:center; justify-content:center; }
-        .ai-rec-config .text-muted { font-size:10px; }
-        /* width utilities per policy: default cap 180px, tags 400px */
-        .ai-rec-config .w-num { width:72px; }
-        .ai-rec-config .w-180, .ai-rec-config .w-select, .ai-rec-config .w-text, .ai-rec-config .w-search { width:180px; max-width:180px; }
-        .ai-rec-config .w-tags { width:400px; max-width:400px; }
-      `;
-      document.head.appendChild(st);
-    }
 
     const rows = defs.map(field => {
       const val = configValues[field.name];
@@ -1104,8 +1043,8 @@
             excludeIds = Array.isArray(val.exclude)? val.exclude: []; 
             constraints = val.constraints || {};
           }
-          // Custom searchable include/exclude fallback with chips.
-          control = React.createElement('div', { className:'w-tags' }, React.createElement(TagIncludeExcludeFallback, { 
+          // Custom searchable include/exclude selector with chips.
+          control = React.createElement('div', { className:'w-tags' }, React.createElement(TagIncludeExclude, { 
             fieldName: field.name, 
             value: { include: includeIds, exclude: excludeIds, constraints, tag_combination: val?.tag_combination }, 
             onChange:(next:any)=> updateConfigField(field.name, next),
@@ -1127,8 +1066,7 @@
       const capWidth = field.type==='tags' ? 400 : (field.type==='slider' ? 92 : (['text','search','select','enum'].includes(field.type) ? 180 : undefined));
       const labelStyle = capWidth ? { display:'inline-block', width: capWidth+'px', maxWidth: capWidth+'px' } : undefined;
       const labelNode = showLabelAbove ? React.createElement('label',{ htmlFor:id, className:'form-label d-flex justify-content-between mb-0', style: labelStyle }, [
-        React.createElement('span',{ key:'t', style:{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' } }, field.label || field.name),
-        (field.type==='number' || field.type==='slider') && (field.min!=null || field.max!=null) ? React.createElement('span',{ key:'rng', className:'text-muted ml-2'}, `${field.min??''}${field.min!=null||field.max!=null?'–':''}${field.max??''}`) : null
+        React.createElement('span',{ key:'t', className:'label-text' }, field.label || field.name)
       ]) : null;
       // Use auto-width columns for compact fields; let large/complex fields take normal grid width
       const compactTypes = ['number', 'select', 'enum', 'boolean', 'slider', 'text', 'search', 'tags'];
@@ -1300,13 +1238,13 @@
       console.debug('[RecommendedScenes] Tag selector components not found; falling back to text input');
     }
     const grid = useMemo(()=>{
-      if(loading || componentsLoading) return React.createElement('div',{ style:{marginTop:24}}, 'Loading scenes...');
-      if(error) return React.createElement('div',{ style:{marginTop:24, color:'#c66'}}, error);
-      if(!paginatedScenes.length) return React.createElement('div',{ style:{marginTop:24}}, 'No scenes');
-      if(cardWidth===undefined) return React.createElement('div',{ style:{marginTop:24}}, 'Calculating layout...');
-  const children = paginatedScenes.map((s:BasicScene,i:number)=> SceneCard ? React.createElement('div',{ key:s.id+'_'+i, style:{display:'contents'}}, React.createElement(SceneCard,{ scene:s, zoomIndex, queue: undefined, index: i })) : React.createElement('div',{ key:s.id+'_'+i, style:{display:'contents'}}, SceneCardFallback(s)) );
-      if(typeof document!=='undefined' && !document.getElementById('ai-rec-grid-style')){ const styleEl=document.createElement('style'); styleEl.id='ai-rec-grid-style'; styleEl.textContent = `.ai-rec-grid .scene-card { width: var(--ai-card-width) !important; }`; document.head.appendChild(styleEl); }
-      return React.createElement('div',{ className:'row ai-rec-grid d-flex flex-wrap justify-content-center', ref:componentRef, style:{ gap:0, ['--ai-card-width' as any]: cardWidth+'px'}}, children);
+      if(loading || componentsLoading) return React.createElement('div',{ className:'scene-grid-loading'}, 'Loading scenes...');
+      if(error) return React.createElement('div',{ className:'scene-grid-error'}, error);
+      if(!paginatedScenes.length) return React.createElement('div',{ className:'scene-grid-empty'}, 'No scenes');
+      if(cardWidth===undefined) return React.createElement('div',{ className:'scene-grid-calculating'}, 'Calculating layout...');
+  const children = paginatedScenes.map((s:BasicScene,i:number)=> React.createElement('div',{ key:s.id+'_'+i, style:{display:'contents'}}, SceneCard ? React.createElement(SceneCard,{ scene:s, zoomIndex, queue: undefined, index: i }) : null) );
+
+      return React.createElement('div',{ className:'row ai-rec-grid d-flex flex-wrap justify-content-center', ref:componentRef, style:{ ['--ai-card-width' as any]: cardWidth+'px'}}, children);
     }, [loading, componentsLoading, error, paginatedScenes, SceneCard, cardWidth, zoomIndex]);
 
     useEffect(()=>{ if((w as any).AIDebug && cardWidth) log('layout', { containerWidth, zoomIndex, preferredWidth: zoomWidths[zoomIndex], cardWidth }); }, [containerWidth, zoomIndex, cardWidth, paginatedScenes]);
@@ -1343,7 +1281,7 @@
           React.createElement(Button,{ key:'refresh', className:'btn btn-secondary minimal', disabled:loading, title:'Refresh', onClick:manualRefresh }, '↻')
         ])
         , backendStatus==='error' && React.createElement('div',{ key:'err', className:'mb-2 ml-2 small text-danger d-flex align-items-center' }, [
-          React.createElement('span',{ key:'lbl', style:{marginRight:6}}, 'Backend failed'),
+          React.createElement('span',{ key:'lbl', className:'backend-status'}, 'Backend failed'),
           React.createElement(Button,{ key:'retry', className:'btn btn-secondary minimal btn-sm', disabled:loading, onClick:()=> manualRefresh() }, 'Retry')
         ])
       ])
