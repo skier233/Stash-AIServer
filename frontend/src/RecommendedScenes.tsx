@@ -186,10 +186,15 @@
     const include:number[] = Array.isArray(v) ? v : Array.isArray(v.include) ? v.include : [];
     const exclude:number[] = Array.isArray(v) ? [] : Array.isArray(v.exclude) ? v.exclude : [];
     const stateKey = fieldName + '__fbTagState';
+    const nameMapKey = fieldName + '__tagNameMap';
     if(!compositeRawRef.current[stateKey]){
-      compositeRawRef.current[stateKey] = { mode:'include', search:'', suggestions:[], loading:false, lastTerm:'', debounceTimer:null as any, error:null as string|null };
+      compositeRawRef.current[stateKey] = { mode:'include', search:'', suggestions:[], loading:false, lastTerm:'', debounceTimer:null as any, error:null as string|null, showDropdown:false };
+    }
+    if(!compositeRawRef.current[nameMapKey]){
+      compositeRawRef.current[nameMapKey] = {};
     }
     const st = compositeRawRef.current[stateKey];
+    const tagNameMap = compositeRawRef.current[nameMapKey];
 
     function setPartial(p:any){ Object.assign(st, p); forceConfigRerender(); }
 
@@ -219,14 +224,18 @@
       onChange({ include: nextInclude, exclude: nextExclude });
     }
 
-    function addTag(id:number){
+    function addTag(id:number, name?:string){
       if(st.mode==='include'){
         if(!include.includes(id)) onChange({ include: [...include,id], exclude });
       } else {
         if(!exclude.includes(id)) onChange({ include, exclude:[...exclude,id] });
       }
+      // Store tag name for display if provided
+      if(name) {
+        tagNameMap[id] = name;
+      }
       // Clear search & suggestions after add
-      setPartial({ search:'', suggestions:[], lastTerm:'' });
+      setPartial({ search:'', suggestions:[], lastTerm:'', showDropdown:false });
     }
 
     function search(term:string){
@@ -234,13 +243,15 @@
       setPartial({ search: term });
       st.debounceTimer = setTimeout(async()=>{
         const q = st.search.trim();
-        if(!q){ setPartial({ suggestions:[], error:null, lastTerm:'' }); return; }
         if(q === st.lastTerm) return;
-        setPartial({ loading:true, error:null });
+        setPartial({ loading:true, error:null, showDropdown:true });
         try {
-          // Updated query: Stash schema typically exposes findTags(tag_filter, filter)
-          const gql = `query TagSuggest($term: String!) { findTags(filter: { per_page: 20 }, tag_filter: { name: { value: $term, modifier: INCLUDES } }) { tags { id name } } }`;
-          const res = await fetch('/graphql', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({query:gql, variables:{ term: q }}) });
+          // Updated query: show all tags if no search term, or filter by name
+          const gql = q 
+            ? `query TagSuggest($term: String!) { findTags(filter: { per_page: 20 }, tag_filter: { name: { value: $term, modifier: INCLUDES } }) { tags { id name } } }`
+            : `query TagSuggest { findTags(filter: { per_page: 20 }) { tags { id name } } }`;
+          const variables = q ? { term: q } : {};
+          const res = await fetch('/graphql', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({query:gql, variables}) });
           if(!res.ok) throw new Error('HTTP '+res.status);
           const json = await res.json();
           if(json.errors){ throw new Error(json.errors.map((e:any)=> e.message).join('; ')); }
@@ -249,25 +260,66 @@
         } catch(e:any){ setPartial({ error: 'Search failed', loading:false }); }
       }, 250);
     }
-    const chips: any[] = [];
-    include.forEach(id=> chips.push(React.createElement('span',{ key:'i'+id, className:'tag-chip include' }, [String(id), React.createElement('button',{ key:'x', onClick:(e:any)=>{ e.stopPropagation(); removeTag(id,'include'); }, title:'Remove' }, '×')])));
-    exclude.forEach(id=> chips.push(React.createElement('span',{ key:'e'+id, className:'tag-chip exclude' }, [String(id), React.createElement('button',{ key:'x', onClick:(e:any)=>{ e.stopPropagation(); removeTag(id,'exclude'); }, title:'Remove' }, '×')])));
 
-    const suggestionsList = st.search && (st.suggestions.length || st.loading || st.error) ? React.createElement('div',{ className:'suggestions-list', key:'list' },
+    function onInputFocus(){
+      if(!st.showDropdown && !st.search.trim()){
+        // Show popular tags or empty search when focused
+        setPartial({ showDropdown: true });
+        search(''); // This will trigger a search for all tags
+      }
+    }
+
+    // Close dropdown when clicking outside
+    React.useEffect(() => {
+      function handleClickOutside(event: Event) {
+        const target = event.target as Element;
+        if (!target.closest('.ai-tag-fallback.unified')) {
+          setPartial({ showDropdown: false });
+        }
+      }
+      if (st.showDropdown) {
+        document.addEventListener('click', handleClickOutside);
+        return () => document.removeEventListener('click', handleClickOutside);
+      }
+    }, [st.showDropdown]);
+    const chips: any[] = [];
+    include.forEach(id=> {
+      const tagName = tagNameMap[id] || `Tag ${id}`;
+      chips.push(React.createElement('span',{ key:'i'+id, className:'tag-chip include' }, [tagName, React.createElement('button',{ key:'x', onClick:(e:any)=>{ e.stopPropagation(); removeTag(id,'include'); }, title:'Remove' }, '×')]));
+    });
+    exclude.forEach(id=> {
+      const tagName = tagNameMap[id] || `Tag ${id}`;
+      chips.push(React.createElement('span',{ key:'e'+id, className:'tag-chip exclude' }, [tagName, React.createElement('button',{ key:'x', onClick:(e:any)=>{ e.stopPropagation(); removeTag(id,'exclude'); }, title:'Remove' }, '×')]));
+    });
+
+    const suggestionsList = (st.showDropdown || st.search) && (st.suggestions.length || st.loading || st.error) ? React.createElement('div',{ className:'suggestions-list', key:'list' },
       st.loading ? React.createElement('div',{ className:'empty-suggest'}, 'Searching…') :
       st.error ? React.createElement('div',{ className:'empty-suggest'}, st.error) :
-      st.suggestions.length ? st.suggestions.map((tg:any)=> React.createElement('div',{ key:tg.id, onClick:(e:any)=>{ e.stopPropagation(); addTag(parseInt(tg.id,10)); } }, tg.name+' (#'+tg.id+')')) :
+      st.suggestions.length ? st.suggestions.map((tg:any)=> React.createElement('div',{ key:tg.id, onClick:(e:any)=>{ e.stopPropagation(); addTag(parseInt(tg.id,10), tg.name); } }, tg.name+' (#'+tg.id+')')) :
       React.createElement('div',{ className:'empty-suggest'}, 'No matches')
     ) : null;
 
     function onKeyDown(e:any){
       if(e.key==='Enter'){
-        if(st.suggestions.length){ addTag(parseInt(st.suggestions[0].id,10)); e.preventDefault(); return; }
+        if(st.suggestions.length){ 
+          const firstTag = st.suggestions[0];
+          addTag(parseInt(firstTag.id,10), firstTag.name); 
+          e.preventDefault(); 
+          return; 
+        }
         const raw = st.search.trim();
         if(/^[0-9]+$/.test(raw)){ addTag(parseInt(raw,10)); e.preventDefault(); return; }
       } else if(e.key==='Backspace' && !st.search){
-        if(st.mode==='include' && include.length){ removeTag(include[include.length-1],'include'); }
-        else if(st.mode==='exclude' && exclude.length){ removeTag(exclude[exclude.length-1],'exclude'); }
+        // Always remove from current mode's list
+        if(st.mode==='include' && include.length){ 
+          removeTag(include[include.length-1],'include'); 
+          e.preventDefault();
+        } else if(st.mode==='exclude' && exclude.length){ 
+          removeTag(exclude[exclude.length-1],'exclude'); 
+          e.preventDefault();
+        }
+      } else if(e.key==='Escape'){
+        setPartial({ showDropdown: false, search: '', suggestions: [] });
       }
     }
 
@@ -276,7 +328,7 @@
     return React.createElement('div',{ className:'ai-tag-fallback unified w-100', onClick:()=>{ /* focus input by dispatching event */ const el:any=document.querySelector('.ai-tag-fallback.unified input.tag-input'); if(el) el.focus(); } }, [
       modeBtn,
       chips.length? chips : React.createElement('span',{ key:'ph', className:'text-muted small'}, 'No tags'),
-      React.createElement('input',{ key:'inp', type:'text', className:'tag-input', value: st.search, placeholder:'Search tags…', onChange:(e:any)=> search(e.target.value), onKeyDown, onClick:(e:any)=> e.stopPropagation() }),
+      React.createElement('input',{ key:'inp', type:'text', className:'tag-input', value: st.search, placeholder:'Search tags…', onChange:(e:any)=> search(e.target.value), onKeyDown, onFocus: onInputFocus, onClick:(e:any)=> e.stopPropagation() }),
       suggestionsList
     ]);
   }, [forceConfigRerender]);
