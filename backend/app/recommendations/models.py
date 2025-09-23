@@ -20,6 +20,10 @@ class RecommenderConfigField(BaseModel):
     step: float | None = None
     options: List[Dict[str, Any]] | None = None
     help: str | None = None
+    # Per-field tag selector capabilities (frontend reads these to control UI)
+    tag_combination: str | None = None
+    constraint_types: List[str] | None = None
+    allowed_combination_modes: List[str] | None = None
 
 class RecommenderDefinition(BaseModel):
     id: str

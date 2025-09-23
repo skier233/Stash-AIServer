@@ -314,3 +314,111 @@
 .ai-task-row--history { opacity:.85; }
 .ai-task-dash__empty { font-style:italic; padding:4px 2px; color:#888; }
 .ai-task-row__progress { font-variant-numeric: tabular-nums; }
+
+/* =============================================================================
+  Co-occurrence Group Styles
+  ============================================================================= */
+
+/* Co-occurrence group styling */
+.tag-chip.overlap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 40px 6px 10px;
+  border: 2px solid;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  position: relative;
+}
+
+.co-occurrence-constraint-info {
+  font-size: 10px;
+  opacity: 0.8;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  margin-right: 4px;
+}
+
+.co-occurrence-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  align-items: center;
+  margin-right: 42px;
+}
+
+.co-tag-item {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 5px;
+  background: rgba(59, 130, 246, 0.2);
+  border: 1px solid rgba(59, 130, 246, 0.5);
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.co-tag-item:hover {
+  background: rgba(59, 130, 246, 0.3);
+  border-color: rgba(59, 130, 246, 0.7);
+  transform: translateY(-1px);
+}
+
+.co-tag-remove {
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: inherit;
+  font-size: 9px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0.7;
+  line-height: 1;
+  transition: all 0.15s ease;
+}
+
+.co-tag-remove:hover {
+  opacity: 1;
+  background: rgba(255, 100, 100, 0.3);
+  border-color: rgba(255, 100, 100, 0.6);
+  transform: scale(1.1);
+}
+
+.tag-chip.overlap .constraint-btn {
+  position: absolute;
+  top: 50%;
+  right: 20px;
+  transform: translateY(-50%);
+}
+
+.remove-group-btn {
+  position: absolute;
+  top: 50%;
+  right: 2px;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 12px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.remove-group-btn:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.2);
+}
