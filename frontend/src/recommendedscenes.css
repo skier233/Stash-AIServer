@@ -44,8 +44,8 @@
 .ai-rec-config .config-row>[class*="col-"]{padding-left:4px;padding-right:4px}
 .ai-rec-config .form-group{position:relative;margin-bottom:1px}
 .ai-rec-config .form-group label{font-weight:500;font-size:10px;margin-bottom:0;line-height:1.2;color:#999}
-.ai-rec-config .form-control{font-size:11px;padding:5.25px 8px;height:33.5px;min-height:33.5px}
-.ai-rec-config .form-control-sm{padding:5.25px 8px;font-size:11px;height:33.5px;min-height:33.5px}
+.ai-rec-config .form-control,
+.ai-rec-config .form-control-sm{font-size:11px;padding:5.25px 8px;height:33.5px;min-height:33.5px}
 .ai-rec-config input[type=range]{height:16px;margin:0}
 .ai-rec-config .switch-inline{display:flex;align-items:center;gap:.25rem;height:33.5px}
 .ai-rec-config .custom-control.custom-switch{display:flex;align-items:center;gap:6px;min-height:33.5px}
@@ -61,6 +61,10 @@
 .ai-rec-config .w-180,.ai-rec-config .w-select,.ai-rec-config .w-text,.ai-rec-config .w-search{width:180px;max-width:180px}
 .ai-rec-config .w-tags{width:400px;max-width:400px}
 .ai-rec-config .label-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* Layout: center controls horizontally inside each config row */
+.ai-rec-config .config-row{display:flex;justify-content:center;align-items:center;gap:12px;flex-wrap:wrap;margin-left:0;margin-right:0}
+.ai-rec-config .config-row>[class*="col-"]{padding-left:4px;padding-right:4px;display:flex;align-items:center;justify-content:center}
 
 .ai-tag-fallback{position:relative;/* use textbox vars for color + fallbacks for visual parity */
 	background: var(--ai-textbox-bg) !important;
