@@ -1124,7 +1124,7 @@
 
     return React.createElement('div',{ className:'ai-rec-config mb-1'}, [
       React.createElement('div',{ key:'hdr', className:'d-flex justify-content-between align-items-center mb-1'}, [
-        React.createElement('strong',{ key:'t', className:'small'}, 'Configuration'),
+        React.createElement('strong',{ key:'t', className:'small'}),
         React.createElement('div',{ key:'actions', className:'d-flex align-items-center gap-2'}, [
           React.createElement('button',{ key:'tgl', className:'btn btn-secondary btn-sm', onClick:()=> setShowConfig((s:any)=>!s) }, showConfig? 'Hide':'Show')
         ])

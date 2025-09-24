@@ -19,7 +19,6 @@ import math
         { 'name':'search_query','label':'Search','type':'search','default':'','help':'Sample search style input' },
     { 'name':'focus_tags','label':'Focus Tags','type':'tags','default':[],'tag_combination':'and', 'constraint_types':['presence','duration'], 'allowed_combination_modes':['or', 'and'] },
     { 'name':'filter_tags','label':'Filter Tags','type':'tags','default':[],'tag_combination':'or', 'constraint_types':['overlap','importance'], 'allowed_combination_modes':['and'] },
-    { 'name':'exclude_tags','label':'Exclude Tags','type':'tags','default':[],'tag_combination':'not-applicable', 'constraint_types':['presence'], 'allowed_combination_modes':['not-applicable'] },
         { 'name':'boost_performers','label':'Boost Performers','type':'performers','default':[] },
         { 'name':'scoring_mode','label':'Scoring Mode','type':'enum','default':'simple','options':[ {'value':'simple','label':'Simple'}, {'value':'weighted','label':'Weighted'} ] },
     ],
