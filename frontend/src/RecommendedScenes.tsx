@@ -434,7 +434,7 @@
     ]);
   }, []);
 
-  const TagIncludeExclude = ({ value, onChange, fieldName, initialTagCombination, allowedConstraintTypes, allowedCombinationModes }: { value:any; onChange:(next:any)=>void; fieldName:string; initialTagCombination?: string; allowedConstraintTypes?: string[]; allowedCombinationModes?: string[] }) => {
+  const TagIncludeExclude = ({ value, onChange, fieldName, initialTagCombination, allowedConstraintTypes, allowedCombinationModes, entity = 'tag' }: { value:any; onChange:(next:any)=>void; fieldName:string; initialTagCombination?: string; allowedConstraintTypes?: string[]; allowedCombinationModes?: string[]; entity?: 'tag'|'performer' }) => {
     const v = value || {};
     const include:number[] = Array.isArray(v) ? v : Array.isArray(v.include) ? v.include : [];
     const exclude:number[] = Array.isArray(v) ? [] : Array.isArray(v.exclude) ? v.exclude : [];
@@ -512,7 +512,7 @@
     
   const [constraintPopup, setConstraintPopup] = React.useState(null as any);
     
-    const nameMapKey = fieldName + '__tagNameMap';
+    const nameMapKey = fieldName + '__' + (entity === 'performer' ? 'performerNameMap' : 'tagNameMap');
     if(!compositeRawRef.current[nameMapKey]){
       compositeRawRef.current[nameMapKey] = {};
     }
@@ -640,16 +640,23 @@
       const run = async () => {
         setSearchState((prev: any) => ({ ...prev, loading:true, error:null }));
         try {
-          const gql = q 
-            ? `query TagSuggest($term: String!) { findTags(filter: { per_page: 20 }, tag_filter: { name: { value: $term, modifier: INCLUDES } }) { tags { id name } } }`
-            : `query TagSuggest { findTags(filter: { per_page: 20 }) { tags { id name } } }`;
+          let gql: string;
+          if(entity === 'performer'){
+            gql = q
+              ? `query PerformerSuggest($term: String!) { findPerformers(filter: { per_page: 20 }, performer_filter: { name: { value: $term, modifier: INCLUDES } }) { performers { id name } } }`
+              : `query PerformerSuggest { findPerformers(filter: { per_page: 20 }) { performers { id name } } }`;
+          } else {
+            gql = q
+              ? `query TagSuggest($term: String!) { findTags(filter: { per_page: 20 }, tag_filter: { name: { value: $term, modifier: INCLUDES } }) { tags { id name } } }`
+              : `query TagSuggest { findTags(filter: { per_page: 20 }) { tags { id name } } }`;
+          }
           const variables = q ? { term: q } : {};
           const res = await fetch('/graphql', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({query:gql, variables}) });
           if(!res.ok) throw new Error('HTTP '+res.status);
           const json = await res.json();
           if(json.errors){ throw new Error(json.errors.map((e:any)=> e.message).join('; ')); }
-          const tags = json?.data?.findTags?.tags || [];
-          setSearchState((prev: any) => ({ ...prev, suggestions: tags, loading:false, error: tags.length? null: null }));
+          const suggestions = entity === 'performer' ? (json?.data?.findPerformers?.performers || []) : (json?.data?.findTags?.tags || []);
+          setSearchState((prev: any) => ({ ...prev, suggestions, loading:false, error: suggestions.length? null: null }));
         } catch(e:any){ setSearchState((prev: any) => ({ ...prev, error: 'Search failed', loading:false })); }
       };
       if(immediate){
@@ -1048,9 +1055,24 @@
           }));
           break; }
         case 'performers': {
-          // Performer native selector not yet integrated; keep fallback for now.
-          const raw = compositeRawRef.current[field.name] ?? '';
-          control = React.createElement('input',{ id, type:'text', className:'text-input form-control form-control-sm w-text', value: raw, placeholder:'Performer IDs comma-separated', onChange:(e:any)=>{ compositeRawRef.current[field.name] = e.target.value; updateConfigField(field.name, parseIdList(e.target.value)); } });
+          // Use the unified selector for performers (reuses tag selector UI/behavior)
+          let includeIds:number[] = []; let excludeIds:number[] = []; let constraints:any = {};
+          if(Array.isArray(val)) {
+            includeIds = val;
+          } else if(val && typeof val==='object'){
+            includeIds = Array.isArray(val.include)? val.include: [];
+            excludeIds = Array.isArray(val.exclude)? val.exclude: [];
+            constraints = val.constraints || {};
+          }
+          control = React.createElement('div', { className:'w-tags' }, React.createElement(TagIncludeExclude, {
+            fieldName: field.name,
+            value: { include: includeIds, exclude: excludeIds, constraints, tag_combination: val?.tag_combination },
+            onChange:(next:any)=> updateConfigField(field.name, next),
+            initialTagCombination: field.tag_combination,
+            allowedConstraintTypes: field.constraint_types,
+            allowedCombinationModes: field.allowed_combination_modes,
+            entity: 'performer'
+          }));
           break; }
         default:
           control = React.createElement('div',{ className:'text-muted small'}, 'Unsupported: '+field.type);
