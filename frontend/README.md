@@ -110,3 +110,57 @@ Before adding UI complexity, extend backend contracts (actions metadata, paramet
 
 ---
 This focused core is the foundation; extend only as backend capabilities mature.
+
+## 📡 Interaction Tracking (New Experimental Module)
+
+`src/InteractionTracker.ts` introduces a lightweight, privacy‑respectful analytics layer focused on events directly useful for recommendation models (no generic clickstream noise).
+
+Emitted Event Types:
+- session_start / session_end
+- scene_view
+- scene_watch_start / scene_watch_progress (throttled) / scene_seek / scene_watch_complete
+- scene_watch_summary (aggregated segments + totals, emitted on unload or scene switch if minimum watch time met)
+- image_view / gallery_view
+
+Video Consumption Semantics:
+- Segments: contiguous playback (merged across short pauses/seeks) → deduplicated coverage.
+- Summary: includes merged segments, total unique seconds watched, percent coverage, completion flag.
+- Progress: at most every 5s (configurable) while playing (suppressed when paused/seeking).
+
+Global Usage Examples:
+```js
+const tracker = (window as any).stashAIInteractionTracker;
+tracker.trackSceneView('123', { title: 'Scene Title' });
+// After obtaining <video> element:
+tracker.instrumentSceneVideo('123', document.querySelector('video'));
+tracker.trackImageView('55');
+tracker.trackGalleryView('77');
+```
+
+Optional Configuration (must be called early):
+```js
+tracker.configure({
+  endpoint: '/stash-ai',          // base prefix
+  sendIntervalMs: 4000,           // flush cadence
+  progressThrottleMs: 4000,       // watch_progress frequency
+  debug: true
+});
+```
+
+Expected Backend Endpoints:
+- POST /api/v1/interactions/track  (single event object)
+- POST /api/v1/interactions/sync   (array of event objects)
+
+Persistence & Reliability:
+- Queue in localStorage (`ai_overhaul_event_queue`) survives reloads.
+- `navigator.sendBeacon` used for final flush on visibility hidden / unload.
+- Immediate flush for high signal types (session_start, scene_watch_complete, scene_watch_summary).
+
+Planned Enhancements / TODO:
+- Add performer_view, tag_view, recommendation_click
+- Auto-detect scene detail transitions (hook via `pageContext`)
+- Adaptive throttling by video length
+- Retry backoff + poison message eviction
+- User opt-out toggle surfaced in settings
+
+If you extend the taxonomy, increment `schema_version` and keep backward compatibility in backend parsers.

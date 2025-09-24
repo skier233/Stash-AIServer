@@ -151,6 +151,15 @@
 
   //
 
+  // Interaction Tracking (Usage Example Only - non-invasive):
+  // After rendering a scene detail or when user navigates to one, you can call:
+  //   (window as any).stashAIInteractionTracker?.trackSceneView(String(sceneId), { title: scene.title });
+  // If you have access to the HTMLVideoElement of the scene playback you can instrument it once:
+  //   const videoEl = document.querySelector('video');
+  //   (window as any).stashAIInteractionTracker?.instrumentSceneVideo(String(sceneId), videoEl as HTMLVideoElement);
+  // This file does not automatically track to avoid assumptions about when a scene detail view is active.
+  // Integrations should be placed where the actual scene detail/player component mounts.
+
   //
 
   const RecommendedScenesPage: any = () => {

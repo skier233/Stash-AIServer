@@ -332,6 +332,6 @@
 .ScenePage .nav-tabs .nav-item .nav-link,
 [class*="scene"] .nav-tabs .nav-item .nav-link {
   padding: 6px 6px !important;
-  font-size: 0.98rem !important;
+  font-size: 0.92rem !important;
   margin-right: 2px !important;
 }

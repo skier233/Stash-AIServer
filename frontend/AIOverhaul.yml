@@ -11,6 +11,7 @@ ui:
     - dist/RecommendedScenes.js
     - dist/SimilarScenes.js
     - dist/SimilarTabIntegration.js
+    - dist/InteractionTracker.js
   css:
     - AIOverhaul.css
     - src/recommendedscenes.css

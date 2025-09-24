@@ -8,6 +8,7 @@ const path = require('path');
 
 let files = [
   'src/pageContext.ts',
+  'src/InteractionTracker.ts',
   'src/RecommendationUtils.tsx',
   'src/RecommendedScenes.tsx',
   'src/SimilarScenes.tsx',
