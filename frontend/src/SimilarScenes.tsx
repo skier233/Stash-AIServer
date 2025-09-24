@@ -22,19 +22,6 @@
     }
     
     const { useState, useMemo, useEffect, useRef, useCallback } = React;
-    
-    // Import shared utilities
-    const Utils = (w as any).AIRecommendationUtils;
-    if (!Utils) {
-      console.warn('[SimilarScenes] RecommendationUtils not found');
-      return;
-    }
-
-    const { useContainerDimensions, useCardWidth } = Utils;
-
-    // Bootstrap components
-    const Bootstrap = PluginApi.libraries.Bootstrap || {} as any;
-    const Button = Bootstrap.Button || ((p: any) => React.createElement('button', p, p.children));
 
   interface BasicSceneFile { duration?: number; size?: number; }
   interface BasicScene { 
@@ -82,30 +69,45 @@
     
     // Early return if no scene ID - don't call hooks
     if (!currentSceneId) {
-      return React.createElement('div', { className: 'similar-scenes-error' }, 'No scene ID provided for Similar tab');
+      return React.createElement('div', { className: 'alert alert-warning' }, 'No scene ID provided for Similar tab');
     }
     
     const onSceneClicked = props.onSceneClicked;
     const [recommenders, setRecommenders] = useState(null as RecommenderDef[] | null);
     const [recommenderId, setRecommenderId] = useState(null as string | null);
-    const [scenes, setScenes] = useState([] as BasicScene[]);
+  const [scenes, setScenes] = useState([] as BasicScene[]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null as string | null);
     const [configValues, setConfigValues] = useState({} as any);
-    const [zoomIndex, setZoomIndex] = useState(1);
+  const [offset, setOffset] = useState(0);
+  const PAGE_SIZE = 20;
+  const [hasMore, setHasMore] = useState(false);
     
-    const zoomWidths = [280, 340, 480, 640];
-    const [componentRef, { width: containerWidth }] = useContainerDimensions();
-    const cardWidth = useCardWidth(containerWidth, zoomIndex, zoomWidths);
+  // Root ref for the tab content container (used to find the nearest scrollable parent)
+  const componentRef = useRef(null as any);
+  const scrollContainerRef = useRef(null as any);
+  const pendingScrollRef = useRef(null as any);
 
-    // Load components at the top level - before any conditional logic
-    const componentsToLoad = useMemo(() => [
-      PluginApi.loadableComponents?.SceneCard,
-      PluginApi.loadableComponents?.QueueViewer,
-      PluginApi.loadableComponents?.QueueItem
-    ].filter(Boolean), []);
-    const componentsLoading = PluginApi.hooks?.useLoadComponents ? PluginApi.hooks.useLoadComponents(componentsToLoad) : false;
-    const { SceneCard, QueueViewer, QueueItem } = PluginApi.components || {} as any;
+    const getScrollContainer = useCallback(() => {
+      try {
+        const node: any = (componentRef as any)?.current || null;
+        let el: any = node ? node.parentElement : null;
+        while (el && el !== document.body) {
+          const style = window.getComputedStyle(el);
+          const oy = style.overflowY || style.overflow || '';
+          const scrollable = /(auto|scroll)/.test(oy);
+          if (scrollable && el.scrollHeight > (el.clientHeight + 10)) {
+            return el;
+          }
+          el = el.parentElement;
+        }
+      } catch(_) {}
+      return document.scrollingElement || document.documentElement || window;
+    }, [componentRef]);
+
+    useEffect(() => {
+      scrollContainerRef.current = getScrollContainer();
+    }, [getScrollContainer]);
 
     const configValuesRef = useRef({} as any);
     const compositeRawRef = useRef({} as any);
@@ -132,13 +134,12 @@
         setLoading(true);
         const recContext = 'similar_scene';
         const url = `${backendBase}/api/v1/recommendations/recommenders?context=${encodeURIComponent(recContext)}`;
-        console.debug('[SimilarScenes] discoverRecommenders ->', url);
         const response = await fetch(url);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const contentType = response.headers && response.headers.get ? response.headers.get('content-type') || '' : '';
         if (!contentType.includes('application/json')) {
           const text = await response.text();
-          console.warn('[SimilarScenes] discoverRecommenders: non-JSON response body (truncated):', text && text.slice ? text.slice(0, 512) : text);
+          warn('discoverRecommenders: non-JSON response body (truncated):', text && text.slice ? text.slice(0, 512) : text);
           setError('Failed to discover recommenders: server returned non-JSON response. See console for details.');
           setRecommenders(null);
           return;
@@ -162,27 +163,34 @@
       }
     }, [backendBase]);
 
-    // Fetch similar scenes from the unified recommendations query endpoint
-    const fetchSimilarScenes = useCallback(async () => {
+    // Fetch a page of similar scenes from the unified recommendations query endpoint
+    const fetchPage = useCallback(async (pageOffset = 0, append = false) => {
       if (!recommenderId || !currentSceneId) return;
 
       try {
         setLoading(true);
         setError(null);
 
+        // Snapshot scroll metrics if appending, so we can preserve viewport position
+        if (append) {
+          const sc: any = scrollContainerRef.current || getScrollContainer();
+          const prevTop = sc && typeof sc.scrollTop === 'number' ? sc.scrollTop : (typeof window !== 'undefined' ? window.scrollY : 0);
+          const prevHeight = sc && typeof sc.scrollHeight === 'number' ? sc.scrollHeight : (document?.documentElement?.scrollHeight || 0);
+          pendingScrollRef.current = { sc, prevTop, prevHeight };
+        } else {
+          pendingScrollRef.current = null;
+        }
+
         const payload = {
           context: 'similar_scene',
           recommenderId,
-          scene_id: currentSceneId,
+          seedSceneIds: [Number(currentSceneId)],
           config: configValuesRef.current || {},
-          limit: 20
-        };
-
-        console.debug('[SimilarScenes] fetchSimilarScenes payload:', payload);
-        log('Fetching similar scenes for scene:', currentSceneId, 'with payload:', payload);
+          limit: PAGE_SIZE,
+          offset: pageOffset
+        } as any;
 
         const url = `${backendBase}/api/v1/recommendations/query`;
-        console.debug('[SimilarScenes] POST ->', url);
         const response = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -193,27 +201,73 @@
         const contentType = response.headers && response.headers.get ? response.headers.get('content-type') || '' : '';
         if (!contentType.includes('application/json')) {
           const text = await response.text();
-          console.warn('[SimilarScenes] fetchSimilarScenes: non-JSON response body (truncated):', text && text.slice ? text.slice(0, 512) : text);
+          warn('fetchPage: non-JSON response body (truncated):', text && text.slice ? text.slice(0, 512) : text);
           throw new Error('Server returned non-JSON response');
         }
 
         const data = await response.json();
         if (data.scenes && Array.isArray(data.scenes)) {
           const normalizedScenes = data.scenes.map(normalizeScene).filter(Boolean) as BasicScene[];
-          setScenes(normalizedScenes);
+          setScenes((prev: BasicScene[]) => append ? prev.concat(normalizedScenes) : normalizedScenes);
+
+          // Update offset and hasMore using API meta when present
+          const meta = data.meta || {};
+          if (typeof meta.hasMore === 'boolean') {
+            setHasMore(Boolean(meta.hasMore));
+          } else if (typeof meta.total === 'number') {
+            const total = meta.total as number;
+            const known = (append ? (scenes.length) : 0) + normalizedScenes.length;
+            setHasMore(known < total);
+          } else {
+            setHasMore(false);
+          }
+
+          if (typeof meta.nextOffset === 'number') {
+            setOffset(meta.nextOffset);
+          } else {
+            // Fall back to incrementing by page size
+            setOffset(pageOffset + normalizedScenes.length);
+          }
+
+          // After DOM updates, restore scroll position to keep viewport stable
+          if (append && pendingScrollRef.current) {
+            const snap = pendingScrollRef.current;
+            const restore = () => {
+              try {
+                const sc: any = snap.sc || scrollContainerRef.current || getScrollContainer();
+                if (!sc) return;
+                const newHeight = sc && typeof sc.scrollHeight === 'number' ? sc.scrollHeight : (document?.documentElement?.scrollHeight || 0);
+                const delta = newHeight - (snap.prevHeight || 0);
+                const baseTop = snap.prevTop || 0;
+                if (typeof sc.scrollTop === 'number') {
+                  sc.scrollTop = baseTop + (delta > 0 ? delta : 0);
+                } else if (typeof window !== 'undefined' && typeof window.scrollTo === 'function') {
+                  window.scrollTo({ top: baseTop + (delta > 0 ? delta : 0) });
+                }
+              } catch (_) {}
+              finally { pendingScrollRef.current = null; }
+            };
+            // Wait two frames to ensure layout has settled
+            if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+              requestAnimationFrame(() => requestAnimationFrame(restore));
+            } else {
+              setTimeout(restore, 0);
+            }
+          }
         } else {
-          setScenes([]);
+          if (!append) setScenes([]);
+          setHasMore(false);
           setError('No similar scenes found or unexpected data format');
         }
 
       } catch (e: any) {
         warn('Failed to fetch similar scenes:', e && e.message ? e.message : e);
         setError('Failed to load similar scenes: ' + (e && e.message ? e.message : String(e)));
-        setScenes([]);
+        if (!append) setScenes([]);
       } finally {
         setLoading(false);
       }
-    }, [recommenderId, currentSceneId, configValues]);
+  }, [recommenderId, currentSceneId, backendBase, PAGE_SIZE]);
 
     // Auto-discover recommenders on mount
     useEffect(() => {
@@ -232,12 +286,14 @@
       configValuesRef.current = defaults;
     }, [currentRecommender]);
 
-    // Fetch similar scenes when recommender or scene changes
+    // Fetch first page when recommender or scene changes
     useEffect(() => {
       if (recommenderId && currentSceneId) {
-        fetchSimilarScenes();
+        fetchPage(0, false);
       }
-    }, [fetchSimilarScenes]);
+      // Intentionally exclude fetchPage from deps to avoid re-fetches when it changes identity
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [recommenderId, currentSceneId]);
 
     // Handle scene click
     const handleSceneClick = useCallback((sceneId: string, event?: React.MouseEvent) => {
@@ -250,62 +306,64 @@
       }
     }, [onSceneClicked]);
 
-    // Render scene card similar to queue viewer
-    const renderSceneCard = useCallback((scene: BasicScene) => {
+    // Render scene in queue list format (matching the Queue tab exactly)
+    const renderQueueScene = useCallback((scene: BasicScene, index: number) => {
       const title = scene.title || `Scene ${scene.id}`;
       const studio = scene.studio?.name || '';
       const performers = scene.performers?.map(p => p.name).join(', ') || '';
-      const duration = scene.files?.[0]?.duration;
       const screenshot = scene.paths?.screenshot;
-
-      return React.createElement('div', {
+      const date = scene.date || scene.created_at || '';
+      
+      return React.createElement('li', {
         key: scene.id,
-        className: 'similar-scene-card',
-        style: cardWidth ? { width: cardWidth } : {},
+        className: 'my-2'
+      }, React.createElement('a', {
+        href: `/scenes/${scene.id}`,
         onClick: (e: React.MouseEvent) => handleSceneClick(scene.id.toString(), e)
+      }, React.createElement('div', {
+        className: 'ml-1 d-flex align-items-center'
       }, [
-        React.createElement('div', { key: 'thumbnail', className: 'similar-scene-thumbnail' }, [
-          screenshot ? React.createElement('img', {
-            key: 'img',
-            src: screenshot,
-            alt: title,
-            loading: 'lazy'
-          }) : React.createElement('div', {
-            key: 'placeholder',
-            className: 'thumbnail-placeholder'
-          }, '📹')
-        ]),
-        React.createElement('div', { key: 'details', className: 'similar-scene-details' }, [
-          React.createElement('div', { key: 'title', className: 'similar-scene-title', title: title }, title),
-          studio ? React.createElement('div', { key: 'studio', className: 'similar-scene-studio' }, studio) : null,
-          performers ? React.createElement('div', { key: 'performers', className: 'similar-scene-performers' }, performers) : null,
-          duration ? React.createElement('div', { key: 'duration', className: 'similar-scene-duration' }, 
-            `${Math.floor(duration / 60)}:${String(duration % 60).padStart(2, '0')}`
-          ) : null
+        React.createElement('div', {
+          key: 'thumbnail',
+          className: 'thumbnail-container'
+        }, screenshot ? React.createElement('img', {
+          loading: 'lazy',
+          alt: title,
+          src: screenshot
+        }) : null),
+        React.createElement('div', {
+          key: 'details',
+          className: 'queue-scene-details'
+        }, [
+          React.createElement('span', { key: 'title', className: 'queue-scene-title' }, title),
+          React.createElement('span', { key: 'studio', className: 'queue-scene-studio' }, studio),
+          React.createElement('span', { key: 'performers', className: 'queue-scene-performers' }, performers),
+          React.createElement('span', { key: 'date', className: 'queue-scene-date' }, date)
         ])
-      ]);
-    }, [cardWidth, handleSceneClick]);
+      ])));
+    }, [handleSceneClick]);
 
     // Render recommender selector when recommenders are available
     const renderRecommenderSelector = useCallback(() => {
       if (!recommenders || recommenders.length === 0) return null;
 
       // Prefer recommenders that advertise support for 'similar_scene'. If none do, fall back to all recommenders.
-      const similarContextRecommenders = recommenders.filter(r => r.contexts?.includes('similar_scene'));
+  const similarContextRecommenders = (recommenders as RecommenderDef[]).filter((r: RecommenderDef) => (r.contexts || []).includes('similar_scene'));
       const candidates = similarContextRecommenders.length > 0 ? similarContextRecommenders : recommenders;
 
       // Ensure a default is selected
       if (!recommenderId && candidates.length > 0) {
         // Defer setting state until next microtask to avoid during render
         setTimeout(() => {
-          try { setRecommenderId((prev) => prev || candidates[0].id); } catch (_) {}
+          try { setRecommenderId((prev: string | null) => prev || candidates[0].id); } catch (_) {}
         }, 0);
       }
 
-      return React.createElement('div', { className: 'similar-recommender-selector' }, [
-        React.createElement('label', { key: 'label' }, 'Algorithm: '),
+      return React.createElement('div', { className: 'd-flex align-items-center' }, [
+        React.createElement('label', { key: 'label', className: 'me-2 mb-0' }, 'Algorithm: '),
         React.createElement('select', {
           key: 'select',
+          className: 'form-select form-select-sm',
           value: recommenderId || '',
           onChange: (e: any) => setRecommenderId(e.target.value)
         }, candidates.map((rec: any) => 
@@ -322,13 +380,13 @@
       if (opts && opts.debounce) {
         if (textTimersRef.current[name]) clearTimeout(textTimersRef.current[name]);
         textTimersRef.current[name] = setTimeout(() => {
-          fetchSimilarScenes();
+          fetchPage(0, false);
         }, 300);
       } else {
         // immediate fetch
-        fetchSimilarScenes();
+        fetchPage(0, false);
       }
-    }, [fetchSimilarScenes]);
+  }, [fetchPage]);
 
     // Render a compact config panel for the selected recommender
     const renderConfigPanel = useCallback(() => {
@@ -340,85 +398,90 @@
         let control: any = null;
         switch (field.type) {
           case 'number':
-            control = React.createElement('input', { id, type: 'number', value: val ?? '', onChange: (e: any) => updateConfigField(field.name, e.target.value === '' ? null : Number(e.target.value)) });
+            control = React.createElement('input', { id, type: 'number', className: 'form-control form-control-sm', value: val ?? '', onChange: (e: any) => updateConfigField(field.name, e.target.value === '' ? null : Number(e.target.value)) });
             break;
           case 'slider':
-            control = React.createElement('div', {}, [
-              React.createElement('input', { key: 'rng', id, type: 'range', value: val ?? field.default ?? 0, min: field.min, max: field.max, step: field.step || 1, onChange: (e: any) => updateConfigField(field.name, Number(e.target.value)) }),
-              React.createElement('span', { key: 'val' }, String(val ?? field.default ?? 0))
+            control = React.createElement('div', { className: 'd-flex align-items-center gap-2' }, [
+              React.createElement('input', { key: 'rng', id, type: 'range', className: 'form-range', value: val ?? field.default ?? 0, min: field.min, max: field.max, step: field.step || 1, onChange: (e: any) => updateConfigField(field.name, Number(e.target.value)) }),
+              React.createElement('span', { key: 'val', className: 'text-muted small' }, String(val ?? field.default ?? 0))
             ]);
             break;
           case 'select':
           case 'enum':
-            control = React.createElement('select', { id, value: val ?? field.default ?? '', onChange: (e: any) => updateConfigField(field.name, e.target.value) }, (field.options || []).map((o: any) => React.createElement('option', { key: o.value, value: o.value }, o.label || o.value)));
+            control = React.createElement('select', { id, className: 'form-select form-select-sm', value: val ?? field.default ?? '', onChange: (e: any) => updateConfigField(field.name, e.target.value) }, (field.options || []).map((o: any) => React.createElement('option', { key: o.value, value: o.value }, o.label || o.value)));
             break;
           case 'boolean':
-            control = React.createElement('input', { id, type: 'checkbox', checked: !!val, onChange: (e: any) => updateConfigField(field.name, e.target.checked) });
+            control = React.createElement('input', { id, type: 'checkbox', className: 'form-check-input', checked: !!val, onChange: (e: any) => updateConfigField(field.name, e.target.checked) });
             break;
           case 'text':
-            control = React.createElement('input', { id, type: 'text', value: val ?? '', placeholder: field.help || '', onChange: (e: any) => updateConfigField(field.name, e.target.value, { debounce: true }) });
+            control = React.createElement('input', { id, type: 'text', className: 'form-control form-control-sm', value: val ?? '', placeholder: field.help || '', onChange: (e: any) => updateConfigField(field.name, e.target.value, { debounce: true }) });
             break;
           case 'tags':
             // Simple comma-separated input for tags for now
-            control = React.createElement('input', { id, type: 'text', value: Array.isArray(val) ? val.join(',') : (val ?? ''), placeholder: 'Comma separated tag ids', onChange: (e: any) => {
+            control = React.createElement('input', { id, type: 'text', className: 'form-control form-control-sm', value: Array.isArray(val) ? val.join(',') : (val ?? ''), placeholder: 'Comma separated tag ids', onChange: (e: any) => {
               const text = e.target.value;
               const arr = text.split(',').map((s: string) => s.trim()).filter(Boolean).map((n: string) => Number(n)).filter((n: number) => !isNaN(n));
               updateConfigField(field.name, arr, { debounce: true });
             }});
             break;
           default:
-            control = React.createElement('input', { id, type: 'text', value: val ?? '', onChange: (e: any) => updateConfigField(field.name, e.target.value) });
+            control = React.createElement('input', { id, type: 'text', className: 'form-control form-control-sm', value: val ?? '', onChange: (e: any) => updateConfigField(field.name, e.target.value) });
         }
-        return React.createElement('div', { key: field.name, className: 'similar-config-row' }, [
-          React.createElement('label', { key: 'lbl', htmlFor: id }, field.label || field.name),
-          control
+        return React.createElement('div', { key: field.name, className: 'mb-2 row' }, [
+          React.createElement('label', { key: 'lbl', htmlFor: id, className: 'col-sm-3 col-form-label col-form-label-sm' }, field.label || field.name),
+          React.createElement('div', { key: 'input', className: 'col-sm-9' }, [control])
         ]);
       });
-      return React.createElement('div', { className: 'similar-config-panel' }, rows);
+      return React.createElement('div', { className: 'card' }, [
+        React.createElement('div', { key: 'header', className: 'card-header' }, 'Configuration'),
+        React.createElement('div', { key: 'body', className: 'card-body' }, rows)
+      ]);
     }, [currentRecommender, configValues, updateConfigField]);
 
     // Note: Zoom slider intentionally omitted for queue-style display
 
     // Main render
     return React.createElement('div', { 
-      className: 'similar-scenes-container',
+      className: 'container-fluid similar-scenes-tab',
       ref: componentRef
     }, [
-      React.createElement('div', { key: 'controls', className: 'similar-scenes-controls' }, [
+      React.createElement('div', { key: 'controls', className: 'd-flex align-items-center gap-3 mb-3 p-2 bg-secondary rounded border' }, [
         renderRecommenderSelector(),
         React.createElement('button', {
           key: 'refresh',
           className: 'btn btn-secondary btn-sm',
-          onClick: fetchSimilarScenes,
+          onClick: () => fetchPage(0, false),
           disabled: loading
         }, loading ? 'Loading...' : 'Refresh')
       ]),
 
       // Config panel separate block (full width) so it doesn't overflow out of the tab
-      currentRecommender ? React.createElement('div', { key: 'configBlock', className: 'similar-scenes-config-block' }, [
+      currentRecommender ? React.createElement('div', { key: 'configBlock', className: 'mb-3' }, [
         renderConfigPanel()
       ]) : null,
       
-      loading ? React.createElement('div', { key: 'loading', className: 'similar-scenes-loading' }, 'Loading similar scenes...') : null,
+  // Only show the big loading message when we don't have anything rendered yet
+  (loading && scenes.length === 0) ? React.createElement('div', { key: 'loading', className: 'text-center text-muted py-3' }, 'Loading similar scenes...') : null,
       
-      error ? React.createElement('div', { key: 'error', className: 'similar-scenes-error' }, error) : null,
+      error ? React.createElement('div', { key: 'error', className: 'alert alert-danger' }, error) : null,
       
       !loading && !error && scenes.length === 0 ? 
-        React.createElement('div', { key: 'empty', className: 'similar-scenes-empty' }, 'No similar scenes found') : null,
+        React.createElement('div', { key: 'empty', className: 'text-center text-muted py-3' }, 'No similar scenes found') : null,
       
-      !loading && scenes.length > 0 ? (() => {
-        // Use already loaded components at top level
-        if (!componentsLoading && SceneCard) {
-          const children = scenes.map((s: BasicScene, i: number) => 
-            React.createElement('div', { key: s.id + '_' + i, style: { display: 'contents' } }, 
-              SceneCard ? React.createElement(SceneCard, { scene: s, zoomIndex: undefined, queue: undefined, index: i }) : null
-            )
-          );
-          return React.createElement('div', { key: 'list', className: 'similar-scenes-list row d-flex flex-wrap justify-content-center' }, children);
-        }
+      // Keep rendering the list even while loading next page to avoid scroll jumps
+      scenes.length > 0 ? (() => {
+        // Use native queue list structure and CSS classes exactly as in the Queue tab
+        return React.createElement('ul', { 
+          key: 'queue-list', 
+          className: '' // Use default ul styling, no custom classes
+        }, scenes.map(renderQueueScene));
+      })() : null,
 
-        // Fallback to original thumbnail grid
-        return React.createElement('div', { key: 'grid', className: 'similar-scenes-grid' }, scenes.map(renderSceneCard));
+      // Load more chevron button (centered)
+      (hasMore || scenes.length >= PAGE_SIZE) ? (() => {
+        const svg = React.createElement('svg', { 'aria-hidden': 'true', focusable: 'false', 'data-prefix': 'fas', 'data-icon': 'chevron-down', className: 'svg-inline--fa fa-chevron-down fa-icon', role: 'img', xmlns: 'http://www.w3.org/2000/svg', viewBox: '0 0 448 512' }, React.createElement('path', { fill: 'currentColor', d: "M201.4 406.6c12.5 12.5 32.8 12.5 45.3 0l192-192c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L224 338.7 54.6 169.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3l192 192z" }));
+        const btn = React.createElement('button', { key: 'chev', type: 'button', className: 'btn btn-primary', disabled: !!loading, onClick: (e: any) => { e.preventDefault(); e.stopPropagation(); if (loading) return; const nextOffset = offset + PAGE_SIZE; fetchPage(nextOffset, true); } }, svg);
+        return React.createElement('div', { key: 'load-more', className: 'd-flex justify-content-center my-3' }, [btn]);
       })() : null
     ]);
   };
@@ -426,22 +489,12 @@
   // Export to global namespace for integration
   (w as any).SimilarScenesViewer = SimilarScenesViewer;
 
-  // Debug: log that component is loaded
-  console.log('[SimilarScenes] SimilarScenesViewer component loaded and exported to window.SimilarScenesViewer');
+  // Exported
 
   } // End initializeSimilarScenes
   
   // Wait for dependencies and initialize
-  function waitAndInitialize() {
-    if (w.PluginApi && w.PluginApi.React && w.AIRecommendationUtils) {
-      console.log('[SimilarScenes] Dependencies ready, initializing...');
-      initializeSimilarScenes();
-    } else {
-      console.log('[SimilarScenes] Waiting for dependencies...');
-      setTimeout(waitAndInitialize, 100);
-    }
-  }
-  
-  waitAndInitialize();
+  // Initialize immediately; SimilarTabIntegration resolves viewer at render time
+  initializeSimilarScenes();
 
 })();

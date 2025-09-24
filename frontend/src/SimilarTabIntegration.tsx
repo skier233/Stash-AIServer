@@ -22,33 +22,12 @@
     return;
   }
   
-  // Wait for SimilarScenesViewer to be available
-  function waitForSimilarScenesViewer(callback: () => void, timeout = 5000) {
-    const start = Date.now();
-    const check = () => {
-      if (w.SimilarScenesViewer) {
-        console.log('[SimilarTabIntegration] SimilarScenesViewer found, initializing...');
-        callback();
-      } else if (Date.now() - start < timeout) {
-        setTimeout(check, 100);
-      } else {
-        console.warn('[SimilarTabIntegration] SimilarScenesViewer not found after timeout');
-      }
-    };
-    check();
-  }
-  
   function initializePatches() {
     console.log('[SimilarTabIntegration] Registering patches...');
     
     // Final safety check - make sure everything is available
     if (!PluginApi.patch || !PluginApi.patch.before) {
       console.error('[SimilarTabIntegration] PluginApi.patch.before not available');
-      return;
-    }
-    
-    if (!w.SimilarScenesViewer) {
-      console.error('[SimilarTabIntegration] SimilarScenesViewer not available');
       return;
     }
     
@@ -151,9 +130,10 @@
           const sceneId = props.scene?.id || null;
           console.log('[SimilarTabIntegration] TabContent patch called with scene:', sceneId);
           
-          // Only render if we have a scene ID
-          const content = sceneId ? 
-            React.createElement(w.SimilarScenesViewer, { sceneId: sceneId, key: `similar-${sceneId}` }) :
+          // Only render if we have a scene ID and viewer is available
+          const Viewer = w.SimilarScenesViewer;
+          const content = (sceneId && Viewer) ? 
+            React.createElement(Viewer, { sceneId: sceneId, key: `similar-${sceneId}` }) :
             React.createElement('div', { className: 'similar-scenes-error' }, 'Loading scene data...');
 
           const pane = React.createElement(Tab.Pane, { eventKey: "similar-tab", key: `similar-pane-${sceneId || 'loading'}` }, content);
@@ -177,15 +157,14 @@
         }
       });
       
-      console.log('[SimilarTabIntegration] Patches registered successfully');
+  console.log('[SimilarTabIntegration] Patches registered successfully');
       
     } catch (error) {
       console.error('[SimilarTabIntegration] Error registering patches:', error);
     }
   }
   
-  // Initialize
-  console.log('[SimilarTabIntegration] Starting initialization...');
-  waitForSimilarScenesViewer(initializePatches);
+  // Initialize immediately; viewer is resolved lazily at render time
+  initializePatches();
   
 })();
