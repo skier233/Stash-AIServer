@@ -1009,12 +1009,16 @@
         case 'enum':
           control = React.createElement('select',{ id, className:'input-control form-control form-control-sm w-select w-180', value: val ?? field.default ?? '', onChange:(e:any)=> updateConfigField(field.name, e.target.value) }, (field.options||[]).map((o:any)=> React.createElement('option',{ key:o.value, value:o.value }, o.label||o.value)));
           break;
-        case 'boolean':
+        case 'boolean': {
+          // Ensure the checkbox has an accessible description (help) and the visible label is rendered above via labelNode.
+          const helpId = field.help ? (id + '-help') : undefined;
+          // Keep the internal switch label empty so the above label (labelNode) is the visible caption
           control = React.createElement('div',{ className:'custom-control custom-switch'}, [
-            React.createElement('input',{ key:'chk', id, type:'checkbox', className:'custom-control-input', checked: !!val, onChange:(e:any)=> updateConfigField(field.name, e.target.checked) }),
-            React.createElement('label',{ key:'lb', htmlFor:id, className:'custom-control-label', title: field.help||'' }, field.label ? '' : null)
+            React.createElement('input',{ key:'chk', id, type:'checkbox', className:'custom-control-input', checked: !!val, onChange:(e:any)=> updateConfigField(field.name, e.target.checked), 'aria-describedby': helpId }),
+            React.createElement('label',{ key:'lb', htmlFor:id, className:'custom-control-label', title: field.help||'' }, '')
           ]);
           break;
+        }
         case 'text':
           control = React.createElement('input',{ id, type:'text', className:'text-input form-control form-control-sm w-text w-180', value: val ?? '', placeholder: field.help || '', onChange:(e:any)=> updateConfigField(field.name, e.target.value, { debounce:true, field }) });
           break;
@@ -1051,7 +1055,8 @@
         default:
           control = React.createElement('div',{ className:'text-muted small'}, 'Unsupported: '+field.type);
       }
-      const showLabelAbove = field.type !== 'boolean';
+  // Render labels above every control (including boolean switches) so layout is consistent
+  const showLabelAbove = true;
       // Make labels inline-block and only as wide as the control beneath to prevent blocking layout
       const capWidth = field.type==='tags' ? 400 : (field.type==='slider' ? 92 : (['text','search','select','enum'].includes(field.type) ? 180 : undefined));
       const labelStyle = capWidth ? { display:'inline-block', width: capWidth+'px', maxWidth: capWidth+'px' } : undefined;
@@ -1062,7 +1067,11 @@
       const compactTypes = ['number', 'select', 'enum', 'boolean', 'slider', 'text', 'search', 'tags'];
       const colClass = compactTypes.includes(field.type) ? 'col-auto mb-1' : 'col-lg-4 col-md-6 col-12 mb-1';
       return React.createElement('div',{ key:field.name, className:colClass }, [
-        React.createElement('div', { className: 'form-group mb-0' }, [labelNode, control])
+        React.createElement('div', { className: 'form-group mb-0' }, [
+          labelNode,
+          // Wrap control so it can be constrained to the same width as the label and centered
+          React.createElement('div', { key: 'ctrlwrap', style: labelStyle, className: 'control-wrap' }, control)
+        ])
       ]);
     });
 

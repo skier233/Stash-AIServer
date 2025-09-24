@@ -62,6 +62,27 @@
 .ai-rec-config .w-tags{width:400px;max-width:400px}
 .ai-rec-config .label-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
+/* Wrapper used in RecommendedScenes.tsx to align controls under their labels */
+.ai-rec-config .control-wrap{display:flex;align-items:center;justify-content:center;min-height:33.5px;height:33.5px}
+
+/* Ensure inner switch fills the wrapper and its input is centered precisely */
+.ai-rec-config .control-wrap .custom-control.custom-switch{height:100%;align-items:center;display:flex}
+.ai-rec-config .control-wrap .custom-control-input{margin:0;align-self:center}
+.ai-rec-config .control-wrap .custom-control-label{display:flex;align-items:center;justify-content:center;height:100%}
+
+
+/* Force the switch pseudo-elements (Bootstrap's .custom-control-label::before/::after)
+	 to be vertically centered within the label's area. Use high specificity so theme
+	 overrides won't push the switch off-center. */
+.ai-rec-config .control-wrap .custom-control.custom-switch .custom-control-label::before,
+.ai-rec-config .control-wrap .custom-control.custom-switch .custom-control-label::after{
+	top:50% !important;
+	transform:translateY(-50%) !important;
+}
+
+/* Ensure the label itself doesn't collapse baseline spacing that could push the switch up */
+.ai-rec-config .control-wrap .custom-control-label{line-height:1;padding:0}
+
 /* Layout: center controls horizontally inside each config row */
 .ai-rec-config .config-row{display:flex;justify-content:center;align-items:center;gap:12px;flex-wrap:wrap;margin-left:0;margin-right:0}
 .ai-rec-config .config-row>[class*="col-"]{padding-left:4px;padding-right:4px;display:flex;align-items:center;justify-content:center}
