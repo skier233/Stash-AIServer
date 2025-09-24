@@ -82,6 +82,20 @@
   const [offset, setOffset] = useState(0);
   const PAGE_SIZE = 20;
   const [hasMore, setHasMore] = useState(false);
+      const LS_SHOW_CONFIG_KEY = 'aiRec.showConfig';
+      function readShowConfig(): boolean {
+        try { const raw = localStorage.getItem(LS_SHOW_CONFIG_KEY); if(raw == null) return true; return raw === '1' || raw === 'true'; } catch(_) { return true; }
+      }
+    const [showConfig, setShowConfig] = useState(()=> readShowConfig());
+      // Sync showConfig via localStorage + custom event (so changes affect other components in same window)
+      useEffect(()=>{
+        function onStorage(e: StorageEvent){ try { if(e.key === LS_SHOW_CONFIG_KEY){ const v = e.newValue; const next = v === '1' || v === 'true'; setShowConfig(next); } } catch(_){} }
+        function onCustom(ev: any){ try { if(ev && ev.detail !== undefined) setShowConfig(Boolean(ev.detail)); } catch(_){} }
+        window.addEventListener('storage', onStorage);
+        window.addEventListener('aiRec.showConfig', onCustom as EventListener);
+        return ()=>{ window.removeEventListener('storage', onStorage); window.removeEventListener('aiRec.showConfig', onCustom as EventListener); };
+      }, []);
+      function toggleShowConfig(){ const next = !showConfig; try { localStorage.setItem(LS_SHOW_CONFIG_KEY, next ? '1' : '0'); } catch(_){} try { window.dispatchEvent(new CustomEvent('aiRec.showConfig', { detail: next })); } catch(_){} setShowConfig(next); }
     
   // Root ref for the tab content container (used to find the nearest scrollable parent)
   const componentRef = useRef(null as any);
@@ -363,7 +377,7 @@
         React.createElement('label', { key: 'label', className: 'me-2 mb-0' }, 'Algorithm: '),
         React.createElement('select', {
           key: 'select',
-          className: 'form-select form-select-sm',
+            className: 'input-control form-control form-control-sm w-select w-180',
           value: recommenderId || '',
           onChange: (e: any) => setRecommenderId(e.target.value)
         }, candidates.map((rec: any) => 
@@ -388,55 +402,25 @@
       }
   }, [fetchPage]);
 
-    // Render a compact config panel for the selected recommender
+  // Shared config panel using AIRecommendationUtils.buildConfigRows for parity
     const renderConfigPanel = useCallback(() => {
       if (!currentRecommender || !Array.isArray((currentRecommender as any).config) || !(currentRecommender as any).config.length) return null;
       const defs: any[] = (currentRecommender as any).config;
-      const rows = defs.map(field => {
-        const val = configValues[field.name];
-        const id = 'sim_cfg_' + field.name;
-        let control: any = null;
-        switch (field.type) {
-          case 'number':
-            control = React.createElement('input', { id, type: 'number', className: 'form-control form-control-sm', value: val ?? '', onChange: (e: any) => updateConfigField(field.name, e.target.value === '' ? null : Number(e.target.value)) });
-            break;
-          case 'slider':
-            control = React.createElement('div', { className: 'd-flex align-items-center gap-2' }, [
-              React.createElement('input', { key: 'rng', id, type: 'range', className: 'form-range', value: val ?? field.default ?? 0, min: field.min, max: field.max, step: field.step || 1, onChange: (e: any) => updateConfigField(field.name, Number(e.target.value)) }),
-              React.createElement('span', { key: 'val', className: 'text-muted small' }, String(val ?? field.default ?? 0))
-            ]);
-            break;
-          case 'select':
-          case 'enum':
-            control = React.createElement('select', { id, className: 'form-select form-select-sm', value: val ?? field.default ?? '', onChange: (e: any) => updateConfigField(field.name, e.target.value) }, (field.options || []).map((o: any) => React.createElement('option', { key: o.value, value: o.value }, o.label || o.value)));
-            break;
-          case 'boolean':
-            control = React.createElement('input', { id, type: 'checkbox', className: 'form-check-input', checked: !!val, onChange: (e: any) => updateConfigField(field.name, e.target.checked) });
-            break;
-          case 'text':
-            control = React.createElement('input', { id, type: 'text', className: 'form-control form-control-sm', value: val ?? '', placeholder: field.help || '', onChange: (e: any) => updateConfigField(field.name, e.target.value, { debounce: true }) });
-            break;
-          case 'tags':
-            // Simple comma-separated input for tags for now
-            control = React.createElement('input', { id, type: 'text', className: 'form-control form-control-sm', value: Array.isArray(val) ? val.join(',') : (val ?? ''), placeholder: 'Comma separated tag ids', onChange: (e: any) => {
-              const text = e.target.value;
-              const arr = text.split(',').map((s: string) => s.trim()).filter(Boolean).map((n: string) => Number(n)).filter((n: number) => !isNaN(n));
-              updateConfigField(field.name, arr, { debounce: true });
-            }});
-            break;
-          default:
-            control = React.createElement('input', { id, type: 'text', className: 'form-control form-control-sm', value: val ?? '', onChange: (e: any) => updateConfigField(field.name, e.target.value) });
-        }
-        return React.createElement('div', { key: field.name, className: 'mb-2 row' }, [
-          React.createElement('label', { key: 'lbl', htmlFor: id, className: 'col-sm-3 col-form-label col-form-label-sm' }, field.label || field.name),
-          React.createElement('div', { key: 'input', className: 'col-sm-9' }, [control])
-        ]);
-      });
+      const utils = (w as any).AIRecommendationUtils || {};
+      const buildRows = utils.buildConfigRows;
+      const TagIncludeExclude = utils.TagIncludeExclude;
+      if (!buildRows) return null;
+      const rows = buildRows({ React, defs, configValues, updateConfigField, TagIncludeExclude, compositeRawRef, narrowTagWidth: 300 });
       return React.createElement('div', { className: 'card' }, [
-        React.createElement('div', { key: 'header', className: 'card-header' }, 'Configuration'),
-        React.createElement('div', { key: 'body', className: 'card-body' }, rows)
+          React.createElement('div', { key: 'header', className: 'card-header d-flex justify-content-between align-items-center' }, [
+          React.createElement('span', { key: 'title' }, 'Configuration'),
+          React.createElement('button', { key: 'toggle', type: 'button', className: 'btn btn-secondary btn-sm', onClick: () => toggleShowConfig() }, showConfig ? 'Hide' : 'Show')
+        ]),
+        showConfig ? React.createElement('div', { key: 'body', className: 'card-body' }, [
+          React.createElement('div', { key:'rowwrap', className:'d-flex flex-column gap-2' }, rows)
+        ]) : null
       ]);
-    }, [currentRecommender, configValues, updateConfigField]);
+    }, [currentRecommender, configValues, updateConfigField, showConfig]);
 
     // Note: Zoom slider intentionally omitted for queue-style display
 
@@ -445,14 +429,9 @@
       className: 'container-fluid similar-scenes-tab',
       ref: componentRef
     }, [
-      React.createElement('div', { key: 'controls', className: 'd-flex align-items-center gap-3 mb-3 p-2 bg-secondary rounded border' }, [
-        renderRecommenderSelector(),
-        React.createElement('button', {
-          key: 'refresh',
-          className: 'btn btn-secondary btn-sm',
-          onClick: () => fetchPage(0, false),
-          disabled: loading
-        }, loading ? 'Loading...' : 'Refresh')
+      // Algorithm selector (no surrounding background)
+      React.createElement('div', { key: 'controls', className: 'd-flex align-items-center gap-3 mb-3 p-0' }, [
+        renderRecommenderSelector()
       ]),
 
       // Config panel separate block (full width) so it doesn't overflow out of the tab

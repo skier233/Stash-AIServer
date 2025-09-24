@@ -184,7 +184,17 @@
   const [configValues, setConfigValues] = useState({} as any);
   const configCacheRef = useRef({} as any);
   const configValuesRef = useRef({} as any);
-  const [showConfig, setShowConfig] = useState(true as any);
+  const LS_SHOW_CONFIG_KEY = 'aiRec.showConfig';
+  function readShowConfigRec(){ try{ const raw = localStorage.getItem(LS_SHOW_CONFIG_KEY); if(raw == null) return true; return raw === '1' || raw === 'true'; } catch(_) { return true; } }
+  const [showConfig, setShowConfig] = useState(()=> readShowConfigRec() as any);
+  useEffect(()=>{
+    function onStorage(e:StorageEvent){ try { if(e.key === LS_SHOW_CONFIG_KEY){ const v = e.newValue; const next = v === '1' || v === 'true'; setShowConfig(next); } } catch(_){} }
+    function onCustom(ev:any){ try { if(ev && ev.detail !== undefined) setShowConfig(Boolean(ev.detail)); } catch(_){} }
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('aiRec.showConfig', onCustom as EventListener);
+    return ()=>{ window.removeEventListener('storage', onStorage); window.removeEventListener('aiRec.showConfig', onCustom as EventListener); };
+  }, []);
+  function toggleShowConfigRec(){ const next = !showConfig; try{ localStorage.setItem(LS_SHOW_CONFIG_KEY, next ? '1' : '0'); } catch(_){} try{ window.dispatchEvent(new CustomEvent('aiRec.showConfig', { detail: next })); } catch(_){} setShowConfig(next); }
   // Generic tick to force config panel rerender (for tag mode changes)
   const [configRerenderTick, setConfigRerenderTick] = useState(0);
   function forceConfigRerender(){ setConfigRerenderTick((t:number)=> t+1); }
@@ -1142,7 +1152,7 @@
       React.createElement('div',{ key:'hdr', className:'d-flex justify-content-between align-items-center mb-1'}, [
         React.createElement('strong',{ key:'t', className:'small'}),
         React.createElement('div',{ key:'actions', className:'d-flex align-items-center gap-2'}, [
-          React.createElement('button',{ key:'tgl', className:'btn btn-secondary btn-sm', onClick:()=> setShowConfig((s:any)=>!s) }, showConfig? 'Hide':'Show')
+          React.createElement('button',{ key:'tgl', className:'btn btn-secondary btn-sm', onClick:()=> toggleShowConfigRec() }, showConfig? 'Hide':'Show')
         ])
       ]),
       showConfig ? React.createElement('div',{ key:'body', className:'config-row row'}, rows) : null
