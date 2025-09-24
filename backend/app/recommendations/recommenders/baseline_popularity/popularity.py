@@ -9,7 +9,7 @@ import math
     id='baseline_popularity',
     label='Baseline Popularity',
     description='Deterministic pseudo-popularity ordering over sample scene set',
-    contexts=[RecContext.global_feed],
+    contexts=[RecContext.global_feed, RecContext.similar_scene],
     config=[
         { 'name':'min_score','label':'Min Score','type':'number','default':0,'min':0,'max':100 },
         { 'name':'rank_window','label':'Rank Window','type':'slider','default':50,'min':10,'max':200,'step':10 },
