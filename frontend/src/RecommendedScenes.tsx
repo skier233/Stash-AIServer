@@ -296,6 +296,7 @@
           // Use memoized tag data to avoid expensive recomputation on every render
           const { availableTags } = overlapTagData;
           const selectedCoTags = localConstraint.overlap?.coTags || [];
+          const entity = localConstraint._entity || 'tag';
           
           return React.createElement('div', { className: 'constraint-options' }, [
             React.createElement('div', { key: 'info' }, 'Co-occurrence with other selected tags'),
@@ -303,7 +304,8 @@
               React.createElement('label', { key: 'label' }, 'Selected for co-occurrence: '),
               React.createElement('div', { key: 'selected-tags', className: 'constraint-selected-tags' }, 
                 selectedCoTags.length > 0 ? selectedCoTags.map((coTagId: number) => {
-                  const coTagName = (compositeRawRef.current[fieldName + '__tagNameMap'] || {})[coTagId] || `Tag ${coTagId}`;
+                  const nameMap = (compositeRawRef.current[fieldName + '__' + entity + 'NameMap'] || {});
+                  const coTagName = nameMap[coTagId] || `${entity === 'performer' ? 'Performer' : 'Tag'} ${coTagId}`;
                   return React.createElement('span', { 
                     key: coTagId, 
                     className: 'constraint-cochip-tag'
@@ -325,7 +327,8 @@
               ),
               availableTags.length > 0 ? React.createElement('div', { key: 'available-tags', className: 'constraint-available-tags' }, 
                 availableTags.map((coTagId: number) => {
-                  const coTagName = (compositeRawRef.current[fieldName + '__tagNameMap'] || {})[coTagId] || `Tag ${coTagId}`;
+                  const nameMap = (compositeRawRef.current[fieldName + '__' + entity + 'NameMap'] || {});
+                  const coTagName = nameMap[coTagId] || `${entity === 'performer' ? 'Performer' : 'Tag'} ${coTagId}`;
                   const isSelected = selectedCoTags.includes(coTagId);
                   if (isSelected) return null; // Don't show already selected tags
                   return React.createElement('button', { 
@@ -517,6 +520,13 @@
       compositeRawRef.current[nameMapKey] = {};
     }
     const tagNameMap = compositeRawRef.current[nameMapKey];
+    // Helper to look up a name for an id for a given entity (falls back to "Performer {id}" or "Tag {id}")
+    function lookupName(id: number, forEntity?: 'tag'|'performer'){
+      const ent = forEntity || entity || 'tag';
+      const key = fieldName + '__' + (ent === 'performer' ? 'performerNameMap' : 'tagNameMap');
+      const map = compositeRawRef.current[key] || {};
+      return map[id] || (ent === 'performer' ? `Performer ${id}` : `Tag ${id}`);
+    }
   const debounceTimerRef = React.useRef(null as any);
 
     function removeTag(id:number, list:'include'|'exclude'){
@@ -589,10 +599,11 @@
       return constraint;
     }
 
-    function showConstraintPopup(tagId: number, event: any) {
+    function showConstraintPopup(tagId: number, event: any, popupEntity?: 'tag'|'performer') {
       const rect = event.target.getBoundingClientRect();
       setConstraintPopup({
         tagId,
+        entity: popupEntity || entity,
         position: { x: rect.left, y: rect.bottom + 5 }
       });
       event.stopPropagation();
@@ -616,6 +627,7 @@
         }
         setConstraintPopup({ 
           tagId: id, 
+          entity: entity,
           position,
           initialConstraint: init 
         });
@@ -656,6 +668,10 @@
           const json = await res.json();
           if(json.errors){ throw new Error(json.errors.map((e:any)=> e.message).join('; ')); }
           const suggestions = entity === 'performer' ? (json?.data?.findPerformers?.performers || []) : (json?.data?.findTags?.tags || []);
+          // populate name map so other UI (co-occurrence chips, popups) shows proper names
+          try {
+            suggestions.forEach((s:any) => { const sid = parseInt(s.id,10); if(!isNaN(sid)) tagNameMap[sid] = s.name; });
+          } catch(e){}
           setSearchState((prev: any) => ({ ...prev, suggestions, loading:false, error: suggestions.length? null: null }));
         } catch(e:any){ setSearchState((prev: any) => ({ ...prev, error: 'Search failed', loading:false })); }
       };
@@ -696,11 +712,11 @@
     const processedOverlapGroups = new Set();
     
     // Helper function to create co-occurrence group chip
-    function createCoOccurrenceChip(primaryId: number, group: any, setType: 'include' | 'exclude') {
-      const primaryName = tagNameMap[primaryId] || `Tag ${primaryId}`;
+    function createCoOccurrenceChip(primaryId: number, group: any, setType: 'include' | 'exclude', chipEntity: 'tag'|'performer' = 'tag') {
+      const primaryName = lookupName(primaryId, chipEntity);
       const coTags = group.coTags || [];
       const allTagIds = [primaryId, ...coTags];
-      const allTagNames = allTagIds.map((id: number) => tagNameMap[id] || `T${id}`);
+      const allTagNames = allTagIds.map((id: number) => lookupName(id, chipEntity));
       
       const min = group.minDuration || 0;
       const max = group.maxDuration || '∞';
@@ -743,7 +759,7 @@
           React.createElement('button', { 
             key: 'gear', 
             className: 'constraint-btn', 
-            onClick: (e: any) => showConstraintPopup(primaryId, e), 
+            onClick: (e: any) => showConstraintPopup(primaryId, e, entity), 
             title: 'Configure group constraint'
           }, '⚙'),
           React.createElement('button', { 
@@ -770,11 +786,11 @@
           return; // Skip, already rendered as part of the group
         }
         processedOverlapGroups.add(groupKey);
-        chips.push(createCoOccurrenceChip(id, constraint.overlap, 'include'));
+  chips.push(createCoOccurrenceChip(id, constraint.overlap, 'include', entity));
         return;
       }
       
-      const tagName = tagNameMap[id] || `Tag ${id}`;
+  const tagName = lookupName(id, entity);
       const chipClass = `tag-chip ${constraint.type === 'presence' ? 'include' : constraint.type}`;
       
       // Add constraint indicator text
@@ -792,7 +808,7 @@
         React.createElement('span', { key: 'text', className: 'tag-chip-text' }, tagName),
         constraintText ? React.createElement('span', { key: 'constraint', className: 'tag-chip-constraint' }, constraintText) : null,
         React.createElement('div', { key: 'actions', className: 'tag-chip-actions' }, [
-          React.createElement('button',{ key:'gear', className:'constraint-btn', onClick:(e:any)=> showConstraintPopup(id, e), title:'Configure constraint' }, '⚙'),
+          React.createElement('button',{ key:'gear', className:'constraint-btn', onClick:(e:any)=> showConstraintPopup(id, e, entity), title:'Configure constraint' }, '⚙'),
           React.createElement('button',{ key:'x', onClick:(e:any)=>{ e.stopPropagation(); removeTag(id,'include'); }, title:'Remove', className: 'tag-chip-remove' }, '×')
         ])
       ].filter(Boolean)));
@@ -808,11 +824,11 @@
           return; // Skip, already rendered as part of the group
         }
         processedOverlapGroups.add(groupKey);
-        chips.push(createCoOccurrenceChip(id, constraint.overlap, 'exclude'));
+  chips.push(createCoOccurrenceChip(id, constraint.overlap, 'exclude', entity));
         return;
       }
       
-      const tagName = tagNameMap[id] || `Tag ${id}`;
+  const tagName = lookupName(id, entity);
       const chipClass = `tag-chip ${constraint.type === 'presence' ? 'exclude' : constraint.type}`;
       
       // Add constraint indicator text
@@ -832,7 +848,7 @@
         React.createElement('span', { key: 'text', className: 'tag-chip-text' }, tagName),
         constraintText ? React.createElement('span', { key: 'constraint', className: 'tag-chip-constraint' }, constraintText) : null,
         React.createElement('div', { key: 'actions', className: 'tag-chip-actions' }, [
-          React.createElement('button',{ key:'gear', className:'constraint-btn', onClick:(e:any)=> showConstraintPopup(id, e), title:'Configure constraint' }, '⚙'),
+          React.createElement('button',{ key:'gear', className:'constraint-btn', onClick:(e:any)=> showConstraintPopup(id, e, entity), title:'Configure constraint' }, '⚙'),
           React.createElement('button',{ key:'x', onClick:(e:any)=>{ e.stopPropagation(); removeTag(id,'exclude'); }, title:'Remove', className: 'tag-chip-remove' }, '×')
         ])
       ].filter(Boolean)));
@@ -906,7 +922,7 @@
         key: 'editor',
         tagId: constraintPopup.tagId,
         constraint: constraintPopup.initialConstraint || getTagConstraint(constraintPopup.tagId),
-        tagName: tagNameMap[constraintPopup.tagId] || `Tag ${constraintPopup.tagId}`,
+  tagName: lookupName(constraintPopup.tagId, constraintPopup && constraintPopup.entity),
         value: v,
         fieldName: fieldName,
         allowedConstraintTypes,

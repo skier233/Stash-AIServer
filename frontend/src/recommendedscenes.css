@@ -63,7 +63,7 @@
 .ai-rec-config .label-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 /* Wrapper used in RecommendedScenes.tsx to align controls under their labels */
-.ai-rec-config .control-wrap{display:flex;align-items:center;justify-content:center;min-height:33.5px;height:33.5px}
+.ai-rec-config .control-wrap{display:flex;align-items:center;justify-content:center;min-height:33.5px;height:auto}
 
 /* Ensure inner switch fills the wrapper and its input is centered precisely */
 .ai-rec-config .control-wrap .custom-control.custom-switch{height:100%;align-items:center;display:flex}
@@ -96,11 +96,12 @@
 	border-radius: 4px;
 	padding: 5.25px 8px;
 	font-size: 11px;
-	height: 33.5px;
+	/* allow grow vertically when chips wrap */
 	min-height: 33.5px;
 	display:flex;
 	flex-wrap:wrap;
-	align-items:center;
+	/* allow chips to wrap and grow the control vertically; align to top */
+	align-items:flex-start;
 	gap:4px;
 	cursor:text;
 	box-shadow: inset 0 0 0 1px rgba(16,22,26,.3), inset 0 1px 1px rgba(16,22,26,.4) !important;
@@ -191,7 +192,7 @@
 .ai-tag-fallback .tag-dropdown-item.selected{background:#1a3d23;color:#8ee19b}
 
 /* Constraint editor styles */
-.constraint-popup{position:fixed;z-index:100;background:#1a1d21;border:1px solid #333;border-radius:6px;padding:8px;box-shadow:0 4px 12px rgba(0,0,0,0.6);font-size:11px;min-width:200px}
+.constraint-popup{position:fixed;z-index:1101;background:#1a1d21;border:1px solid #333;border-radius:6px;padding:8px;box-shadow:0 4px 12px rgba(0,0,0,0.6);font-size:11px;min-width:200px}
 .constraint-popup .constraint-title{font-weight:bold;margin-bottom:6px}
 .constraint-popup .constraint-type{margin-bottom:6px}
 .constraint-popup .constraint-type select{width:100%;padding:2px 4px;background:var(--ai-input-bg);border:1px solid var(--ai-input-border);border-radius:3px;color:#fff;font-size:11px}
