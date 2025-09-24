@@ -1,14 +1,18 @@
 name: AIOverhaulCore
-description: Core AI action button (fresh minimal rebuild)
+description: Core AI action button with Similar Scenes tab
 version: 0.4.0-core-min
 ui:
   javascript:
     - dist/pageContext.js
+    - dist/RecommendationUtils.js
     - dist/AIButton.js
     - dist/AIButtonIntegration.js
     - dist/TaskDashboard.js
     - dist/RecommendedScenes.js
+    - dist/SimilarScenes.js
+    - dist/SimilarTabIntegration.js
   css:
     - AIOverhaul.css
     - src/recommendedscenes.css
+    - src/css/SimilarScenes.css
 interface: raw

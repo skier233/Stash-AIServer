@@ -15,9 +15,25 @@
 (function(){
   const BUILD_VERSION = 'rec-pagination-v2-' + new Date().toISOString();
   try { console.info('[RecommendedScenes] Loaded bundle version', BUILD_VERSION); } catch(_) {}
+  
   const w:any = window as any;
-  const PluginApi = w.PluginApi; if(!PluginApi || !PluginApi.React) return;
-  const React = PluginApi.React; const { useState, useMemo, useEffect, useRef } = React;
+  
+  // Safer initialization - wait for everything to be ready
+  function initializeRecommendedScenes() {
+    const PluginApi = w.PluginApi; 
+    if(!PluginApi || !PluginApi.React) {
+      console.warn('[RecommendedScenes] PluginApi or React not available');
+      return;
+    }
+    
+    // Validate React hooks are available
+    if (!PluginApi.React.useState || !PluginApi.React.useMemo || !PluginApi.React.useEffect || !PluginApi.React.useRef) {
+      console.warn('[RecommendedScenes] React hooks not available');
+      return;
+    }
+    
+    const React = PluginApi.React; 
+    const { useState, useMemo, useEffect, useRef } = React;
   // Using only the new backend hydrated recommendations API.
   // const GQL = {} as any; // (legacy GraphQL client removed)
   
@@ -180,7 +196,7 @@
   // ---------------- Tag Include/Exclude Selector (Unified) -----------------
   // Sole implementation: single bar with inline mode toggle (+ include / - exclude) and chips inline.
   // Enhanced Constraint Editor Component with auto-save and advanced co-occurrence support
-  const ConstraintEditor = React.useCallback(({ tagId, constraint, tagName, value, fieldName, onSave, onCancel, allowedConstraintTypes, entity: popupEntity }: any) => {
+  function ConstraintEditor({ tagId, constraint, tagName, value, fieldName, onSave, onCancel, allowedConstraintTypes, entity: popupEntity }: any) {
     const [localConstraint, setLocalConstraint] = React.useState(constraint);
 
     // Local name lookup helper (ConstraintEditor is defined before the outer lookupName),
@@ -443,7 +459,7 @@
         }, 'Save')
       ])
     ]);
-  }, []);
+  }
 
   const TagIncludeExclude = ({ value, onChange, fieldName, initialTagCombination, allowedConstraintTypes, allowedCombinationModes, entity = 'tag' }: { value:any; onChange:(next:any)=>void; fieldName:string; initialTagCombination?: string; allowedConstraintTypes?: string[]; allowedCombinationModes?: string[]; entity?: 'tag'|'performer' }) => {
     const v = value || {};
@@ -1393,4 +1409,19 @@
   } catch {}
 
   w.RecommendedScenesPage = RecommendedScenesPage;
+
+  } // End initializeRecommendedScenes
+  
+  // Wait for dependencies and initialize
+  function waitAndInitialize() {
+    if (w.PluginApi && w.PluginApi.React) {
+      console.log('[RecommendedScenes] Dependencies ready, initializing...');
+      initializeRecommendedScenes();
+    } else {
+      console.log('[RecommendedScenes] Waiting for PluginApi and React...');
+      setTimeout(waitAndInitialize, 100);
+    }
+  }
+  
+  waitAndInitialize();
 })();

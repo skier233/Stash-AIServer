@@ -314,3 +314,24 @@
 .ai-task-row--history { opacity:.85; }
 .ai-task-dash__empty { font-style:italic; padding:4px 2px; color:#888; }
 .ai-task-row__progress { font-variant-numeric: tabular-nums; }
+
+/* Compact nav tabs in scene details to prevent wrapping */
+.scene-tabs .nav-tabs .nav-item .nav-link {
+  padding: 6px 8px; /* much smaller padding */
+  font-size: 0.8rem; /* smaller font */
+  margin-right: 2px; /* minimal spacing */
+  white-space: nowrap; /* prevent text wrapping within tabs */
+}
+
+.scene-tabs .nav-tabs .nav-item {
+  margin-bottom: 0; /* ensure no vertical spacing */
+  flex-shrink: 0; /* prevent flex shrinking */
+}
+
+/* More aggressive targeting - apply to all nav-tabs in scene areas */
+.ScenePage .nav-tabs .nav-item .nav-link,
+[class*="scene"] .nav-tabs .nav-item .nav-link {
+  padding: 6px 8px !important;
+  font-size: 0.8rem !important;
+  margin-right: 2px !important;
+}
