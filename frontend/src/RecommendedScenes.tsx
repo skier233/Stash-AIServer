@@ -180,8 +180,17 @@
   // ---------------- Tag Include/Exclude Selector (Unified) -----------------
   // Sole implementation: single bar with inline mode toggle (+ include / - exclude) and chips inline.
   // Enhanced Constraint Editor Component with auto-save and advanced co-occurrence support
-  const ConstraintEditor = React.useCallback(({ tagId, constraint, tagName, value, fieldName, onSave, onCancel, allowedConstraintTypes }: any) => {
+  const ConstraintEditor = React.useCallback(({ tagId, constraint, tagName, value, fieldName, onSave, onCancel, allowedConstraintTypes, entity: popupEntity }: any) => {
     const [localConstraint, setLocalConstraint] = React.useState(constraint);
+
+    // Local name lookup helper (ConstraintEditor is defined before the outer lookupName),
+    // uses the same compositeRawRef maps keyed by fieldName
+    function lookupLocalName(id: number, forEntity?: 'tag'|'performer'){
+      const ent = forEntity || popupEntity || 'tag';
+      const key = fieldName + '__' + (ent === 'performer' ? 'performerNameMap' : 'tagNameMap');
+      const map = compositeRawRef.current[key] || {};
+      return map[id] || (ent === 'performer' ? `Performer ${id}` : `Tag ${id}`);
+    }
 
     // Reset local state when constraint prop changes (e.g., when switching constraint types)
     React.useEffect(() => {
@@ -201,8 +210,8 @@
       : allConstraintTypes;
 
     // Memoize expensive tag computations for overlap constraint
-    const overlapTagData = React.useMemo(() => {
-      if (localConstraint.type !== 'overlap') return { allCoOccurrencePrimaries: new Set(), availableTags: [] };
+  const overlapTagData = React.useMemo(() => {
+  if (localConstraint.type !== 'overlap') return { allCoOccurrencePrimaries: new Set(), availableTags: [] };
       
       // Get all currently selected tags (include + exclude) for co-occurrence selection
       // Exclude primary tags from other co-occurrence groups
@@ -213,6 +222,7 @@
           allCoOccurrencePrimaries.add(id);
         }
       });
+      const entity = popupEntity || localConstraint._entity || 'tag';
       const availableTags = [...(value?.include || []), ...(value?.exclude || [])]
         .filter(id => id !== tagId && !allCoOccurrencePrimaries.has(id));
       
@@ -296,16 +306,15 @@
           // Use memoized tag data to avoid expensive recomputation on every render
           const { availableTags } = overlapTagData;
           const selectedCoTags = localConstraint.overlap?.coTags || [];
-          const entity = localConstraint._entity || 'tag';
+          const entity = popupEntity || localConstraint._entity || 'tag';
           
           return React.createElement('div', { className: 'constraint-options' }, [
-            React.createElement('div', { key: 'info' }, 'Co-occurrence with other selected tags'),
+            React.createElement('div', { key: 'info' }, `Co-occurrence with other selected ${entity==='performer' ? 'performers' : 'tags'}`),
             React.createElement('div', { key: 'tags-section' }, [
               React.createElement('label', { key: 'label' }, 'Selected for co-occurrence: '),
               React.createElement('div', { key: 'selected-tags', className: 'constraint-selected-tags' }, 
                 selectedCoTags.length > 0 ? selectedCoTags.map((coTagId: number) => {
-                  const nameMap = (compositeRawRef.current[fieldName + '__' + entity + 'NameMap'] || {});
-                  const coTagName = nameMap[coTagId] || `${entity === 'performer' ? 'Performer' : 'Tag'} ${coTagId}`;
+                  const coTagName = lookupLocalName(coTagId, entity);
                   return React.createElement('span', { 
                     key: coTagId, 
                     className: 'constraint-cochip-tag'
@@ -327,8 +336,7 @@
               ),
               availableTags.length > 0 ? React.createElement('div', { key: 'available-tags', className: 'constraint-available-tags' }, 
                 availableTags.map((coTagId: number) => {
-                  const nameMap = (compositeRawRef.current[fieldName + '__' + entity + 'NameMap'] || {});
-                  const coTagName = nameMap[coTagId] || `${entity === 'performer' ? 'Performer' : 'Tag'} ${coTagId}`;
+                  const coTagName = lookupLocalName(coTagId, entity);
                   const isSelected = selectedCoTags.includes(coTagId);
                   if (isSelected) return null; // Don't show already selected tags
                   return React.createElement('button', { 
@@ -520,7 +528,7 @@
       compositeRawRef.current[nameMapKey] = {};
     }
     const tagNameMap = compositeRawRef.current[nameMapKey];
-    // Helper to look up a name for an id for a given entity (falls back to "Performer {id}" or "Tag {id}")
+  // Helper to look up a name for an id for a given entity
     function lookupName(id: number, forEntity?: 'tag'|'performer'){
       const ent = forEntity || entity || 'tag';
       const key = fieldName + '__' + (ent === 'performer' ? 'performerNameMap' : 'tagNameMap');
@@ -925,6 +933,7 @@
   tagName: lookupName(constraintPopup.tagId, constraintPopup && constraintPopup.entity),
         value: v,
         fieldName: fieldName,
+        entity: constraintPopup.entity,
         allowedConstraintTypes,
         onSave: (constraint: any) => {
           updateTagConstraint(constraintPopup.tagId, constraint);
@@ -1096,13 +1105,13 @@
   // Render labels above every control (including boolean switches) so layout is consistent
   const showLabelAbove = true;
       // Make labels inline-block and only as wide as the control beneath to prevent blocking layout
-      const capWidth = field.type==='tags' ? 400 : (field.type==='slider' ? 92 : (['text','search','select','enum'].includes(field.type) ? 180 : undefined));
+  const capWidth = (field.type==='tags' || field.type==='performers') ? 400 : (field.type==='slider' ? 92 : (['text','search','select','enum'].includes(field.type) ? 180 : undefined));
       const labelStyle = capWidth ? { display:'inline-block', width: capWidth+'px', maxWidth: capWidth+'px' } : undefined;
       const labelNode = showLabelAbove ? React.createElement('label',{ htmlFor:id, className:'form-label d-flex justify-content-between mb-0', style: labelStyle }, [
         React.createElement('span',{ key:'t', className:'label-text' }, field.label || field.name)
       ]) : null;
       // Use auto-width columns for compact fields; let large/complex fields take normal grid width
-      const compactTypes = ['number', 'select', 'enum', 'boolean', 'slider', 'text', 'search', 'tags'];
+  const compactTypes = ['number', 'select', 'enum', 'boolean', 'slider', 'text', 'search', 'tags', 'performers'];
       const colClass = compactTypes.includes(field.type) ? 'col-auto mb-1' : 'col-lg-4 col-md-6 col-12 mb-1';
       return React.createElement('div',{ key:field.name, className:colClass }, [
         React.createElement('div', { className: 'form-group mb-0' }, [
