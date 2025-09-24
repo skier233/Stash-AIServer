@@ -1,3 +1,36 @@
+:root {
+	--ai-rec-container-padding: 30px;
+	--ai-rec-card-margin: 10px;
+}
+.btn-constraint.btn-save {
+	background: #2e7d32;
+	color: #fff;
+	border: none;
+	border-radius: 3px;
+	padding: 4px 8px;
+	font-size: 10px;
+	cursor: pointer;
+}
+/* Constraint Editor: Co-occurrence selected tag chip */
+.constraint-cochip-tag {
+	display: inline-flex;
+	align-items: center;
+	margin: 1px 2px;
+	padding: 2px 4px;
+	background: #2a3f5f;
+	color: #fff;
+	border-radius: 3px;
+	font-size: 10px;
+}
+.constraint-cochip-remove {
+	background: transparent;
+	border: none;
+	color: #fff;
+	margin-left: 4px;
+	cursor: pointer;
+	font-size: 10px;
+	padding: 0;
+}
 .ai-rec-config{font-size:12px;line-height:1.2}
 .ai-rec-config .config-row{margin-left:-4px;margin-right:-4px}
 .ai-rec-config .config-row>[class*="col-"]{padding-left:4px;padding-right:4px}

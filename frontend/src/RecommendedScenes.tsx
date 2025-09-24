@@ -4,7 +4,7 @@
 //  • Zoom slider + dynamic card width (upstream parity logic)
 //  • Native‑style pagination (top + bottom) w/ dropdown
 //  • Duration + size aggregate stats
-//  • Adaptive GraphQL fetch & schema pruning (lightly refactored)
+//  • Adaptive GraphQL fetch & schema pruning
 //  • Independent persistence (aiRec.* keys) + shareable URL params + cross‑tab sync
 // Cleanup changes:
 //  • Extracted helpers & constants
@@ -19,7 +19,7 @@
   const PluginApi = w.PluginApi; if(!PluginApi || !PluginApi.React) return;
   const React = PluginApi.React; const { useState, useMemo, useEffect, useRef } = React;
   // Using only the new backend hydrated recommendations API.
-  const GQL = {} as any; // legacy GraphQL client removed
+  // const GQL = {} as any; // (legacy GraphQL client removed)
   
   // Upstream grid hooks copied from GridCard.tsx for exact parity
   function useDebounce(fn:any, delay:number) {
@@ -45,14 +45,15 @@
   }
   
   function calculateCardWidth(containerWidth:number, preferredWidth:number) {
-    // Exact upstream parity (see GridCard.calculateCardWidth).
-    const containerPadding = 30;
-    const cardMargin = 10;
-    const maxUsableWidth = containerWidth - containerPadding;
-    const maxElementsOnRow = Math.ceil(maxUsableWidth / preferredWidth);
-    const width = maxUsableWidth / maxElementsOnRow - cardMargin;
-    (calculateCardWidth as any)._last = { maxElementsOnRow, preferredWidth, width, containerWidth };
-    return width;
+  // Use CSS variables for layout values
+  const root = typeof window !== 'undefined' ? window.getComputedStyle(document.documentElement) : null;
+  const containerPadding = root ? parseFloat(root.getPropertyValue('--ai-rec-container-padding')) : 30;
+  const cardMargin = root ? parseFloat(root.getPropertyValue('--ai-rec-card-margin')) : 10;
+  const maxUsableWidth = containerWidth - containerPadding;
+  const maxElementsOnRow = Math.ceil(maxUsableWidth / preferredWidth);
+  const width = maxUsableWidth / maxElementsOnRow - cardMargin;
+  (calculateCardWidth as any)._last = { maxElementsOnRow, preferredWidth, width, containerWidth };
+  return width;
   }
   
   function useContainerDimensions(sensitivityThreshold = 20) {
@@ -111,7 +112,7 @@
   const LS_PER_PAGE_KEY = 'aiRec.perPage';
   const LS_ZOOM_KEY = 'aiRec.zoom';
   const LS_PAGE_KEY = 'aiRec.page';
-  // Legacy test scene ID scaffolding removed.
+  //
 
   interface BasicSceneFile { duration?:number; size?:number; }
   interface BasicScene { id:number; title?:string; rating100?:number; rating?:number; files?:BasicSceneFile[]; [k:string]:any }
@@ -132,9 +133,9 @@
     return sc as BasicScene;
   }
 
-  // Removed legacy per-ID fetch & schema pruning utilities.
+  //
 
-  // Removed legacy SceneCardFallback (always use native SceneCard)
+  //
 
   const RecommendedScenesPage: any = () => {
     function readInitial(key:string, urlParam:string, fallback:number){
@@ -142,7 +143,7 @@
       try { const raw = localStorage.getItem(key); if(raw!=null){ const n=parseInt(raw,10); if(!isNaN(n)) return n; } } catch(_){ }
       return fallback;
     }
-  // Recommender state only (legacy removed)
+  //
   const [recommenders, setRecommenders] = useState(null as RecommenderDef[]|null);
   const [recommenderId, setRecommenderId] = useState(null as string|null);
     const [zoomIndex, setZoomIndex] = useState(()=> readInitial(LS_ZOOM_KEY, 'z', 1));
@@ -158,7 +159,7 @@
     const [componentRef, { width: containerWidth }] = useContainerDimensions();
     const cardWidth = useCardWidth(containerWidth, zoomIndex, zoomWidths);
   // fetch IDs (mock until new backend recommender query flow integrated)
-  // Legacy sceneIds/recCursor removed; backend returns final scenes directly.
+  //
   const [backendStatus, setBackendStatus] = useState('idle' as 'idle'|'loading'|'ok'|'error');
   const [discoveryAttempted, setDiscoveryAttempted] = useState(false);
   const pageAPI:any = (w as any).AIPageContext; // for contextual recommendation requests
@@ -176,7 +177,7 @@
   useEffect(()=>{ (configValuesRef as any).current = configValues; }, [configValues]);
   const currentRecommender = React.useMemo(()=> (recommenders||[])?.find((r:any)=> r.id===recommenderId), [recommenders, recommenderId]);
 
-  // ---------------- Fallback Tag Include/Exclude Selector (Unified) -----------------
+  // ---------------- Tag Include/Exclude Selector (Unified) -----------------
   // Sole implementation: single bar with inline mode toggle (+ include / - exclude) and chips inline.
   // Enhanced Constraint Editor Component with auto-save and advanced co-occurrence support
   const ConstraintEditor = React.useCallback(({ tagId, constraint, tagName, value, fieldName, onSave, onCancel, allowedConstraintTypes }: any) => {
@@ -305,16 +306,7 @@
                   const coTagName = (compositeRawRef.current[fieldName + '__tagNameMap'] || {})[coTagId] || `Tag ${coTagId}`;
                   return React.createElement('span', { 
                     key: coTagId, 
-                    style: { 
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      margin: '1px 2px', 
-                      padding: '2px 4px', 
-                      background: '#2a3f5f', 
-                      color: '#fff', 
-                      borderRadius: '3px', 
-                      fontSize: '10px'
-                    } 
+                    className: 'constraint-cochip-tag'
                   }, [
                     coTagName,
                     React.createElement('button', {
@@ -326,15 +318,7 @@
                           overlap: { ...prev.overlap, coTags: newCoTags }
                         }));
                       },
-                      style: { 
-                        background: 'transparent', 
-                        border: 'none', 
-                        color: '#fff', 
-                        marginLeft: '4px', 
-                        cursor: 'pointer',
-                        fontSize: '10px',
-                        padding: '0'
-                      }
+                      className: 'constraint-cochip-remove'
                     }, '×')
                   ]);
                 }) : React.createElement('span', { className: 'constraint-selected-empty' }, 'No tags selected for co-occurrence')
@@ -439,18 +423,10 @@
       React.createElement('div', { key: 'actions', className: 'constraint-actions' }, [
         React.createElement('button', {
           key: 'save',
+          className: 'btn-constraint btn-save',
           onClick: (e: any) => {
             e.stopPropagation();
             onSave(localConstraint);
-          },
-          style: {
-            padding: '4px 8px',
-            fontSize: '10px',
-            border: 'none',
-            borderRadius: '3px',
-            cursor: 'pointer',
-            background: '#2e7d32',
-            color: '#fff'
           },
           title: 'Save changes'
         }, 'Save')
@@ -489,9 +465,7 @@
       combinationMode: initialMode
     });
     // Debug: log initial props and resolved modes to help diagnose behavior
-    React.useEffect(()=>{
-      try { console.log('[TagFallback] init', { fieldName, incomingValue: v, initialTagCombination, allowedCombinationModes, resolvedAllowedModes, initialMode }); } catch(e){}
-    }, []);
+    // (Debug log removed)
 
     // Instance id for coordinating dropdowns between multiple tag selectors on the page
     const instanceIdRef = React.useRef(null as any);
@@ -505,13 +479,19 @@
         try{
           const otherId = ev && ev.detail && ev.detail.id;
           const myId = instanceIdRef.current;
-          console.log('[TagFallback] Received open event. Other ID:', otherId, 'My ID:', myId);
+          if((w as any).AIDebug) {
+            console.log('[TagFallback] Received open event. Other ID:', otherId, 'My ID:', myId);
+          }
           if(otherId && otherId !== myId){
-            console.log('[TagFallback] Closing dropdown for instance', myId);
+            if((w as any).AIDebug) {
+              console.log('[TagFallback] Closing dropdown for instance', myId);
+            }
             setSearchState((prev:any)=> ({ ...prev, showDropdown:false }));
           }
         }catch(e){
-          console.warn('[TagFallback] Error handling open event:', e);
+          if((w as any).AIDebug) {
+            console.warn('[TagFallback] Error handling open event:', e);
+          }
         }
       }
       document.addEventListener('ai-tag-fallback-open', onOtherOpen as any);
@@ -524,7 +504,9 @@
       const externalMode = normalizeMode(externalModeRaw);
       if(externalMode && externalMode !== searchState.combinationMode && (externalMode==='and' || externalMode==='or' || externalMode==='not-applicable')){
         setSearchState((prev:any)=> ({ ...prev, combinationMode: externalMode }));
-        console.log('[TagFallback] synced combinationMode from value:', externalMode);
+        if((w as any).AIDebug) {
+          console.log('[TagFallback] synced combinationMode from value:', externalMode);
+        }
       }
     }, [v && (v as any).tag_combination]);
     
@@ -589,7 +571,9 @@
         });
       }
       
-      console.log('New constraints object:', { include: nextInclude, exclude: nextExclude, constraints: nextConstraints });
+      if((w as any).AIDebug) {
+        console.log('New constraints object:', { include: nextInclude, exclude: nextExclude, constraints: nextConstraints });
+      }
       // Ensure primary tag is present in include list for non-presence constraints
       if (!nextInclude.includes(tagId) && !nextExclude.includes(tagId)) {
         nextInclude.push(tagId);
@@ -599,7 +583,9 @@
 
     function getTagConstraint(tagId: number) {
       const constraint = constraints[tagId] || { type: 'presence', presence: include.includes(tagId) ? 'include' : 'exclude' };
-      console.log('Getting constraint for tag', tagId, ':', constraint);
+      if((w as any).AIDebug) {
+        console.log('Getting constraint for tag', tagId, ':', constraint);
+      }
       return constraint;
     }
 
@@ -612,44 +598,36 @@
       event.stopPropagation();
     }
 
+    // Use a ref for the tag input for focus and positioning
+  const tagInputRef = React.useRef(null) as React.RefObject<HTMLInputElement>;
     function addTag(id:number, name?:string){
-      // If presence constraints are not allowed, prompt user to configure constraint before committing
       const supportsPresence = !Array.isArray(allowedConstraintTypes) || allowedConstraintTypes.length===0 || allowedConstraintTypes.includes('presence');
       if(!supportsPresence){
-        // Choose a sensible initial constraint type: prefer first allowedConstraintTypes, otherwise 'overlap'
         const preferredType = (Array.isArray(allowedConstraintTypes) && allowedConstraintTypes.length>0) ? allowedConstraintTypes[0] : 'overlap';
         const init = { type: preferredType } as any;
         if(preferredType === 'presence') init.presence = 'include';
         if(preferredType === 'duration') init.duration = { min: 10, max: 60, unit: 'percent' };
         if(preferredType === 'overlap') init.overlap = { minDuration: 5, maxDuration: 30, unit: 'percent', coTags: [] };
         if(preferredType === 'importance') init.importance = 0.5;
+        let position = { x: window.innerWidth/2 - 100, y: window.innerHeight/2 - 80 };
+        if (tagInputRef.current) {
+          const rect = tagInputRef.current.getBoundingClientRect();
+          position = { x: rect.left, y: rect.bottom + 5 };
+        }
         setConstraintPopup({ 
           tagId: id, 
-          position: (() => {
-            // Try to position near the tag input element
-            const tagInput = document.querySelector('.ai-tag-fallback.unified input.tag-input') as HTMLElement;
-            if (tagInput) {
-              const rect = tagInput.getBoundingClientRect();
-              return { x: rect.left, y: rect.bottom + 5 };
-            }
-            // Fallback to center if tag input not found
-            return { x: window.innerWidth/2 - 100, y: window.innerHeight/2 - 80 };
-          })(),
+          position,
           initialConstraint: init 
         });
-        // store the name for display
         if(name) tagNameMap[id] = name;
         return;
       }
-      // Always add tags to include list (users can change via constraint popup)
       if(!include.includes(id) && !exclude.includes(id)) {
         onChange({ include: [...include,id], exclude, constraints, tag_combination: searchState.combinationMode });
       }
-      // Store tag name for display if provided
       if(name) {
         tagNameMap[id] = name;
       }
-      // Clear search & suggestions after add
       if(debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
       setSearchState((prev: any) => ({ ...prev, search:'', suggestions:[], showDropdown:false }));
     }
@@ -892,9 +870,7 @@
     const toggleClickable = resolvedAllowedModes.length > 1;
     
     // Debug: log combination toggle visibility
-    React.useEffect(()=>{
-      try { console.log('[TagFallback] combinationToggle debug', { fieldName, resolvedAllowedModes, showCombinationToggle, toggleClickable, combinationMode: searchState.combinationMode }); } catch(e){}
-    }, [showCombinationToggle, searchState.combinationMode]);
+    // (Debug log removed)
     
     const combinationToggle = showCombinationToggle ? React.createElement('button',{ 
       key:'combo-toggle', 
@@ -936,10 +912,24 @@
       })
     ]) : null;
 
-    return React.createElement('div',{ className:'ai-tag-fallback unified w-100', onClick:()=>{ /* focus input by dispatching event */ const el:any=document.querySelector('.ai-tag-fallback.unified input.tag-input'); if(el) el.focus(); } }, [
+    return React.createElement('div',{
+      className:'ai-tag-fallback unified w-100',
+      onClick:()=>{ if(tagInputRef.current) tagInputRef.current.focus(); }
+    }, [
       combinationToggle,
       chips.length? chips : React.createElement('span',{ key:'ph', className:'text-muted small'}, 'No tags'),
-      React.createElement('input',{ key:'inp', type:'text', className:'tag-input', value: searchState.search, placeholder:'Search tags…', onChange:(e:any)=> search(e.target.value), onKeyDown, onFocus: onInputFocus, onClick:(e:any)=> e.stopPropagation() }),
+      React.createElement('input',{
+        key:'inp',
+        type:'text',
+        className:'tag-input',
+        value: searchState.search,
+        placeholder:'Search tags…',
+        onChange:(e:any)=> search(e.target.value),
+        onKeyDown,
+        onFocus: onInputFocus,
+        onClick:(e:any)=> e.stopPropagation(),
+        ref: tagInputRef
+      }),
       suggestionsList,
       constraintPopupEl
     ]);
