@@ -119,7 +119,7 @@ Emitted Event Types:
 - session_start / session_end
 - scene_view
 - scene_watch_start / scene_watch_progress (throttled) / scene_seek / scene_watch_complete
-- scene_watch_summary (aggregated segments + totals, emitted on unload or scene switch if minimum watch time met)
+// scene_watch_summary removed (aggregation now handled on backend)
 - image_view / gallery_view
 
 Video Consumption Semantics:
@@ -140,7 +140,7 @@ tracker.trackGalleryView('77');
 Optional Configuration (must be called early):
 ```js
 tracker.configure({
-  endpoint: '/stash-ai',          // base prefix
+  endpoint: '/',                  // base prefix (adjust if backend served behind sub-path)
   sendIntervalMs: 4000,           // flush cadence
   progressThrottleMs: 4000,       // watch_progress frequency
   debug: true
@@ -154,13 +154,13 @@ Expected Backend Endpoints:
 Persistence & Reliability:
 - Queue in localStorage (`ai_overhaul_event_queue`) survives reloads.
 - `navigator.sendBeacon` used for final flush on visibility hidden / unload.
-- Immediate flush for high signal types (session_start, scene_watch_complete, scene_watch_summary).
+- Immediate flush for high signal types (session_start, scene_watch_complete).
 
 Planned Enhancements / TODO:
 - Add performer_view, tag_view, recommendation_click
 - Auto-detect scene detail transitions (hook via `pageContext`)
 - Adaptive throttling by video length
 - Retry backoff + poison message eviction
-- User opt-out toggle surfaced in settings
+- User opt-out toggle surfaced in settings (global `enabled` flag now available in code)
 
 If you extend the taxonomy, increment `schema_version` and keep backward compatibility in backend parsers.

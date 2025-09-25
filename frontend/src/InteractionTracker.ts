@@ -25,7 +25,7 @@
 // scene_seek               - User seeks (metadata: from, to, delta, direction)
 // scene_watch_progress     - Throttled periodic progress (metadata: position, percent)
 // scene_watch_complete     - Video ended (natural end)
-// scene_watch_summary      - Aggregated after unload/end (segments + totals)
+// (scene summary support removed)
 // image_view               - Single image detail view (entity_id = image id)
 // gallery_view             - Gallery detail view (entity_id = gallery id)
 // (Future) performer_view, tag_view, recommendation_click, etc.
@@ -37,10 +37,10 @@ export type InteractionEventType =
   | 'session_end'
   | 'scene_view'
   | 'scene_watch_start'
+  | 'scene_watch_pause'
   | 'scene_seek'
   | 'scene_watch_progress'
   | 'scene_watch_complete'
-  | 'scene_watch_summary'
   | 'image_view'
   | 'gallery_view';
 
@@ -66,13 +66,12 @@ interface StoredQueueRecord {
 }
 
 export interface InteractionTrackerConfig {
-  endpoint?: string;                  // Base URL (default '/stash-ai')
+  endpoint?: string;                  // Base URL (default '/')
   trackPath?: string;                 // POST relative path for single events
   batchPath?: string;                 // POST relative path for batch
   sendIntervalMs?: number;            // Flush interval
   maxBatchSize?: number;              // Upper bound per flush
   progressThrottleMs?: number;        // scene_watch_progress min interval
-  summaryMinSeconds?: number;         // Minimum watch before emitting summary
   immediateTypes?: InteractionEventType[]; // Send ASAP bypassing interval
   localStorageKey?: string;           // Queue storage key
   maxQueueLength?: number;            // Hard cap for stored queue
@@ -80,6 +79,7 @@ export interface InteractionTrackerConfig {
   autoDetect?: boolean;               // Attempt automatic scene/video instrumentation
   integratePageContext?: boolean;     // Subscribe to AIPageContext for SPA nav
   videoAutoInstrument?: boolean;      // Instrument video on scene detail automatically
+  enabled?: boolean;                  // Master switch to disable all tracking
 }
 
 interface WatchSegment { start: number; end: number; }
@@ -93,6 +93,20 @@ interface SceneWatchState {
   lastPosition?: number;        // last known currentTime
   video?: HTMLVideoElement | null;
   completed?: boolean;
+}
+
+// Derive backend base similarly to AIButton.tsx so we hit the correct host/port.
+function _resolveBackendBase(): string {
+  try {
+    const explicit = (window as any).AI_BACKEND_URL as string | undefined;
+    if (explicit) return explicit.replace(/\/$/, '');
+    let origin = (location && location.origin) || '';
+    if (origin) {
+      try { const u = new URL(origin); if (u.port === '3000') { u.port = '8000'; origin = u.toString(); } } catch { /* ignore */ }
+    }
+    if (!origin) origin = 'http://localhost:8000';
+    return origin.replace(/\/$/, '');
+  } catch { return 'http://localhost:8000'; }
 }
 
 // ------------------------------ Tracker Class ------------------------------
@@ -122,21 +136,22 @@ export class InteractionTracker {
   }
 
   private buildConfig(partial: Partial<InteractionTrackerConfig>): Required<InteractionTrackerConfig> {
+    const resolved = (partial.endpoint ?? _resolveBackendBase()).replace(/\/$/, '');
     const base: Required<InteractionTrackerConfig> = {
-      endpoint: '/stash-ai',
+  endpoint: resolved,
       trackPath: '/api/v1/interactions/track',
       batchPath: '/api/v1/interactions/sync',
       sendIntervalMs: 5000,
       maxBatchSize: 40,
-      progressThrottleMs: 5000,
-      summaryMinSeconds: 8,
-      immediateTypes: ['session_start','scene_watch_complete','scene_watch_summary'],
+  progressThrottleMs: 5000,
+  immediateTypes: ['session_start','scene_watch_complete'],
       localStorageKey: 'ai_overhaul_event_queue',
       maxQueueLength: 1000,
       debug: true, // enable verbose logging by default for initial verification
       autoDetect: true,
       integratePageContext: true,
-      videoAutoInstrument: true
+      videoAutoInstrument: true,
+      enabled: true
     };
     return { ...base, ...partial };
   }
@@ -273,7 +288,7 @@ export class InteractionTracker {
   public instrumentSceneVideo(sceneId: string, video: HTMLVideoElement) {
     // Reset existing state if switching scenes
     if (this.currentScene && this.currentScene.sceneId !== sceneId) {
-      this.emitSceneSummary();
+      // switching scenes: clear previous state without emitting summary
       this.currentScene = undefined;
     }
     const state: SceneWatchState = this.currentScene || { sceneId, duration: null, segments: [], video };
@@ -285,8 +300,15 @@ export class InteractionTracker {
       state.lastPlayTs = Date.now();
       this.trackInternal('scene_watch_start','scene',sceneId,{ position: video.currentTime });
     };
-    const onPause = () => { this.captureSegment(); };
-    const onEnded = () => { this.captureSegment(true); this.trackInternal('scene_watch_complete','scene',sceneId,{ duration: state.duration, total_watched: this.totalWatched(state), segments: state.segments }); this.emitSceneSummary(true); state.completed = true; };
+    const onPause = () => {
+      const added = this.captureSegment();
+      // Emit an explicit pause event (position + cumulative watched)
+      try {
+        const total = this.currentScene ? this.totalWatched(this.currentScene) : undefined;
+        this.trackInternal('scene_watch_pause','scene',sceneId,{ position: video.currentTime, total_watched: total, segment_added: added });
+      } catch {}
+    };
+  const onEnded = () => { this.captureSegment(true); this.trackInternal('scene_watch_complete','scene',sceneId,{ duration: state.duration, total_watched: this.totalWatched(state), segments: state.segments }); state.completed = true; };
     const onTimeUpdate = () => { this.maybeEmitProgress(); };
     const onSeeked = (e: Event) => {
       const prev = state.lastPosition ?? 0;
@@ -328,6 +350,16 @@ export class InteractionTracker {
 
   public flushNow() { this.flushQueue(); }
 
+  // Expose last viewed entity (scene/image/gallery) for external logic
+  public getLastViewedEntity(){ return this.lastEntityView; }
+
+  // Provide a lightweight snapshot of current scene watch state (without video element)
+  public getCurrentSceneWatchSnapshot(){
+    if (!this.currentScene) return null;
+    const { sceneId, duration, segments, lastPosition, completed } = this.currentScene;
+    return { sceneId, duration, segments: segments.map(s=>({...s})), lastPosition, completed, totalWatched: this.totalWatched(this.currentScene) };
+  }
+
   // Runtime toggle for console debugging so integrators can verify events
   public enableDebug() { this.cfg.debug = true; this.log('debug enabled'); }
   public disableDebug() { this.log('debug disabled'); this.cfg.debug = false; }
@@ -349,7 +381,7 @@ export class InteractionTracker {
     };
 
     // Queue
-    this.enqueue(ev);
+    if (this.cfg.enabled) this.enqueue(ev); else return;
     // Immediate flush logic
     if (this.cfg.immediateTypes.includes(type)) this.flushQueue();
     // Always provide a clear structured console output when debug is on
@@ -403,18 +435,20 @@ export class InteractionTracker {
   private installLifecycleHandlers() {
     this.pageVisibilityHandler = () => {
       if (document.visibilityState === 'hidden') {
-        this.emitSceneSummary();
         this.flushWithBeacon();
       }
     };
     document.addEventListener('visibilitychange', this.pageVisibilityHandler);
 
     this.beforeUnloadHandler = () => {
-      this.emitSceneSummary();
       this.trackInternal('session_end','session','session',{ ended_at: Date.now(), last_entity: this.lastEntityView });
       this.flushWithBeacon();
     };
     window.addEventListener('beforeunload', this.beforeUnloadHandler);
+    // pagehide is more reliable on mobile/Safari; treat like unload
+    window.addEventListener('pagehide', () => {
+      this.flushWithBeacon();
+    });
   }
 
   private flushWithBeacon() {
@@ -434,18 +468,19 @@ export class InteractionTracker {
   }
 
   // ------------------------- Scene Watch Helpers ---------------------------
-  private captureSegment(force = false) {
+  private captureSegment(force = false): boolean {
     const state = this.currentScene;
-    if (!state || !state.video) return;
-    if (state.lastPlayTs == null) return;
+    if (!state || !state.video) return false;
+    if (state.lastPlayTs == null) return false;
     const now = Date.now();
     const elapsed = (now - state.lastPlayTs) / 1000; // seconds
-    if (elapsed < 0.5 && !force) return; // ignore micro pauses
+    if (elapsed < 0.5 && !force) return false; // ignore micro pauses
     const end = state.video.currentTime;
     const start = Math.max(0, end - elapsed);
     this.mergeSegment(state, { start, end });
     state.lastPlayTs = undefined;
     state.lastPosition = end;
+    return true;
   }
 
   private mergeSegment(state: SceneWatchState, seg: WatchSegment) {
@@ -500,25 +535,7 @@ export class InteractionTracker {
     state.lastPosition = position;
   }
 
-  private emitSceneSummary(force = false) {
-    const state = this.currentScene;
-    if (!state) return;
-    // finalize any active segment if playing
-    if (state.lastPlayTs != null) this.captureSegment(true);
-    const total = this.totalWatched(state);
-    if (!force && total < this.cfg.summaryMinSeconds) return; // not enough signal
-    const duration = state.duration || state.video?.duration || null;
-    const percent = duration ? (total / duration) * 100 : undefined;
-    this.trackInternal('scene_watch_summary','scene',state.sceneId,{
-      segments: state.segments,
-      total_watched_s: total,
-      duration_s: duration,
-      percent_watched: percent,
-      completed: !!state.completed
-    });
-    // clear state after summary to avoid duplicate
-    this.currentScene = undefined;
-  }
+  
 
   // --------------------------- Queue Persistence ---------------------------
   private persistQueue() {
