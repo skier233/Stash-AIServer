@@ -16,10 +16,7 @@ class InteractionEventIn(BaseModel):
     entity_type: str
     entity_id: str
     metadata: Optional[dict[str, Any]] = None
-    page_url: Optional[str] = None
-    user_agent: Optional[str] = None
-    viewport: Optional[dict[str,int]] = None
-    schema_version: int
+    # keep metadata only; page_url/user_agent/viewport/schema_version removed
 
     class Config:
         allow_population_by_field_name = True
@@ -29,14 +26,4 @@ class InteractionIngestResult(BaseModel):
     duplicates: int
     errors: List[str] = []
 
-class SceneWatchSummaryRead(BaseModel):
-    session_id: str
-    scene_id: str
-    total_watched_s: float
-    duration_s: float | None = None
-    percent_watched: float | None = None
-    completed: bool
-    segments: list[dict[str, float]] | None = None
-
-    class Config:
-        from_attributes = True
+# legacy SceneWatchSummaryRead removed — summaries are no longer produced by the backend

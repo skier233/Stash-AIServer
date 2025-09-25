@@ -22,25 +22,19 @@ def upgrade() -> None:
         sa.Column('event_type', sa.String(length=50), nullable=False),
         sa.Column('entity_type', sa.String(length=30), nullable=False),
         sa.Column('entity_id', sa.String(length=64), nullable=False),
-        sa.Column('ts', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.Column('client_ts', sa.DateTime, nullable=False),
         sa.Column('metadata', sa.JSON, nullable=True),
-        sa.Column('page_url', sa.String(length=500), nullable=True),
-        sa.Column('user_agent', sa.String(length=300), nullable=True),
-        sa.Column('viewport_w', sa.Integer, nullable=True),
-        sa.Column('viewport_h', sa.Integer, nullable=True),
-        sa.Column('schema_version', sa.Integer, nullable=False, server_default='1'),
     )
     op.create_unique_constraint('uq_interaction_client_event_id', 'interaction_events', ['client_event_id'])
     op.create_index('ix_interaction_session_scene', 'interaction_events', ['session_id','entity_type','entity_id'])
     op.create_index('ix_interaction_client_ts', 'interaction_events', ['client_ts'])
-    op.create_index('ix_interaction_events_session_id', 'interaction_events', ['session_id'])
 
     op.create_table(
         'interaction_sessions',
         sa.Column('id', sa.Integer, primary_key=True),
         sa.Column('session_id', sa.String(length=64), nullable=False),
-        sa.Column('last_event_ts', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+        sa.Column('last_event_ts', sa.DateTime, nullable=False),
+        sa.Column('session_start_ts', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.Column('last_scene_id', sa.String(length=64), nullable=True),
         sa.Column('last_scene_event_ts', sa.DateTime, nullable=True),
         sa.Column('updated_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
@@ -49,34 +43,46 @@ def upgrade() -> None:
     op.create_index('ix_interaction_sessions_session_id', 'interaction_sessions', ['session_id'])
 
     op.create_table(
-        'scene_watch_summaries',
+        'scene_watch_segments',
         sa.Column('id', sa.Integer, primary_key=True),
         sa.Column('session_id', sa.String(length=64), nullable=False),
         sa.Column('scene_id', sa.String(length=64), nullable=False),
-        sa.Column('total_watched_s', sa.Float, nullable=False, server_default='0'),
-        sa.Column('duration_s', sa.Float, nullable=True),
-        sa.Column('percent_watched', sa.Float, nullable=True),
-        sa.Column('completed', sa.Integer, nullable=False, server_default='0'),
-        sa.Column('segments', sa.JSON, nullable=True),
-        sa.Column('updated_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+        sa.Column('start_s', sa.Float, nullable=False),
+        sa.Column('end_s', sa.Float, nullable=False),
+        sa.Column('watched_s', sa.Float, nullable=False),
+        sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
     )
-    op.create_unique_constraint('uq_scene_watch_session_scene', 'scene_watch_summaries', ['session_id','scene_id'])
-    op.create_index('ix_scene_watch_session_id', 'scene_watch_summaries', ['session_id'])
-    op.create_index('ix_scene_watch_scene_id', 'scene_watch_summaries', ['scene_id'])
+    op.create_index('ix_scene_watch_segments_session_id', 'scene_watch_segments', ['session_id'])
+    op.create_index('ix_scene_watch_segments_scene_id', 'scene_watch_segments', ['scene_id'])
+
+    op.create_table(
+        'scene_derived',
+        sa.Column('scene_id', sa.String(length=64), primary_key=True),
+        sa.Column('last_viewed_at', sa.DateTime, nullable=True),
+        sa.Column('derived_o_count', sa.Integer, nullable=False, server_default='0'),
+        sa.Column('view_count', sa.Integer, nullable=False, server_default='0'),
+    )
+    op.create_table(
+        'image_derived',
+        sa.Column('image_id', sa.String(length=64), primary_key=True),
+        sa.Column('last_viewed_at', sa.DateTime, nullable=True),
+        sa.Column('derived_o_count', sa.Integer, nullable=False, server_default='0'),
+        sa.Column('view_count', sa.Integer, nullable=False, server_default='0'),
+    )
 
 
 def downgrade() -> None:
-    op.drop_index('ix_scene_watch_scene_id', table_name='scene_watch_summaries')
-    op.drop_index('ix_scene_watch_session_id', table_name='scene_watch_summaries')
-    op.drop_constraint('uq_scene_watch_session_scene', 'scene_watch_summaries')
-    op.drop_table('scene_watch_summaries')
+    op.drop_index('ix_scene_watch_segments_scene_id', table_name='scene_watch_segments')
+    op.drop_index('ix_scene_watch_segments_session_id', table_name='scene_watch_segments')
+    op.drop_table('scene_watch_segments')
+
+    op.drop_table('image_derived')
 
     op.drop_index('ix_interaction_sessions_session_id', table_name='interaction_sessions')
     op.drop_constraint('uq_interaction_session_id', 'interaction_sessions')
     op.drop_table('interaction_sessions')
 
-    op.drop_index('ix_interaction_events_session_id', table_name='interaction_events')
-    op.drop_index('ix_interaction_client_ts', table_name='interaction_events')
     op.drop_index('ix_interaction_session_scene', table_name='interaction_events')
+    op.drop_index('ix_interaction_client_ts', table_name='interaction_events')
     op.drop_constraint('uq_interaction_client_event_id', 'interaction_events')
     op.drop_table('interaction_events')

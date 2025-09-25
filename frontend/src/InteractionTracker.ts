@@ -67,7 +67,6 @@ interface StoredQueueRecord {
 
 export interface InteractionTrackerConfig {
   endpoint?: string;                  // Base URL (default '/')
-  trackPath?: string;                 // POST relative path for single events
   batchPath?: string;                 // POST relative path for batch
   sendIntervalMs?: number;            // Flush interval
   maxBatchSize?: number;              // Upper bound per flush
@@ -139,7 +138,6 @@ export class InteractionTracker {
     const resolved = (partial.endpoint ?? _resolveBackendBase()).replace(/\/$/, '');
     const base: Required<InteractionTrackerConfig> = {
   endpoint: resolved,
-      trackPath: '/api/v1/interactions/track',
       batchPath: '/api/v1/interactions/sync',
       sendIntervalMs: 5000,
       maxBatchSize: 40,
@@ -410,15 +408,26 @@ export class InteractionTracker {
     try {
       const batch = this.queue.slice(0, this.cfg.maxBatchSize);
       const payload = batch.map(r => r.event);
-      const url = this.cfg.endpoint + (payload.length > 1 ? this.cfg.batchPath : this.cfg.trackPath);
+    const url = this.cfg.endpoint + this.cfg.batchPath;
       const isBatch = payload.length > 1;
       // Prefer navigator.sendBeacon for unload scenarios (handled separately)
+      const sendBody = JSON.stringify(payload.length > 1 ? payload : [payload[0]]);
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(isBatch ? payload : payload[0])
+        // Explicit: single event must be sent as a 1-element array
+        body: sendBody
       });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
+            let body: any = null;
+            try { body = await res.json(); } catch (e) { /* ignore */ }
+            if (!res.ok) {
+              this.log('flush non-ok response', { status: res.status, body });
+              throw new Error('HTTP ' + res.status);
+            }
+            // If backend returned diagnostics in body.errors, surface them
+            if (body && Array.isArray(body.errors) && body.errors.length) {
+              this.log('flush succeeded but returned errors', body.errors);
+            }
       // Success: remove sent
       this.queue.splice(0, batch.length);
       this.persistQueue();
@@ -455,8 +464,10 @@ export class InteractionTracker {
     if (!this.queue.length) return;
     try {
       const payload = this.queue.map(r => r.event);
-      const url = this.cfg.endpoint + (payload.length > 1 ? this.cfg.batchPath : this.cfg.trackPath);
-      const blob = new Blob([JSON.stringify(payload.length > 1 ? payload : payload[0])], { type: 'application/json' });
+  const url = this.cfg.endpoint + this.cfg.batchPath;
+  // Always send an array payload to match /sync expectation
+  // Explicit: always send an array; wrap single-event into a 1-element array
+  const blob = new Blob([JSON.stringify(payload.length > 1 ? payload : [payload[0]])], { type: 'application/json' });
       const ok = (navigator as any).sendBeacon ? (navigator as any).sendBeacon(url, blob) : false;
       if (ok) {
         this.queue = [];

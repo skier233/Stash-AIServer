@@ -17,7 +17,29 @@ from app.services import registry as services_registry  # ensures registry defin
 # Ensure tables exist if migrations not yet run (dev convenience)
 Base.metadata.create_all(bind=engine)
 
+# Attempt to add missing columns for dev convenience (safe if column already exists)
+try:
+    with engine.connect() as conn:
+        # SQLite allows ADD COLUMN; ignore if it fails
+        conn.execute("ALTER TABLE interaction_sessions ADD COLUMN session_start_ts DATETIME DEFAULT (CURRENT_TIMESTAMP)")
+except Exception:
+    pass
+
 app = FastAPI(title=settings.app_name)
+
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi import Request
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    try:
+        body = await request.body()
+    except Exception:
+        body = b''
+    print('[validation_error] url=', request.url, 'body=', body.decode(errors='replace'), 'errors=', exc.errors(), flush=True)
+    return JSONResponse(status_code=422, content={'detail': exc.errors()})
 
 # Auto-discover and register service packages (each may expose register())
 def _auto_register_services():
