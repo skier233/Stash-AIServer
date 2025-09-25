@@ -72,17 +72,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index('ix_scene_watch_segments_scene_id', table_name='scene_watch_segments')
-    op.drop_index('ix_scene_watch_segments_session_id', table_name='scene_watch_segments')
-    op.drop_table('scene_watch_segments')
-
-    op.drop_table('image_derived')
-
-    op.drop_index('ix_interaction_sessions_session_id', table_name='interaction_sessions')
-    op.drop_constraint('uq_interaction_session_id', 'interaction_sessions')
-    op.drop_table('interaction_sessions')
-
-    op.drop_index('ix_interaction_session_scene', table_name='interaction_events')
-    op.drop_index('ix_interaction_client_ts', table_name='interaction_events')
-    op.drop_constraint('uq_interaction_client_event_id', 'interaction_events')
-    op.drop_table('interaction_events')
+    # downgrade intentionally left empty (irreversible in-place migration for tests/dev)
+    pass

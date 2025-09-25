@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Iterable, List, Tuple
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from datetime import datetime, timezone
 import traceback
 from app.models.interaction import InteractionEvent, InteractionSession, SceneWatchSegment, SceneDerived
@@ -63,8 +63,10 @@ def ingest_events(db: Session, events: Iterable[InteractionEventIn]) -> Tuple[in
             segments = recompute_segments(db, sid, scene_id)
             # remove prior segments for this session+scene to avoid duplicates
             db.execute(
-                "DELETE FROM scene_watch_segments WHERE session_id = :sid AND scene_id = :scene_id",
-                { 'sid': sid, 'scene_id': scene_id }
+                delete(SceneWatchSegment).where(
+                    SceneWatchSegment.session_id == sid,
+                    SceneWatchSegment.scene_id == scene_id
+                )
             )
             # persist segments
             for s in segments:
@@ -73,6 +75,13 @@ def ingest_events(db: Session, events: Iterable[InteractionEventIn]) -> Tuple[in
             update_scene_derived(db, scene_id, ev_list)
         except Exception as e:  # pragma: no cover
             errors.append(f'summary {sid}/{scene_id}: {e}')
+    # Update image-derived entries for any images touched in this batch
+    touched_images = { e.entity_id for e in ev_list if e.entity_type == 'image' }
+    for img_id in touched_images:
+        try:
+            update_image_derived(db, img_id, ev_list)
+        except Exception as e:
+            errors.append(f'image summary {img_id}: {e}')
     db.commit()
     return accepted, duplicates, errors
 
@@ -203,20 +212,24 @@ def update_scene_derived(db: Session, scene_id: str, ev_list: list):
         # best-effort; don't fail ingestion on analytics recompute
         pass
 
-    # Also update image_derived if any image_view events present in this batch
-    try:
-        from app.models.interaction import ImageDerived
-        image_events = {}
-        for e in ev_list:
-            if e.entity_type == 'image' and e.type == 'image_view' and getattr(e, 'entity_id', None):
-                image_events.setdefault(e.entity_id, 0)
-                image_events[e.entity_id] += 1
-        for img_id, cnt in image_events.items():
-            img_existing = db.execute(select(ImageDerived).where(ImageDerived.image_id==img_id)).scalar_one_or_none()
-            if img_existing:
-                img_existing.last_viewed_at = ev_list[-1].ts if ev_list else None
-                img_existing.view_count = img_existing.view_count + cnt
-            else:
-                db.add(ImageDerived(image_id=img_id, last_viewed_at=ev_list[-1].ts if ev_list else None, derived_o_count=0, view_count=cnt))
-    except Exception:
-        pass
+    # image-derived is handled separately
+
+
+def update_image_derived(db: Session, image_id: str, ev_list: list):
+    from app.models.interaction import ImageDerived
+    last_view = None
+    view_events = 0
+    # find view events for this image in the batch
+    for e in ev_list:
+        if e.entity_type == 'image' and e.entity_id == image_id and e.type == 'image_view':
+            last_view = e.ts
+            view_events += 1
+    if view_events == 0:
+        return
+    existing = db.execute(select(ImageDerived).where(ImageDerived.image_id==image_id)).scalar_one_or_none()
+    if existing:
+        if last_view is not None:
+            existing.last_viewed_at = last_view
+        existing.view_count = existing.view_count + view_events
+    else:
+        db.add(ImageDerived(image_id=image_id, last_viewed_at=last_view, derived_o_count=0, view_count=view_events))
