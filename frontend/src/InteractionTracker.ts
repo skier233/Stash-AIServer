@@ -47,6 +47,7 @@ export type InteractionEventType =
 export interface InteractionEvent<TMeta = any> {
   id: string;                 // unique client event id
   session_id: string;         // session scope
+  client_id?: string;         // persistent client identifier (localStorage)
   ts: string;                 // ISO timestamp
   type: InteractionEventType; // event type
   entity_type: 'scene' | 'image' | 'gallery' | 'session';
@@ -115,6 +116,7 @@ export class InteractionTracker {
 
   private cfg: Required<InteractionTrackerConfig>;
   private sessionId: string;
+  private clientId: string;
   private queue: StoredQueueRecord[] = [];
   private flushTimer: any = null;
   private pageVisibilityHandler: (() => void) | null = null;
@@ -126,6 +128,7 @@ export class InteractionTracker {
   private constructor() {
     this.cfg = this.buildConfig({});
     this.sessionId = this.ensureSession();
+    this.clientId = this.ensureClientId();
     this.restoreQueue();
     this.bootstrap();
   }
@@ -163,6 +166,17 @@ export class InteractionTracker {
       sessionStorage.setItem('ai_overhaul_session_id', id);
     }
     return id;
+  }
+
+  private ensureClientId(): string {
+    try {
+      let id = localStorage.getItem('ai_overhaul_client_id');
+      if (!id) {
+        id = 'client_' + Date.now() + '_' + Math.random().toString(36).slice(2,8);
+        localStorage.setItem('ai_overhaul_client_id', id);
+      }
+      return id;
+    } catch (e) { return 'client_unknown'; }
   }
 
   private bootstrap() {
@@ -367,6 +381,8 @@ export class InteractionTracker {
     const ev: InteractionEvent = {
       id: 'evt_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
       session_id: this.sessionId,
+      // attach stable client id for session merging on backend
+      client_id: this.clientId,
       ts: new Date().toISOString(),
       type,
       entity_type: entityType,

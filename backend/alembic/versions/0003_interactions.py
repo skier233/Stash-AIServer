@@ -38,6 +38,8 @@ def upgrade() -> None:
         sa.Column('last_scene_id', sa.String(length=64), nullable=True),
         sa.Column('last_scene_event_ts', sa.DateTime, nullable=True),
         sa.Column('updated_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+        sa.Column('client_fingerprint', sa.String(length=128), nullable=True),
+        sa.Column('client_ip', sa.String(length=64), nullable=True),
     )
     op.create_unique_constraint('uq_interaction_session_id', 'interaction_sessions', ['session_id'])
     op.create_index('ix_interaction_sessions_session_id', 'interaction_sessions', ['session_id'])

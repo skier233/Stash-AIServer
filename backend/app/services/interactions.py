@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Iterable, List, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import select, delete
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import traceback
 from app.models.interaction import InteractionEvent, InteractionSession, SceneWatchSegment, SceneDerived
 from app.schemas.interaction import InteractionEventIn
@@ -10,7 +10,7 @@ from app.schemas.interaction import InteractionEventIn
 # Simple in-place segment reconstruction per (session_id, scene_id)
 # Based on primitive events sequence ordering by client_ts
 
-def ingest_events(db: Session, events: Iterable[InteractionEventIn]) -> Tuple[int,int,list[str]]:
+def ingest_events(db: Session, events: Iterable[InteractionEventIn], client_fingerprint: str | None = None, client_ip: str | None = None) -> Tuple[int,int,list[str]]:
     accepted = 0
     duplicates = 0
     errors: List[str] = []
@@ -25,17 +25,29 @@ def ingest_events(db: Session, events: Iterable[InteractionEventIn]) -> Tuple[in
         return dt.astimezone(timezone.utc).replace(tzinfo=None)
 
     for ev in ev_list:
+        # determine canonical session first (so stored events and summaries use same session id)
+        try:
+            client_ts_val = _to_naive_utc(ev.ts)
+            # find or create canonical session for this event
+            sess = _find_or_create_session(db, ev.session_id, client_fingerprint, client_ts_val, ev.entity_type == 'scene', ev.entity_id)
+            # set the event's session_id to the canonical session id so we store under that session
+            ev.session_id = sess.session_id
+        except Exception as e:
+            tb = traceback.format_exc()
+            errors.append(f'event={getattr(ev, "id", None)} session={getattr(ev, "session_id", None)} type={getattr(ev, "type", None)} err={e} trace={tb}')
+            continue
+
         # Dedup by client_event_id (ev.id)
         if ev.id:
             existing = db.execute(select(InteractionEvent.id).where(InteractionEvent.client_event_id==ev.id)).first()
             if existing:
                 duplicates += 1
                 continue
+
         try:
             # Use a nested transaction (savepoint) so a failing event doesn't roll back others
             with db.begin_nested():
                 # Only include model-backed fields; frontend no longer sends page_url/user_agent/viewport/schema_version
-                client_ts_val = _to_naive_utc(ev.ts)
                 obj = InteractionEvent(
                     client_event_id=ev.id,
                     session_id=ev.session_id,
@@ -48,7 +60,7 @@ def ingest_events(db: Session, events: Iterable[InteractionEventIn]) -> Tuple[in
                 db.add(obj)
                 # Flush inside the nested transaction to surface issues
                 db.flush()
-                # Update session state only after successful flush
+                # Update session state only after successful flush (no merging here)
                 _update_session(db, obj)
             accepted += 1
         except Exception as e:  # pragma: no cover (best-effort logging)
@@ -101,6 +113,7 @@ def _update_session(db: Session, ev: InteractionEvent):
     ev_client_ts = _to_naive(ev.client_ts)
 
     if not sess:
+        # If there is no session row for this session_id, create a new one (merging handled earlier)
         sess = InteractionSession(session_id=ev.session_id, last_event_ts=ev_client_ts or now, session_start_ts=ev_client_ts or now)
         if scene_related:
             sess.last_scene_id = ev.entity_id
@@ -112,6 +125,42 @@ def _update_session(db: Session, ev: InteractionEvent):
         if scene_related:
             sess.last_scene_id = ev.entity_id
             sess.last_scene_event_ts = ev_client_ts
+
+
+def _find_or_create_session(db: Session, incoming_session_id: str, client_fingerprint: str | None, ev_client_ts: datetime | None, scene_related: bool, entity_id: str | None):
+    """Return an InteractionSession object to use for storing an incoming event.
+    This function prefers merging only on client_fingerprint (if provided). It will
+    return an existing recent session or create a new session with the incoming
+    session id and client_fingerprint attached.
+    """
+    now = datetime.utcnow()
+    time_threshold = now - timedelta(minutes=2)
+    # Try exact session id first
+    sess = db.execute(select(InteractionSession).where(InteractionSession.session_id==incoming_session_id)).scalar_one_or_none()
+    if sess:
+        return sess
+
+    # Prefer merging only on client_fingerprint to avoid cross-device merges via IP
+    if client_fingerprint:
+        try:
+            merged = db.execute(select(InteractionSession).where(
+                InteractionSession.client_fingerprint == client_fingerprint,
+                InteractionSession.last_event_ts >= time_threshold
+            ).order_by(InteractionSession.last_event_ts.desc())).scalar_one_or_none()
+            if merged:
+                return merged
+        except Exception:
+            pass
+
+    # No merge found: create new session row with the incoming session id and fingerprint (if present)
+    new_sess = InteractionSession(session_id=incoming_session_id, last_event_ts=ev_client_ts or now, session_start_ts=ev_client_ts or now, client_fingerprint=client_fingerprint)
+    if scene_related and entity_id is not None:
+        new_sess.last_scene_id = entity_id
+        new_sess.last_scene_event_ts = now
+    db.add(new_sess)
+    # flush so the session is visible in subsequent selects within this transaction
+    db.flush()
+    return new_sess
 
 
 def recompute_segments(db: Session, session_id: str, scene_id: str):

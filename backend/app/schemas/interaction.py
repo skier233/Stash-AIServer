@@ -11,6 +11,7 @@ PRIMITIVE_EVENT_TYPES = {
 class InteractionEventIn(BaseModel):
     id: str = Field(alias='id')  # client side event id
     session_id: str
+    client_id: str | None = None
     ts: datetime  # client timestamp (original event ts)
     type: str
     entity_type: str

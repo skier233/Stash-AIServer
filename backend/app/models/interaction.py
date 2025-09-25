@@ -36,6 +36,9 @@ class InteractionSession(Base):
     last_scene_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_scene_event_ts: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    # optional client fingerprint and ip for session merging across tabs/refresh
+    client_fingerprint: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
 # Aggregated per-session per-scene summary (built on ingest for now)
 class SceneWatchSegment(Base):
