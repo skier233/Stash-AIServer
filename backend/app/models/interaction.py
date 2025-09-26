@@ -33,8 +33,11 @@ class InteractionSession(Base):
     last_event_ts: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     # store session start (first event) timestamp
     session_start_ts: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    last_scene_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    last_scene_event_ts: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # last_scene_id and last_scene_event_ts removed; use generic last_entity_* fields
+    # Generic last-entity tracking so we can compute "last item viewed in session"
+    last_entity_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    last_entity_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_entity_event_ts: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     # client fingerprint for session merging across tabs/refresh
     client_fingerprint: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
@@ -50,6 +53,7 @@ class SceneWatch(Base):
     page_left_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # watch statistics for this page visit
     total_watched_s: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    watch_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
@@ -80,3 +84,17 @@ class ImageDerived(Base):
     last_viewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     derived_o_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     view_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
+# Persisted library search/filter events for quick analytics
+class InteractionLibrarySearch(Base):
+    __tablename__ = 'interaction_library_search'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    # either 'scenes' or 'images' (frontend should set entity_type to 'library' and entity_id to 'scenes'/'images')
+    library: Mapped[str] = mapped_column(String(20), nullable=False)
+    # raw search string
+    query: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # structured filters JSON (tags, performers, etc.)
+    filters: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

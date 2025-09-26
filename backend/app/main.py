@@ -16,13 +16,6 @@ from app.services import registry as services_registry  # ensures registry defin
 # Ensure tables exist if migrations not yet run (dev convenience)
 Base.metadata.create_all(bind=engine)
 
-# Attempt to add missing columns for dev convenience (safe if column already exists)
-try:
-    with engine.connect() as conn:
-        # SQLite allows ADD COLUMN; ignore if it fails
-        conn.execute("ALTER TABLE interaction_sessions ADD COLUMN session_start_ts DATETIME DEFAULT (CURRENT_TIMESTAMP)")
-except Exception:
-    pass
 
 app = FastAPI(title=settings.app_name)
 

@@ -44,7 +44,8 @@ export type InteractionEventType =
   | 'scene_watch_progress'
   | 'scene_watch_complete'
   | 'image_view'
-  | 'gallery_view';
+  | 'gallery_view'
+  | 'library_search';
 
 export interface InteractionEvent<TMeta = any> {
   id: string;                 // unique client event id
@@ -52,7 +53,7 @@ export interface InteractionEvent<TMeta = any> {
   client_id?: string;         // persistent client identifier (localStorage)
   ts: string;                 // ISO timestamp
   type: InteractionEventType; // event type
-  entity_type: 'scene' | 'image' | 'gallery' | 'session';
+  entity_type: 'scene' | 'image' | 'gallery' | 'session' | 'library';
   entity_id: string;          // numeric id as string or 'session'
   metadata?: TMeta;           // structured extras
   page_url: string;
@@ -127,6 +128,7 @@ export class InteractionTracker {
   private lastEntityView: { type: string; id: string; ts: number } | null = null;
   private initialized = false;
   private lastScenePageEntered: string | null = null; // track current scene page for leave events
+  private lastLibrarySearchSignature: string | null = null; // dedupe library_search emissions
 
   private constructor() {
     this.cfg = this.buildConfig({});
@@ -190,6 +192,175 @@ export class InteractionTracker {
     this.installLifecycleHandlers();
     if (this.cfg.autoDetect) this.tryAutoDetect();
     if (this.cfg.integratePageContext) this.tryIntegratePageContext();
+    // Capture library search from URL on init (e.g., /scenes?search=...)
+    try { this.scanForLibrarySearch(); } catch (e) { /* ignore */ }
+    try { this.installLibraryListeners(); } catch (e) { /* ignore */ }
+  }
+
+  // Lightweight debounce helper
+  private debounce(fn: (...args: any[]) => void, wait = 300) {
+    let t: any = null;
+    return (...args: any[]) => { if (t) clearTimeout(t); t = setTimeout(()=> fn(...args), wait); };
+  }
+
+  // Install listeners to detect library search inputs and filter changes
+  private installLibraryListeners() {
+    try {
+      // remove previous listeners if any by storing on window (best-effort cleanup)
+      if ((window as any).__ai_lib_listeners_installed) return;
+      (window as any).__ai_lib_listeners_installed = true;
+
+      const collectFilters = (target?: HTMLElement | null): Record<string, any> => {
+        const out: Record<string, any> = {};
+        try {
+          // If we have a target, prefer scanning its nearest filter-related ancestor
+          const findFilterContainer = (el: HTMLElement | null) => {
+            let node: HTMLElement | null = el;
+            while (node) {
+              const cls = (node.className || '').toString().toLowerCase();
+              if (cls && /filter|filters|filter-panel|facets|facets-panel|sidebar|search-controls/.test(cls)) return node;
+              node = node.parentElement;
+            }
+            return null;
+          };
+
+          let scope: Element | Document = document;
+          if (target) {
+            const container = findFilterContainer(target);
+            if (container) scope = container;
+          }
+
+          // Collect inputs/selects within the chosen scope
+          const nodes = Array.from((scope as Element | Document).querySelectorAll('input,select')) as HTMLInputElement[];
+          for (const n of nodes) {
+            const name = (n.name || n.getAttribute('data-filter') || n.id || '').toString();
+            const cls = (n.className || '').toString().toLowerCase();
+            // Accept anything that looks like a filter control or has an explicit data-filter
+            const likely = name || cls || n.getAttribute('data-filter');
+            if (!likely) continue;
+            if (!(name.toLowerCase().includes('filter') || cls.includes('filter') || cls.includes('tag') || cls.includes('performer') || name.toLowerCase().includes('tag') || n.hasAttribute('data-filter'))) {
+              // If we're scoped to a container, accept any control inside it
+              if (scope === document) continue; // global scan should still be conservative
+            }
+            const key = name || n.id || (n.getAttribute('data-filter') || cls || 'filter');
+            if (n.type === 'checkbox') {
+              out[key] = n.checked;
+            } else if (n.type === 'radio') {
+              if (n.checked) out[key] = n.value;
+            } else {
+              out[key] = n.value;
+            }
+          }
+        } catch (e) { /* ignore */ }
+        return out;
+      };
+
+      // Input handler for text search boxes
+      const onInput = this.debounce((ev: Event) => {
+        try {
+          const t = ev.target as HTMLInputElement;
+          if (!t) return;
+          const val = (t.value || '').trim();
+          if (val.length < 2) return;
+          // Heuristic: only treat as library search if on a library page
+          const p = location.pathname || '';
+          if (p.match(/\/scenes(\/|$)/i)) {
+            this.trackLibrarySearch('scenes', val, { source: 'input', page_url: location.href });
+          } else if (p.match(/\/images(\/|$)/i)) {
+            this.trackLibrarySearch('images', val, { source: 'input', page_url: location.href });
+          } else if (p.match(/\/galleries(\/|$)/i)) {
+            this.trackLibrarySearch('galleries', val, { source: 'input', page_url: location.href });
+          } else if (p.match(/\/performers(\/|$)/i)) {
+            this.trackLibrarySearch('performers', val, { source: 'input', page_url: location.href });
+          } else if (p.match(/\/tags(\/|$)/i)) {
+            this.trackLibrarySearch('tags', val, { source: 'input', page_url: location.href });
+          }
+        } catch (e) { /* ignore */ }
+      }, 600);
+
+      document.addEventListener('input', (ev) => {
+        try {
+          const target = ev.target as HTMLInputElement | null;
+          if (!target) return;
+          // Only consider text inputs likely to be search boxes
+          const isText = target.tagName === 'INPUT' && (target.type === 'text' || target.type === 'search');
+          const placeholder = (target.placeholder || '').toLowerCase();
+          const name = (target.name || '').toLowerCase();
+          if (isText && (placeholder.includes('search') || name.includes('search') || target.className.toLowerCase().includes('search'))) {
+            onInput(ev);
+          }
+        } catch (e) {}
+      }, true);
+
+      // Change handler for selects/checkboxes used as filters
+      const onChange = this.debounce((ev: Event) => {
+        try {
+          const p = location.pathname || '';
+          let lib: 'scenes'|'images'|'galleries'|'performers'|'tags'|null = null;
+          if (p.match(/\/scenes(\/|$)/i)) lib = 'scenes'; else if (p.match(/\/images(\/|$)/i)) lib = 'images';
+          else if (p.match(/\/galleries(\/|$)/i)) lib = 'galleries'; else if (p.match(/\/performers(\/|$)/i)) lib = 'performers'; else if (p.match(/\/tags(\/|$)/i)) lib = 'tags';
+          if (!lib) return;
+          const target = (ev && (ev.target as HTMLElement)) || null;
+          let filters = collectFilters(target);
+          // If no filters found, try to derive a single-control filter from the changed element.
+          // This helps cases where the performers page uses controls without explicit "filter" names/classes.
+          if (Object.keys(filters).length === 0 && target) {
+            try {
+              const el = target as HTMLInputElement | HTMLSelectElement | null;
+              if (el) {
+                let key = (el.getAttribute('name') || el.getAttribute('data-filter') || el.id || el.className || '').toString();
+                key = key.trim() || (el.getAttribute('data-filter') || el.id || el.className || 'filter');
+                let value: any = null;
+                if ((el as HTMLInputElement).tagName && (el as HTMLInputElement).tagName.toLowerCase() === 'input') {
+                  const inp = el as HTMLInputElement;
+                  if (inp.type === 'checkbox') value = inp.checked;
+                  else if (inp.type === 'radio') { if (inp.checked) value = inp.value; }
+                  else value = inp.value;
+                } else if ((el as HTMLSelectElement).tagName && (el as HTMLSelectElement).tagName.toLowerCase() === 'select') {
+                  value = (el as HTMLSelectElement).value;
+                } else {
+                  // fallback: try dataset or text
+                  value = (el as any).value ?? (el as any).dataset ?? null;
+                }
+                if (value !== null && value !== undefined && !(typeof value === 'string' && String(value).trim() === '')) {
+                  filters = { [String(key)]: value };
+                }
+              }
+            } catch (e) { /* ignore */ }
+          }
+          if (Object.keys(filters).length === 0) return;
+          this.trackLibrarySearch(lib, undefined, { source: 'filters', filters, page_url: location.href });
+        } catch (e) { /* ignore */ }
+      }, 400);
+
+      document.addEventListener('change', (ev) => {
+        try {
+          const target = ev.target as HTMLElement | null;
+          if (!target) return;
+          const tag = target.tagName.toLowerCase();
+          if (tag === 'select' || (tag === 'input' && ((target as HTMLInputElement).type === 'checkbox' || (target as HTMLInputElement).type === 'radio'))) {
+            onChange(ev);
+          }
+        } catch (e) {}
+      }, true);
+
+      // Re-scan on navigation via history API
+      const hookNav = (orig: any) => {
+        return function(this: any, ...args: any[]) {
+          const res = orig.apply(this, args);
+          try { setTimeout(()=>{ (window as any).stashAIInteractionTracker?.scanForLibrarySearch?.(); }, 100); } catch {}
+          return res;
+        };
+      };
+      const origPush = history.pushState;
+      const origReplace = history.replaceState;
+      history.pushState = hookNav(origPush);
+      history.replaceState = hookNav(origReplace);
+      window.addEventListener('popstate', () => { try { this.scanForLibrarySearch(); } catch {} });
+
+    } catch (e) {
+      // swallow errors; this is non-essential
+    }
   }
 
   private tryAutoDetect() {
@@ -371,6 +542,58 @@ export class InteractionTracker {
     this.lastEntityView = { type: 'gallery', id: galleryId, ts: Date.now() };
   }
 
+  /**
+   * Persist a library search or filter action. library should be 'scenes' or 'images'.
+   */
+  public trackLibrarySearch(library: 'scenes'|'images'|'galleries'|'performers'|'tags', query?: string, filters?: any) {
+    const meta: any = { query: query ?? null, filters: filters ?? null };
+    try {
+      // Build a stable signature to suppress duplicates from multiple detection paths
+      const sig = library + '|' + JSON.stringify({ q: meta.query, f: meta.filters });
+      if (this.lastLibrarySearchSignature === sig) return;
+      this.lastLibrarySearchSignature = sig;
+    } catch { /* ignore */ }
+    this.trackInternal('library_search', 'library' as any, library, meta);
+  }
+
+  // Inspect current URL for library query params and emit a library_search if present
+  private scanForLibrarySearch() {
+    try {
+      const p = location.pathname || '';
+      const params = new URLSearchParams(location.search || '');
+      const q = params.get('search') || params.get('query') || undefined;
+      const collected: Record<string,string> = {};
+      params.forEach((v,k) => { collected[k] = v; });
+
+      // Determine if this is a library page and which one
+      let lib: 'scenes'|'images'|'galleries'|'performers'|'tags'|null = null;
+      if (p.match(/\/scenes(\/|$)/i)) lib = 'scenes';
+      else if (p.match(/\/images(\/|$)/i)) lib = 'images';
+      else if (p.match(/\/galleries(\/|$)/i)) lib = 'galleries';
+      else if (p.match(/\/performers(\/|$)/i)) lib = 'performers';
+      else if (p.match(/\/tags(\/|$)/i)) lib = 'tags';
+      if (!lib) return; // not a library page
+
+      // Decide if we should emit: either query present OR we have meaningful filter params.
+      const noiseKeys = new Set(['page','per_page','perpage','offset','limit']);
+      const hasMeaningfulFilter = Object.keys(collected).some(k => !noiseKeys.has(k.toLowerCase()));
+      if (!q && !hasMeaningfulFilter) return; // nothing to report
+
+      // Attempt light parsing of common encoded filter param 'c'
+      if (collected['c']) {
+        try {
+          const decoded = decodeURIComponent(collected['c']);
+          // Store both raw and decoded if different
+          if (decoded && decoded !== collected['c']) {
+            collected['c_decoded'] = decoded;
+          }
+        } catch { /* ignore */ }
+      }
+
+      this.trackLibrarySearch(lib, q, collected);
+    } catch (e) { /* ignore */ }
+  }
+
   public flushNow() { this.flushQueue(); }
 
   // Expose last viewed entity (scene/image/gallery) for external logic
@@ -471,22 +694,21 @@ export class InteractionTracker {
   private installLifecycleHandlers() {
     this.pageVisibilityHandler = () => {
       if (document.visibilityState === 'hidden') {
+        // Do not emit scene_page_leave on visibilitychange (tab switch) — let backend infer
         this.flushWithBeacon();
       }
     };
     document.addEventListener('visibilitychange', this.pageVisibilityHandler);
 
     this.beforeUnloadHandler = () => {
-      // Emit scene_page_leave for current scene if any
-      if (this.lastScenePageEntered) {
-        this.trackInternal('scene_page_leave', 'scene', this.lastScenePageEntered, { reason: 'unload' });
-      }
+      // Do not emit scene_page_leave on unload; include last_entity in session_end metadata instead
       this.trackInternal('session_end','session','session',{ ended_at: Date.now(), last_entity: this.lastEntityView });
       this.flushWithBeacon();
     };
     window.addEventListener('beforeunload', this.beforeUnloadHandler);
     // pagehide is more reliable on mobile/Safari; treat like unload
     window.addEventListener('pagehide', () => {
+      // Do not emit scene_page_leave on pagehide; let backend infer finalization
       this.flushWithBeacon();
     });
   }
@@ -498,9 +720,27 @@ export class InteractionTracker {
   const url = this.cfg.endpoint + this.cfg.batchPath;
   // Always send an array payload to match /sync expectation
   // Explicit: always send an array; wrap single-event into a 1-element array
-  const blob = new Blob([JSON.stringify(payload.length > 1 ? payload : [payload[0]])], { type: 'application/json' });
-      const ok = (navigator as any).sendBeacon ? (navigator as any).sendBeacon(url, blob) : false;
-      if (ok) {
+  const body = JSON.stringify(payload.length > 1 ? payload : [payload[0]]);
+  const blob = new Blob([body], { type: 'application/json' });
+      let ok = false;
+      try {
+        ok = (navigator as any).sendBeacon ? (navigator as any).sendBeacon(url, blob) : false;
+      } catch (e) { ok = false; }
+      if (!ok) {
+        // Fallback: try fetch with keepalive (best-effort)
+        try {
+          const f = fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true });
+          // Note: can't reliably await in unload, but attempt to clear queue anyway
+          f.then(res => {
+            if (res && res.ok) {
+              this.queue = [];
+              this.persistQueue();
+            }
+          }).catch(() => { /* ignore */ });
+        } catch (e) {
+          // ignore
+        }
+      } else {
         this.queue = [];
         this.persistQueue();
       }
@@ -598,6 +838,9 @@ export class InteractionTracker {
   (window as any).trackInteractionEvent = function(type: InteractionEventType, entityType: InteractionEvent['entity_type'], entityId: string, metadata?: any){
     // Limited manual escape hatch
     (inst as any).trackInternal?.(type, entityType, entityId, metadata);
+  };
+  (window as any).trackLibrarySearch = function(library: string, query?: string, filters?: any){
+    (inst as any).trackLibrarySearch?.(library, query, filters);
   };
   // simple global helpers for toggling debug console output
   (window as any).enableInteractionDebug = () => inst.enableDebug();

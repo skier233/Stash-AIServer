@@ -98,6 +98,30 @@ def ingest_events(db: Session, events: Iterable[InteractionEventIn], client_fing
             update_image_derived(db, img_id, ev_list)
         except Exception as e:
             errors.append(f'image summary {img_id}: {e}')
+    # Persist library search events (if any) for quick querying/analytics
+    try:
+        from app.models.interaction import InteractionLibrarySearch
+        for e in ev_list:
+            # accept event_type 'library_search' or entity_type 'library'
+            if e.type == 'library_search' or e.entity_type == 'library':
+                lib = e.entity_id if e.entity_id else (e.event_metadata or {}).get('library')
+                if not lib:
+                    continue
+                q = None
+                filters = None
+                meta = e.metadata or {}
+                # metadata may carry 'query' and 'filters'
+                q = meta.get('query')
+                filters = meta.get('filters')
+                try:
+                    row = InteractionLibrarySearch(session_id=e.session_id, library=lib, query=q, filters=filters)
+                    db.add(row)
+                except Exception:
+                    # don't let this block ingestion
+                    continue
+    except Exception:
+        # model/table might not exist yet in older deployments; ignore
+        pass
     db.commit()
     return accepted, duplicates, errors
 
@@ -119,16 +143,60 @@ def _update_session(db: Session, ev: InteractionEvent):
     if not sess:
         # If there is no session row for this session_id, create a new one (merging handled earlier)
         sess = InteractionSession(session_id=ev.session_id, last_event_ts=ev_client_ts or now, session_start_ts=ev_client_ts or now)
-        if scene_related:
-            sess.last_scene_id = ev.entity_id
-            sess.last_scene_event_ts = now
+        # Generic last-entity tracking
+        try:
+            if ev.entity_type in ('scene','image','gallery'):
+                sess.last_entity_type = ev.entity_type
+                sess.last_entity_id = ev.entity_id
+                sess.last_entity_event_ts = ev_client_ts or now
+        except Exception:
+            pass
         db.add(sess)
     else:
         if ev_client_ts and (sess.last_event_ts is None or ev_client_ts > sess.last_event_ts):
             sess.last_event_ts = ev_client_ts
-        if scene_related:
-            sess.last_scene_id = ev.entity_id
-            sess.last_scene_event_ts = ev_client_ts
+        # scene-related context is recorded via generic last_entity_* fields below
+        # Update generic last-entity for relevant event types
+        try:
+            if ev.entity_type in ('scene','image','gallery'):
+                sess.last_entity_type = ev.entity_type
+                sess.last_entity_id = ev.entity_id
+                sess.last_entity_event_ts = ev_client_ts
+        except Exception:
+            pass
+    # Special-case: session_end may carry last_entity metadata with the final viewed item
+    try:
+        if ev.entity_type == 'session':
+            meta = ev.event_metadata or {}
+            last_ent = meta.get('last_entity')
+            if last_ent and isinstance(last_ent, dict):
+                t = last_ent.get('type')
+                i = last_ent.get('id')
+                ts = last_ent.get('ts')
+                if t and i:
+                    try:
+                        sess.last_entity_type = t
+                        sess.last_entity_id = str(i)
+                        # prefer event-provided ts if parseable
+                        if ts:
+                            try:
+                                # Try builtin ISO parser first
+                                parsed = datetime.fromisoformat(ts)
+                                # strip tzinfo if present
+                                sess.last_entity_event_ts = parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+                            except Exception:
+                                try:
+                                    # Fallback: treat ts as epoch ms if numeric
+                                    if str(ts).isdigit():
+                                        sess.last_entity_event_ts = datetime.utcfromtimestamp(int(ts) / 1000.0)
+                                    else:
+                                        sess.last_entity_event_ts = ev_client_ts or datetime.utcnow()
+                                except Exception:
+                                    sess.last_entity_event_ts = ev_client_ts or datetime.utcnow()
+                    except Exception:
+                        pass
+    except Exception:
+        pass
 
 
 def _find_or_create_session(db: Session, incoming_session_id: str, client_fingerprint: str | None, ev_client_ts: datetime | None, scene_related: bool, entity_id: str | None):
@@ -158,9 +226,6 @@ def _find_or_create_session(db: Session, incoming_session_id: str, client_finger
 
     # No merge found: create new session row with the incoming session id and fingerprint (if present)
     new_sess = InteractionSession(session_id=incoming_session_id, last_event_ts=ev_client_ts or now, session_start_ts=ev_client_ts or now, client_fingerprint=client_fingerprint)
-    if scene_related and entity_id is not None:
-        new_sess.last_scene_id = entity_id
-        new_sess.last_scene_event_ts = now
     db.add(new_sess)
     # flush so the session is visible in subsequent selects within this transaction
     db.flush()
@@ -269,9 +334,9 @@ def update_scene_derived(db: Session, scene_id: str, ev_list: list):
 
         qualified_session_ids: set[str] = set()
 
-        # 1) Sessions where this scene was last_scene and session duration >= threshold
+        # 1) Sessions where this scene was the last entity in the session and session duration >= threshold
         sessions = db.execute(select(InteractionSession).where(
-            InteractionSession.last_scene_id == scene_id
+            (InteractionSession.last_entity_type == 'scene') & (InteractionSession.last_entity_id == scene_id)
         )).scalars().all()
         for sess in sessions:
             try:
@@ -329,6 +394,17 @@ def _find_or_create_scene_watch(db: Session, session_id: str, scene_id: str, ev_
         for e in ev_list:
             if e.entity_id == scene_id and e.entity_type == 'scene' and e.type == 'scene_page_leave':
                 existing.page_left_at = e.ts
+        # If still missing, try to infer from session metadata (session end / last entity ts)
+        if existing.page_left_at is None:
+            try:
+                sess = db.execute(select(InteractionSession).where(InteractionSession.session_id==session_id)).scalar_one_or_none()
+                if sess:
+                    if getattr(sess, 'last_entity_type', None) == 'scene' and getattr(sess, 'last_entity_id', None) == scene_id and getattr(sess, 'last_entity_event_ts', None):
+                        existing.page_left_at = sess.last_entity_event_ts
+                    elif getattr(sess, 'last_event_ts', None):
+                        existing.page_left_at = sess.last_event_ts
+            except Exception:
+                pass
         return existing
     
     # Create new scene watch record
@@ -353,6 +429,22 @@ def _find_or_create_scene_watch(db: Session, session_id: str, scene_id: str, ev_
             page_entered_at = min(scene_events, key=lambda x: x.ts).ts
         else:
             page_entered_at = datetime.utcnow()
+    # Try to infer page_left_at from session metadata if not present in events
+    if page_left_at is None:
+        try:
+            sess = db.execute(select(InteractionSession).where(InteractionSession.session_id==session_id)).scalar_one_or_none()
+            if sess:
+                if getattr(sess, 'last_entity_type', None) == 'scene' and getattr(sess, 'last_entity_id', None) == scene_id and getattr(sess, 'last_entity_event_ts', None):
+                    page_left_at = sess.last_entity_event_ts
+                elif getattr(sess, 'last_event_ts', None):
+                    page_left_at = sess.last_event_ts
+        except Exception:
+            pass
+    # Final fallback: use latest scene event timestamp in the batch
+    if page_left_at is None:
+        scene_events = [e for e in ev_list if e.entity_id == scene_id and e.entity_type == 'scene']
+        if scene_events:
+            page_left_at = max(scene_events, key=lambda x: x.ts).ts
     
     new_watch = SceneWatch(
         session_id=session_id,
@@ -372,23 +464,43 @@ def _update_scene_watch_stats(db: Session, scene_watch: SceneWatch, segments: li
     
     # Try to compute watch percentage if we can determine video duration
     # This could be enhanced to query scene metadata or use duration from events
+    # First try explicit duration from scene_watch_complete events
+    duration = None
     try:
-        # Look for duration in recent scene_watch_complete events
         duration_events = db.execute(select(InteractionEvent).where(
             InteractionEvent.session_id == scene_watch.session_id,
             InteractionEvent.entity_type == 'scene',
             InteractionEvent.entity_id == scene_watch.scene_id,
             InteractionEvent.event_type == 'scene_watch_complete'
         ).order_by(InteractionEvent.client_ts.desc()).limit(1)).scalars().all()
-        
         for ev in duration_events:
             meta = ev.event_metadata or {}
-            duration = meta.get('duration')
-            if duration and duration > 0:
-                scene_watch.watch_percent = min(100.0, (total_watched / duration) * 100.0)
-                break
+            d = meta.get('duration')
+            try:
+                if d is not None and float(d) > 0:
+                    duration = float(d)
+                    break
+            except Exception:
+                continue
     except Exception:
-        pass
+        duration = None
+
+    # If we couldn't find an explicit duration, try to infer from page_entered/page_left
+    if duration is None:
+        try:
+            if scene_watch.page_entered_at and scene_watch.page_left_at:
+                dur = (scene_watch.page_left_at - scene_watch.page_entered_at).total_seconds()
+                if dur > 0:
+                    duration = dur
+        except Exception:
+            duration = None
+
+    # Only set watch_percent if we have a reliable duration (from complete event or page enter/leave)
+    if duration and duration > 0:
+        try:
+            scene_watch.watch_percent = min(100.0, (total_watched / float(duration)) * 100.0)
+        except Exception:
+            pass
 
 
 def update_image_derived(db: Session, image_id: str, ev_list: list):
@@ -401,7 +513,9 @@ def update_image_derived(db: Session, image_id: str, ev_list: list):
             last_view = e.ts
             view_events += 1
     if view_events == 0:
-        return
+        # Even if there are no explicit image_view events in this batch, we may
+        # still need to recompute derived_o_count based on session last-entity.
+        pass
     existing = db.execute(select(ImageDerived).where(ImageDerived.image_id==image_id)).scalar_one_or_none()
     if existing:
         if last_view is not None:
@@ -409,3 +523,27 @@ def update_image_derived(db: Session, image_id: str, ev_list: list):
         existing.view_count = existing.view_count + view_events
     else:
         db.add(ImageDerived(image_id=image_id, last_viewed_at=last_view, derived_o_count=0, view_count=view_events))
+
+    # Recompute derived_o_count for images: count sessions where this image is the
+    # last_entity and session duration >= threshold
+    try:
+        import os
+        min_session_minutes = int(os.getenv('INTERACTION_MIN_SESSION_MINUTES', '10'))
+        min_session_seconds = min_session_minutes * 60
+        sessions = db.execute(select(InteractionSession).where(
+            (InteractionSession.last_entity_type == 'image') & (InteractionSession.last_entity_id == image_id)
+        )).scalars().all()
+        qualified = 0
+        for s in sessions:
+            try:
+                if s.last_event_ts and s.session_start_ts:
+                    duration = (s.last_event_ts - s.session_start_ts).total_seconds()
+                    if duration >= min_session_seconds:
+                        qualified += 1
+            except Exception:
+                continue
+        existing = db.execute(select(ImageDerived).where(ImageDerived.image_id==image_id)).scalar_one_or_none()
+        if existing:
+            existing.derived_o_count = qualified
+    except Exception:
+        pass
