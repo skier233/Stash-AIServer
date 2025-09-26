@@ -1,7 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.api import requests as requests_router
 from app.api import interactions as interactions_router
 from app.api import actions as actions_router
 from app.api import tasks as tasks_router
@@ -70,7 +69,6 @@ if os.getenv('AIO_DEVMODE'):
         print(f'[dev] hash error: {_e}', flush=True)
 
 # Routers
-app.include_router(requests_router.router, prefix=settings.api_v1_prefix)
 app.include_router(actions_router.router, prefix=settings.api_v1_prefix)
 app.include_router(tasks_router.router, prefix=settings.api_v1_prefix)
 app.include_router(ws_router.router, prefix=settings.api_v1_prefix)

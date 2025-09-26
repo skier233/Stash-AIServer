@@ -36,6 +36,8 @@ export type InteractionEventType =
   | 'session_start'
   | 'session_end'
   | 'scene_view'
+  | 'scene_page_enter'
+  | 'scene_page_leave'
   | 'scene_watch_start'
   | 'scene_watch_pause'
   | 'scene_seek'
@@ -124,6 +126,7 @@ export class InteractionTracker {
   private currentScene?: SceneWatchState;
   private lastEntityView: { type: string; id: string; ts: number } | null = null;
   private initialized = false;
+  private lastScenePageEntered: string | null = null; // track current scene page for leave events
 
   private constructor() {
     this.cfg = this.buildConfig({});
@@ -293,8 +296,16 @@ export class InteractionTracker {
 
   // ---------------------------- Public API ---------------------------------
   public trackSceneView(sceneId: string, opts?: { title?: string; from?: string }) {
+    // Emit scene_page_leave for previous scene if different
+    if (this.lastScenePageEntered && this.lastScenePageEntered !== sceneId) {
+      this.trackInternal('scene_page_leave', 'scene', this.lastScenePageEntered, { next_scene: sceneId });
+    }
+    
     this.trackInternal('scene_view','scene',sceneId,{ title: opts?.title, from: opts?.from, last_viewed_entity: this.lastEntityView });
     this.lastEntityView = { type: 'scene', id: sceneId, ts: Date.now() };
+    // Also emit scene_page_enter event to track page visit timing
+    this.trackInternal('scene_page_enter', 'scene', sceneId, { title: opts?.title, from: opts?.from });
+    this.lastScenePageEntered = sceneId;
   }
 
   public instrumentSceneVideo(sceneId: string, video: HTMLVideoElement) {
@@ -466,6 +477,10 @@ export class InteractionTracker {
     document.addEventListener('visibilitychange', this.pageVisibilityHandler);
 
     this.beforeUnloadHandler = () => {
+      // Emit scene_page_leave for current scene if any
+      if (this.lastScenePageEntered) {
+        this.trackInternal('scene_page_leave', 'scene', this.lastScenePageEntered, { reason: 'unload' });
+      }
       this.trackInternal('session_end','session','session',{ ended_at: Date.now(), last_entity: this.lastEntityView });
       this.flushWithBeacon();
     };

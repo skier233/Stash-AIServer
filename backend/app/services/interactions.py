@@ -4,13 +4,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, delete
 from datetime import datetime, timezone, timedelta
 import traceback
-from app.models.interaction import InteractionEvent, InteractionSession, SceneWatchSegment, SceneDerived
+from app.models.interaction import InteractionEvent, InteractionSession, SceneWatch, SceneWatchSegment, SceneDerived
 from app.schemas.interaction import InteractionEventIn
 
 # Simple in-place segment reconstruction per (session_id, scene_id)
 # Based on primitive events sequence ordering by client_ts
 
-def ingest_events(db: Session, events: Iterable[InteractionEventIn], client_fingerprint: str | None = None, client_ip: str | None = None) -> Tuple[int,int,list[str]]:
+def ingest_events(db: Session, events: Iterable[InteractionEventIn], client_fingerprint: str | None = None) -> Tuple[int,int,list[str]]:
     accepted = 0
     duplicates = 0
     errors: List[str] = []
@@ -72,7 +72,9 @@ def ingest_events(db: Session, events: Iterable[InteractionEventIn], client_fing
     touched = {(e.session_id, e.entity_id) for e in ev_list if e.entity_type=='scene'}
     for sid, scene_id in touched:
         try:
-            segments = recompute_segments(db, sid, scene_id)
+            # Find or create scene watch record for this session+scene
+            scene_watch = _find_or_create_scene_watch(db, sid, scene_id, ev_list)
+            segments = recompute_segments(db, sid, scene_id, scene_watch.id)
             # remove prior segments for this session+scene to avoid duplicates
             db.execute(
                 delete(SceneWatchSegment).where(
@@ -80,9 +82,11 @@ def ingest_events(db: Session, events: Iterable[InteractionEventIn], client_fing
                     SceneWatchSegment.scene_id == scene_id
                 )
             )
-            # persist segments
+            # persist segments with scene_watch_id reference
             for s in segments:
                 db.add(s)
+            # update scene watch stats
+            _update_scene_watch_stats(db, scene_watch, segments)
             # update derived
             update_scene_derived(db, scene_id, ev_list)
         except Exception as e:  # pragma: no cover
@@ -163,7 +167,7 @@ def _find_or_create_session(db: Session, incoming_session_id: str, client_finger
     return new_sess
 
 
-def recompute_segments(db: Session, session_id: str, scene_id: str):
+def recompute_segments(db: Session, session_id: str, scene_id: str, scene_watch_id: int):
     rows = db.execute(select(InteractionEvent).where(
         InteractionEvent.session_id==session_id,
         InteractionEvent.entity_type=='scene',
@@ -227,7 +231,7 @@ def recompute_segments(db: Session, session_id: str, scene_id: str):
     for s in merged:
         start, end = float(s[0]), float(s[1])
         watched = max(0.0, end - start)
-        out.append(SceneWatchSegment(session_id=session_id, scene_id=scene_id, start_s=start, end_s=end, watched_s=watched))
+        out.append(SceneWatchSegment(scene_watch_id=scene_watch_id, session_id=session_id, scene_id=scene_id, start_s=start, end_s=end, watched_s=watched))
     return out
 
 def update_scene_derived(db: Session, scene_id: str, ev_list: list):
@@ -239,8 +243,9 @@ def update_scene_derived(db: Session, scene_id: str, ev_list: list):
         if e.entity_id == scene_id and e.entity_type == 'scene' and e.type == 'scene_view':
             last_view = e.ts
             view_events += 1
-    if last_view is None and view_events == 0:
-        return
+
+    # Ensure a SceneDerived row exists so we can persist derived_o_count even when
+    # there are no explicit scene_view events in the batch (e.g. only scene_watch events).
     existing = db.execute(select(SceneDerived).where(SceneDerived.scene_id==scene_id)).scalar_one_or_none()
     if existing:
         if last_view is not None:
@@ -248,20 +253,142 @@ def update_scene_derived(db: Session, scene_id: str, ev_list: list):
         if view_events:
             existing.view_count = existing.view_count + view_events
     else:
+        # create with whatever view_events we have (may be zero)
         db.add(SceneDerived(scene_id=scene_id, last_viewed_at=last_view, derived_o_count=0, view_count=view_events))
 
-    # Recompute derived_o_count: count sessions where this scene was the last_scene_id
+    # Recompute derived_o_count using a union of signals so flaky timestamps
+    # or reordering won't prevent expected updates. We consider a session
+    # "qualified" if ANY of the following hold:
+    #  - InteractionSession where this scene is last_scene_id and session duration >= threshold
+    #  - SceneWatch for this scene where page_left_at - page_entered_at >= threshold
+    #  - SceneWatch where total_watched_s >= threshold
     try:
-        res = db.execute(select(InteractionSession).where(InteractionSession.last_scene_id==scene_id)).scalars().all()
-        derived_o = len(res)
+        import os
+        min_session_minutes = int(os.getenv('INTERACTION_MIN_SESSION_MINUTES', '10'))
+        min_session_seconds = min_session_minutes * 60
+
+        qualified_session_ids: set[str] = set()
+
+        # 1) Sessions where this scene was last_scene and session duration >= threshold
+        sessions = db.execute(select(InteractionSession).where(
+            InteractionSession.last_scene_id == scene_id
+        )).scalars().all()
+        for sess in sessions:
+            try:
+                if sess.last_event_ts and sess.session_start_ts:
+                    duration = (sess.last_event_ts - sess.session_start_ts).total_seconds()
+                    if duration >= min_session_seconds:
+                        qualified_session_ids.add(sess.session_id)
+            except Exception:
+                # ignore malformed timestamps for a best-effort count
+                continue
+
+        # 2) SceneWatch rows where page duration meets threshold
+        try:
+            from app.models.interaction import SceneWatch
+            watches = db.execute(select(SceneWatch).where(SceneWatch.scene_id == scene_id)).scalars().all()
+            for w in watches:
+                if w.page_entered_at and w.page_left_at:
+                    try:
+                        dur = (w.page_left_at - w.page_entered_at).total_seconds()
+                        if dur >= min_session_seconds:
+                            qualified_session_ids.add(w.session_id)
+                    except Exception:
+                        pass
+                # also consider total_watched_s as qualification
+                try:
+                    if getattr(w, 'total_watched_s', 0) and w.total_watched_s >= float(min_session_seconds):
+                        qualified_session_ids.add(w.session_id)
+                except Exception:
+                    pass
+        except Exception:
+            # If SceneWatch model/table isn't present or query fails, ignore
+            pass
+
+        # Persist the computed derived_o_count
         existing = db.execute(select(SceneDerived).where(SceneDerived.scene_id==scene_id)).scalar_one_or_none()
         if existing:
-            existing.derived_o_count = derived_o
+            existing.derived_o_count = len(qualified_session_ids)
     except Exception:
         # best-effort; don't fail ingestion on analytics recompute
         pass
 
     # image-derived is handled separately
+
+
+def _find_or_create_scene_watch(db: Session, session_id: str, scene_id: str, ev_list: list) -> SceneWatch:
+    """Find existing scene watch record or create one based on scene_page_enter/scene_view events"""
+    # Look for existing scene watch record
+    existing = db.execute(select(SceneWatch).where(
+        SceneWatch.session_id == session_id,
+        SceneWatch.scene_id == scene_id
+    )).scalar_one_or_none()
+    
+    if existing:
+        # Update page_left_at if we have scene_page_leave events
+        for e in ev_list:
+            if e.entity_id == scene_id and e.entity_type == 'scene' and e.type == 'scene_page_leave':
+                existing.page_left_at = e.ts
+        return existing
+    
+    # Create new scene watch record
+    page_entered_at = None
+    page_left_at = None
+    
+    # Find page enter/leave events
+    for e in ev_list:
+        if e.entity_id == scene_id and e.entity_type == 'scene':
+            if e.type == 'scene_page_enter':
+                page_entered_at = e.ts
+            elif e.type == 'scene_page_leave':
+                page_left_at = e.ts
+            elif e.type == 'scene_view' and page_entered_at is None:
+                # Fallback: use scene_view as page enter if no explicit page_enter event
+                page_entered_at = e.ts
+    
+    if page_entered_at is None:
+        # Default to earliest event timestamp for this scene
+        scene_events = [e for e in ev_list if e.entity_id == scene_id and e.entity_type == 'scene']
+        if scene_events:
+            page_entered_at = min(scene_events, key=lambda x: x.ts).ts
+        else:
+            page_entered_at = datetime.utcnow()
+    
+    new_watch = SceneWatch(
+        session_id=session_id,
+        scene_id=scene_id,
+        page_entered_at=page_entered_at,
+        page_left_at=page_left_at
+    )
+    db.add(new_watch)
+    db.flush()
+    return new_watch
+
+
+def _update_scene_watch_stats(db: Session, scene_watch: SceneWatch, segments: list[SceneWatchSegment]):
+    """Update scene watch statistics based on computed segments"""
+    total_watched = sum(seg.watched_s for seg in segments)
+    scene_watch.total_watched_s = total_watched
+    
+    # Try to compute watch percentage if we can determine video duration
+    # This could be enhanced to query scene metadata or use duration from events
+    try:
+        # Look for duration in recent scene_watch_complete events
+        duration_events = db.execute(select(InteractionEvent).where(
+            InteractionEvent.session_id == scene_watch.session_id,
+            InteractionEvent.entity_type == 'scene',
+            InteractionEvent.entity_id == scene_watch.scene_id,
+            InteractionEvent.event_type == 'scene_watch_complete'
+        ).order_by(InteractionEvent.client_ts.desc()).limit(1)).scalars().all()
+        
+        for ev in duration_events:
+            meta = ev.event_metadata or {}
+            duration = meta.get('duration')
+            if duration and duration > 0:
+                scene_watch.watch_percent = min(100.0, (total_watched / duration) * 100.0)
+                break
+    except Exception:
+        pass
 
 
 def update_image_derived(db: Session, image_id: str, ev_list: list):

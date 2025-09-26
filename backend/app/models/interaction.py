@@ -36,14 +36,27 @@ class InteractionSession(Base):
     last_scene_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_scene_event_ts: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-    # optional client fingerprint and ip for session merging across tabs/refresh
+    # client fingerprint for session merging across tabs/refresh
     client_fingerprint: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
-    client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
 # Aggregated per-session per-scene summary (built on ingest for now)
+class SceneWatch(Base):
+    __tablename__ = 'scene_watch'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    scene_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    # page visit timing
+    page_entered_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    page_left_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # watch statistics for this page visit
+    total_watched_s: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class SceneWatchSegment(Base):
     __tablename__ = 'scene_watch_segments'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scene_watch_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)  # FK to scene_watch
     session_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     scene_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     start_s: Mapped[float] = mapped_column(Float, nullable=False)

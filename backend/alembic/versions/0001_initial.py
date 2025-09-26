@@ -13,8 +13,8 @@ branch_labels = None
 depends_on = None
 
 def upgrade() -> None:  # noqa: D401
-    """Initial migration intentionally left empty after removing deprecated ai_requests table."""
-
+    pass
 
 def downgrade() -> None:  # noqa: D401
-    """No downgrade actions; table creation removed pre-release."""
+
+    pass

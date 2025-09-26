@@ -4,8 +4,9 @@ from pydantic import BaseModel, Field
 from typing import Any, List, Optional
 
 PRIMITIVE_EVENT_TYPES = {
-    'session_start','session_end','scene_view','scene_watch_start','scene_watch_pause',
-    'scene_seek','scene_watch_progress','scene_watch_complete','image_view','gallery_view'
+    'session_start','session_end','scene_view','scene_page_enter','scene_page_leave',
+    'scene_watch_start','scene_watch_pause','scene_seek','scene_watch_progress',
+    'scene_watch_complete','image_view','gallery_view'
 }
 
 class InteractionEventIn(BaseModel):

@@ -39,14 +39,29 @@ def upgrade() -> None:
         sa.Column('last_scene_event_ts', sa.DateTime, nullable=True),
         sa.Column('updated_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.Column('client_fingerprint', sa.String(length=128), nullable=True),
-        sa.Column('client_ip', sa.String(length=64), nullable=True),
     )
     op.create_unique_constraint('uq_interaction_session_id', 'interaction_sessions', ['session_id'])
     op.create_index('ix_interaction_sessions_session_id', 'interaction_sessions', ['session_id'])
 
+    # Create a per-session-per-scene page visit record. This allows linking segments
+    # to a specific page visit (scene_watch) and prevents duplicate segment inserts.
+    op.create_table(
+        'scene_watch',
+        sa.Column('id', sa.Integer, primary_key=True),
+        sa.Column('session_id', sa.String(length=64), nullable=False),
+        sa.Column('scene_id', sa.String(length=64), nullable=False),
+        sa.Column('page_entered_at', sa.DateTime, nullable=False),
+        sa.Column('page_left_at', sa.DateTime, nullable=True),
+        sa.Column('total_watched_s', sa.Float, nullable=False, server_default='0'),
+        sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+    )
+    op.create_index('ix_scene_watch_session_id', 'scene_watch', ['session_id'])
+    op.create_index('ix_scene_watch_scene_id', 'scene_watch', ['scene_id'])
+
     op.create_table(
         'scene_watch_segments',
         sa.Column('id', sa.Integer, primary_key=True),
+        sa.Column('scene_watch_id', sa.Integer, nullable=False),
         sa.Column('session_id', sa.String(length=64), nullable=False),
         sa.Column('scene_id', sa.String(length=64), nullable=False),
         sa.Column('start_s', sa.Float, nullable=False),
@@ -54,6 +69,7 @@ def upgrade() -> None:
         sa.Column('watched_s', sa.Float, nullable=False),
         sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
     )
+    op.create_index('ix_scene_watch_segments_scene_watch_id', 'scene_watch_segments', ['scene_watch_id'])
     op.create_index('ix_scene_watch_segments_session_id', 'scene_watch_segments', ['session_id'])
     op.create_index('ix_scene_watch_segments_scene_id', 'scene_watch_segments', ['scene_id'])
 
