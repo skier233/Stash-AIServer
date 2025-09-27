@@ -501,14 +501,20 @@ export class InteractionTracker {
       } catch {}
     };
   const onEnded = () => { this.captureSegment(true); this.trackInternal('scene_watch_complete','scene',sceneId,{ duration: state.duration, total_watched: this.totalWatched(state), segments: state.segments }); state.completed = true; };
-    const onTimeUpdate = () => { this.maybeEmitProgress(); };
-    const onSeeked = (e: Event) => {
-      const prev = state.lastPosition ?? 0;
-      const next = video.currentTime;
-      if (Math.abs(next - prev) > 1.0) {
-        this.trackInternal('scene_seek','scene',sceneId,{ from: prev, to: next, delta: next - prev, direction: next > prev ? 'forward':'backward' });
-        state.lastPosition = next;
+    const onTimeUpdate = () => {
+      const current = video.currentTime;
+      const prev = state.lastPosition;
+      if (prev != null) {
+        const delta = current - prev;
+        // Consider this a seek if jump magnitude >1s and not just normal progression
+        // Typical timeupdate cadence ~0.25s or less; so a >1s jump is almost certainly a seek
+        if (Math.abs(delta) > 1.0) {
+          this.trackInternal('scene_seek','scene',sceneId,{ from: prev, to: current, delta, direction: delta > 0 ? 'forward':'backward', via: 'delta-detect' });
+          if (this.cfg.debug) this.log('seek detected (delta)', { from: prev, to: current, delta });
+        }
       }
+      state.lastPosition = current;
+      this.maybeEmitProgress();
     };
     const onLoaded = () => { if (video.duration && isFinite(video.duration)) state.duration = video.duration; };
 
@@ -516,7 +522,6 @@ export class InteractionTracker {
     video.addEventListener('pause', onPause);
     video.addEventListener('ended', onEnded);
     video.addEventListener('timeupdate', onTimeUpdate);
-    video.addEventListener('seeked', onSeeked);
     video.addEventListener('loadedmetadata', onLoaded);
 
     // Store cleanup on element for manual removal if needed
@@ -525,7 +530,6 @@ export class InteractionTracker {
       video.removeEventListener('pause', onPause);
       video.removeEventListener('ended', onEnded);
       video.removeEventListener('timeupdate', onTimeUpdate);
-      video.removeEventListener('seeked', onSeeked);
       video.removeEventListener('loadedmetadata', onLoaded);
     };
   }
