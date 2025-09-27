@@ -49,7 +49,6 @@ def ingest_events(db: Session, events: Iterable[InteractionEventIn], client_fing
         try:
             # Use a nested transaction (savepoint) so a failing event doesn't roll back others
             with db.begin_nested():
-                # Only include model-backed fields; frontend no longer sends page_url/user_agent/viewport/schema_version
                 obj = InteractionEvent(
                     client_event_id=ev.id,
                     session_id=ev.session_id,
@@ -70,67 +69,16 @@ def ingest_events(db: Session, events: Iterable[InteractionEventIn], client_fing
             errors.append(f'event={getattr(ev, "id", None)} session={getattr(ev, "session_id", None)} type={getattr(ev, "type", None)} err={e} trace={tb}')
     # Flush so they are queryable for aggregation
     db.flush()
-    # Aggregate per session+scene touched in this batch: persist segments and update derived table
-    touched = {(e.session_id, e.entity_id) for e in ev_list if e.entity_type=='scene'}
-    for sid, scene_id in touched:
-        try:
-            # Find or create scene watch record for this session+scene
-            scene_watch = _find_or_create_scene_watch(db, sid, scene_id, ev_list)
-            segments = recompute_segments(db, sid, scene_id, scene_watch.id)
-            # remove prior segments for this session+scene to avoid duplicates
-            db.execute(
-                delete(SceneWatchSegment).where(
-                    SceneWatchSegment.session_id == sid,
-                    SceneWatchSegment.scene_id == scene_id
-                )
-            )
-            # persist segments with scene_watch_id reference
-            for s in segments:
-                db.add(s)
-            # update scene watch stats
-            _update_scene_watch_stats(db, scene_watch, segments)
-            # update derived
-            update_scene_derived(db, scene_id, ev_list)
-        except Exception as e:  # pragma: no cover
-            errors.append(f'summary {sid}/{scene_id}: {e}')
-    # Update image-derived entries for any images touched in this batch
-    touched_images = { e.entity_id for e in ev_list if e.entity_type == 'image' }
-    for img_id in touched_images:
-        try:
-            update_image_derived(db, img_id, ev_list)
-        except Exception as e:
-            errors.append(f'image summary {img_id}: {e}')
-    # Persist library search events (if any) for quick querying/analytics
-    try:
-        from app.models.interaction import InteractionLibrarySearch
-        for e in ev_list:
-            # accept event_type 'library_search' or entity_type 'library'
-            if e.type == 'library_search' or e.entity_type == 'library':
-                lib = e.entity_id if e.entity_id else (e.event_metadata or {}).get('library')
-                if not lib:
-                    continue
-                q = None
-                filters = None
-                meta = e.metadata or {}
-                # metadata may carry 'query' and 'filters'
-                q = meta.get('query')
-                filters = meta.get('filters')
-                try:
-                    row = InteractionLibrarySearch(session_id=e.session_id, library=lib, query=q, filters=filters)
-                    db.add(row)
-                except Exception:
-                    # don't let this block ingestion
-                    continue
-    except Exception:
-        # model/table might not exist yet in older deployments; ignore
-        pass
+    # Aggregate & derived updates split into helper functions for readability
+    _process_scene_summaries(db, ev_list, errors)
+    _process_image_derived(db, ev_list, errors)
+    _persist_library_search_events(db, ev_list)
     db.commit()
     return accepted, duplicates, errors
 
 
 def _update_session(db: Session, ev: InteractionEvent):
     sess = db.execute(select(InteractionSession).where(InteractionSession.session_id==ev.session_id)).scalar_one_or_none()
-    now = datetime.now(timezone.utc)
     # scene_related variable removed (unused)
     # normalize event timestamps to naive UTC for comparison
     def _to_naive(dt: datetime | None) -> datetime | None:
@@ -143,29 +91,19 @@ def _update_session(db: Session, ev: InteractionEvent):
     ev_client_ts = _to_naive(ev.client_ts)
 
     if not sess:
-        # If there is no session row for this session_id, create a new one (merging handled earlier)
-        sess = InteractionSession(session_id=ev.session_id, last_event_ts=ev_client_ts or now, session_start_ts=ev_client_ts or now)
-        # Generic last-entity tracking
-        try:
-            if ev.entity_type in ('scene','image','gallery'):
-                sess.last_entity_type = ev.entity_type
-                sess.last_entity_id = ev.entity_id
-                sess.last_entity_event_ts = ev_client_ts or now
-        except Exception:
-            pass
-        db.add(sess)
-    else:
-        if ev_client_ts and (sess.last_event_ts is None or ev_client_ts > sess.last_event_ts):
-            sess.last_event_ts = ev_client_ts
-        # scene-related context is recorded via generic last_entity_* fields below
-        # Update generic last-entity for relevant event types
-        try:
-            if ev.entity_type in ('scene','image','gallery'):
-                sess.last_entity_type = ev.entity_type
-                sess.last_entity_id = ev.entity_id
-                sess.last_entity_event_ts = ev_client_ts
-        except Exception:
-            pass
+        raise ValueError(f'session not found for event {ev.id} session_id={ev.session_id}')
+
+    if ev_client_ts and (sess.last_event_ts is None or ev_client_ts > sess.last_event_ts):
+        sess.last_event_ts = ev_client_ts
+    # scene-related context is recorded via generic last_entity_* fields below
+    # Update generic last-entity for relevant event types
+    try:
+        if ev.entity_type in ('scene','image','gallery'):
+            sess.last_entity_type = ev.entity_type
+            sess.last_entity_id = ev.entity_id
+            sess.last_entity_event_ts = ev_client_ts
+    except Exception:
+        pass
     # Special-case: session_end may carry last_entity metadata with the final viewed item
     try:
         if ev.entity_type == 'session':
@@ -310,13 +248,32 @@ def recompute_segments(db: Session, session_id: str, scene_id: str, scene_watch_
         if et == 'scene_watch_start':
             last_play_start_pos = float(meta.get('position') if meta.get('position') is not None else (last_position or 0.0))
         elif et == 'scene_seek':
+            # Frontend now guarantees metadata { from, to } with accurate pre/post positions.
+            was_playing = last_play_start_pos is not None
+            from_pos = meta.get('from')
             to_pos = meta.get('to')
-            if to_pos is not None:
-                if last_play_start_pos is not None and last_position is not None:
-                    close_segment(last_position)
-                last_position = float(to_pos)
-                if last_play_start_pos is not None:
-                    last_play_start_pos = last_position
+            try:
+                if was_playing:
+                    # Close existing playing segment at "from" (or last_position fallback)
+                    end_pos = float(from_pos) if from_pos is not None else (last_position if last_position is not None else last_play_start_pos)
+                    close_segment(end_pos)
+                if to_pos is not None:
+                    new_pos = float(to_pos)
+                    last_position = new_pos
+                    # Resume playing continuity only if we were playing before the seek
+                    if was_playing:
+                        last_play_start_pos = new_pos
+                    else:
+                        # If not previously playing, don't start a new segment automatically
+                        last_play_start_pos = None
+                else:
+                    # Missing destination: just drop play state to avoid corrupt spans
+                    last_play_start_pos = None
+            except Exception:
+                # On malformed metadata, stop current segment safely
+                if was_playing:
+                    close_segment(last_position if last_position is not None else (last_play_start_pos or 0.0))
+                last_play_start_pos = None
         elif et in ('scene_watch_pause','scene_watch_complete'):
             pos = meta.get('position')
             if pos is None and last_position is not None:
@@ -597,4 +554,186 @@ def update_image_derived(db: Session, image_id: str, ev_list: list):
         if existing:
             existing.derived_o_count = qualified
     except Exception:
+        pass
+
+
+# -------------------------- Helper aggregation sections --------------------------
+def _process_scene_summaries(db: Session, ev_list: list, errors: list[str]):
+    """Efficiently aggregate per (session, scene) without O(N*M) rescans.
+
+    Strategy:
+      1. Pre-group scene events by (session_id, scene_id).
+      2. Bulk load existing SceneWatch rows & InteractionSession rows for touched sessions.
+      3. For each pair build / update SceneWatch (compute page_entered/left from its own events only).
+      4. Recompute segments only if this batch had watch-related events for the pair.
+      5. Update stats + derived counts.
+
+    Behavior differences vs previous inline approach (intentional optimizations):
+      - We no longer rescan the entire batch for each pair; only its own scene events.
+      - Segments are recomputed only if watch/seek/progress events appear in the batch for that pair; avoids redundant writes.
+      - Page leave inference still falls back to session metadata if not present in events.
+    """
+    from collections import defaultdict
+    # 1. Group scene events
+    scene_events_by_pair = defaultdict(list)
+    for ev in ev_list:
+        if getattr(ev, 'entity_type', None) == 'scene' and ev.entity_id:
+            scene_events_by_pair[(ev.session_id, ev.entity_id)].append(ev)
+    if not scene_events_by_pair:
+        return
+
+    session_ids = {sid for (sid, _) in scene_events_by_pair.keys()}
+    scene_ids = {scene_id for (_, scene_id) in scene_events_by_pair.keys()}
+
+    # 2. Bulk fetch existing watches
+    existing_watches = db.execute(
+        select(SceneWatch).where(
+            SceneWatch.session_id.in_(session_ids),
+            SceneWatch.scene_id.in_(scene_ids)
+        )
+    ).scalars().all()
+    watch_map = {(w.session_id, w.scene_id): w for w in existing_watches}
+
+    # Bulk fetch sessions for fallback inference
+    sessions = db.execute(select(InteractionSession).where(InteractionSession.session_id.in_(session_ids))).scalars().all()
+    session_map = {s.session_id: s for s in sessions}
+
+    watch_related_types = {
+        'scene_watch_start', 'scene_watch_pause', 'scene_watch_complete',
+        'scene_watch_progress', 'scene_seek'
+    }
+
+    new_watches = []
+    timing_changed: dict[tuple[str,str], bool] = {}
+
+    # 3. Build / update SceneWatch rows
+    for (sid, scene_id), sc_events in scene_events_by_pair.items():
+        try:
+            watch = watch_map.get((sid, scene_id))
+            if watch:
+                changed = False
+                # Preserve earliest enter; only update if we don't have one or found an earlier
+                for ev in sc_events:
+                    if ev.type == 'scene_page_enter':
+                        if watch.page_entered_at is None or ev.ts < watch.page_entered_at:
+                            watch.page_entered_at = ev.ts
+                            changed = True
+                    elif ev.type == 'scene_page_leave':
+                        # Only set/extend leave if it's truly later (avoid overwriting with earlier leaves)
+                        if watch.page_left_at is None or ev.ts > watch.page_left_at:
+                            watch.page_left_at = ev.ts
+                            changed = True
+                # Session fallback ONLY if user navigated away from this scene (different last_entity)
+                if watch.page_left_at is None:
+                    sess = session_map.get(sid)
+                    if sess:
+                        try:
+                            if (getattr(sess, 'last_entity_type', None) != 'scene' or getattr(sess, 'last_entity_id', None) != scene_id):
+                                cand = getattr(sess, 'last_entity_event_ts', None) or getattr(sess, 'last_event_ts', None)
+                                if cand and (watch.page_entered_at is None or cand >= watch.page_entered_at):
+                                    watch.page_left_at = cand
+                                    changed = True
+                        except Exception:
+                            pass
+                if changed:
+                    timing_changed[(sid, scene_id)] = True
+            else:
+                page_entered_at = None
+                page_left_at = None
+                changed = False
+                for ev in sc_events:
+                    if ev.type == 'scene_page_enter':
+                        page_entered_at = ev.ts
+                    elif ev.type == 'scene_page_leave':
+                        page_left_at = ev.ts
+                    elif ev.type == 'scene_view' and page_entered_at is None:
+                        page_entered_at = ev.ts
+                if page_entered_at is None:
+                    page_entered_at = min(sc_events, key=lambda x: x.ts).ts
+                # Infer leave ONLY if user clearly navigated away
+                if page_left_at is None:
+                    sess = session_map.get(sid)
+                    if sess:
+                        try:
+                            if (getattr(sess, 'last_entity_type', None) != 'scene' or getattr(sess, 'last_entity_id', None) != scene_id):
+                                cand = getattr(sess, 'last_entity_event_ts', None) or getattr(sess, 'last_event_ts', None)
+                                if cand and cand >= page_entered_at:
+                                    page_left_at = cand
+                        except Exception:
+                            pass
+                # If still None, we keep it None (page considered active)
+                watch = SceneWatch(
+                    session_id=sid,
+                    scene_id=scene_id,
+                    page_entered_at=page_entered_at,
+                    page_left_at=page_left_at
+                )
+                db.add(watch)
+                new_watches.append(watch)
+                watch_map[(sid, scene_id)] = watch
+                timing_changed[(sid, scene_id)] = True
+        except Exception as e:  # pragma: no cover
+            errors.append(f'scene_watch {sid}/{scene_id}: {e}')
+
+    if new_watches:
+        try:
+            db.flush()
+        except Exception as e:  # pragma: no cover
+            errors.append(f'scene_watch_flush: {e}')
+
+    # 4 & 5. Segments & derived updates
+    for (sid, scene_id), sc_events in scene_events_by_pair.items():
+        watch = watch_map.get((sid, scene_id))
+        if not watch:
+            continue
+        try:
+            if timing_changed.get((sid, scene_id)) or any(ev.type in watch_related_types for ev in sc_events):
+                segments = recompute_segments(db, sid, scene_id, watch.id)
+                db.execute(
+                    delete(SceneWatchSegment).where(
+                        SceneWatchSegment.session_id == sid,
+                        SceneWatchSegment.scene_id == scene_id
+                    )
+                )
+                for s in segments:
+                    db.add(s)
+                _update_scene_watch_stats(db, watch, segments)
+            update_scene_derived(db, scene_id, ev_list)
+        except Exception as e:  # pragma: no cover
+            errors.append(f'summary {sid}/{scene_id}: {e}')
+
+
+def _process_image_derived(db: Session, ev_list: list, errors: list[str]):
+    """Update image-derived rows for images touched in this batch."""
+    touched_images = {e.entity_id for e in ev_list if getattr(e, 'entity_type', None) == 'image'}
+    for img_id in touched_images:
+        try:
+            update_image_derived(db, img_id, ev_list)
+        except Exception as e:  # pragma: no cover
+            errors.append(f'image summary {img_id}: {e}')
+
+
+def _persist_library_search_events(db: Session, ev_list: list):
+    """Persist library search events for analytics (best-effort)."""
+    try:
+        from app.models.interaction import InteractionLibrarySearch
+        for e in ev_list:
+            if getattr(e, 'type', None) == 'library_search' or getattr(e, 'entity_type', None) == 'library':
+                lib = None
+                try:
+                    lib = e.entity_id if e.entity_id else (getattr(e, 'event_metadata', None) or {}).get('library')
+                except Exception:
+                    pass
+                if not lib:
+                    continue
+                meta = getattr(e, 'metadata', None) or {}
+                q = meta.get('query')
+                filters = meta.get('filters')
+                try:
+                    db.add(InteractionLibrarySearch(session_id=e.session_id, library=lib, query=q, filters=filters))
+                except Exception:
+                    # Don't block ingestion
+                    continue
+    except Exception:
+        # Model/table might not exist yet in older deployments; ignore
         pass
