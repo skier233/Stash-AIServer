@@ -2,7 +2,7 @@ from __future__ import annotations
 from time import timezone
 from sqlalchemy import Integer, String, DateTime, JSON, Float, Index, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
-from datetime import datetime
+from datetime import datetime, timezone
 from app.db.session import Base
 
 # Raw interaction events (append-only, with client-side id for dedupe)
@@ -39,7 +39,7 @@ class InteractionSession(Base):
     last_entity_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
     last_entity_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_entity_event_ts: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now(timezone.utc), onupdate=datetime.now(timezone.utc), nullable=False)
     # client fingerprint for session merging across tabs/refresh
     client_fingerprint: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
 
