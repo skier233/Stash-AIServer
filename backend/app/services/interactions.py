@@ -4,7 +4,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, delete
 from datetime import datetime, timezone, timedelta
 import traceback
-from app.models.interaction import InteractionEvent, InteractionSession, SceneWatch, SceneWatchSegment, SceneDerived
+from app.models.interaction import InteractionEvent, InteractionSession, SceneWatch, SceneWatchSegment, SceneDerived, InteractionSessionAlias
+from sqlalchemy.exc import IntegrityError
+import os
 from app.schemas.interaction import InteractionEventIn
 
 # Simple in-place segment reconstruction per (session_id, scene_id)
@@ -29,9 +31,9 @@ def ingest_events(db: Session, events: Iterable[InteractionEventIn], client_fing
         try:
             client_ts_val = _to_naive_utc(ev.ts)
             # find or create canonical session for this event
-            sess = _find_or_create_session(db, ev.session_id, client_fingerprint, client_ts_val, ev.entity_type == 'scene', ev.entity_id)
+            sess_id = _find_or_create_session_id(db, ev.session_id, client_fingerprint)
             # set the event's session_id to the canonical session id so we store under that session
-            ev.session_id = sess.session_id
+            ev.session_id = sess_id
         except Exception as e:
             tb = traceback.format_exc()
             errors.append(f'event={getattr(ev, "id", None)} session={getattr(ev, "session_id", None)} type={getattr(ev, "type", None)} err={e} trace={tb}')
@@ -128,8 +130,8 @@ def ingest_events(db: Session, events: Iterable[InteractionEventIn], client_fing
 
 def _update_session(db: Session, ev: InteractionEvent):
     sess = db.execute(select(InteractionSession).where(InteractionSession.session_id==ev.session_id)).scalar_one_or_none()
-    now = datetime.utcnow()
-    scene_related = ev.entity_type=='scene'
+    now = datetime.now(timezone.utc)
+    # scene_related variable removed (unused)
     # normalize event timestamps to naive UTC for comparison
     def _to_naive(dt: datetime | None) -> datetime | None:
         if dt is None:
@@ -190,46 +192,95 @@ def _update_session(db: Session, ev: InteractionEvent):
                                     if str(ts).isdigit():
                                         sess.last_entity_event_ts = datetime.utcfromtimestamp(int(ts) / 1000.0)
                                     else:
-                                        sess.last_entity_event_ts = ev_client_ts or datetime.utcnow()
+                                        sess.last_entity_event_ts = ev_client_ts or datetime.now(timezone.utc)
                                 except Exception:
-                                    sess.last_entity_event_ts = ev_client_ts or datetime.utcnow()
+                                    sess.last_entity_event_ts = ev_client_ts or datetime.now(timezone.utc)
                     except Exception:
                         pass
     except Exception:
         pass
 
 
-def _find_or_create_session(db: Session, incoming_session_id: str, client_fingerprint: str | None, ev_client_ts: datetime | None, scene_related: bool, entity_id: str | None):
-    """Return an InteractionSession object to use for storing an incoming event.
-    This function prefers merging only on client_fingerprint (if provided). It will
-    return an existing recent session or create a new session with the incoming
-    session id and client_fingerprint attached.
-    """
-    now = datetime.utcnow()
-    time_threshold = now - timedelta(minutes=2)
-    # Try exact session id first
-    sess = db.execute(select(InteractionSession).where(InteractionSession.session_id==incoming_session_id)).scalar_one_or_none()
-    if sess:
-        return sess
+def _find_or_create_session_id(db: Session, incoming_session_id: str, client_fingerprint: str | None):
+    """Resolve incoming_session_id to a canonical session_id string.
 
-    # Prefer merging only on client_fingerprint to avoid cross-device merges via IP
+    Updated strategy (no static alias expiration):
+    - If a session row with incoming_session_id exists, treat it as canonical and return it.
+    - Else, if an alias maps this incoming id to a canonical session whose last_event_ts is still
+      within the merge window, return the canonical id (dynamic recency check).
+    - Else, if client_fingerprint is provided, try to find the most recent qualifying session for
+      that fingerprint (last_event_ts within merge window) and (if found) create a persistent alias
+      from the incoming id -> canonical id (no need to refresh / extend) and return canonical id.
+    - Otherwise create a brand new session row with incoming_session_id and return it.
+
+    Aliases are durable pointers; their usefulness is gated by the recency of the canonical session.
+    """
+
+    # 1) Direct session id exists -> canonical
+    direct = db.execute(select(InteractionSession.session_id).where(InteractionSession.session_id == incoming_session_id)).first()
+    if direct:
+        return incoming_session_id
+
+    now = datetime.now(timezone.utc)
+    merge_ttl_seconds = int(os.getenv('INTERACTION_MERGE_TTL_SECONDS', '120'))
+    time_threshold = now - timedelta(seconds=merge_ttl_seconds)
+
+    # 2) Alias mapping exists (no recency filter) -> return canonical pointed id
+    try:
+        alias_row = db.execute(
+            select(InteractionSessionAlias.canonical_session_id).where(
+                InteractionSessionAlias.alias_session_id == incoming_session_id
+            )
+        ).first()
+        if alias_row:
+            return alias_row[0]
+    except Exception:
+        # alias table might not exist yet; ignore
+        pass
+
+    # 3) Fingerprint merge: recent session for same fingerprint
     if client_fingerprint:
         try:
-            merged = db.execute(select(InteractionSession).where(
-                InteractionSession.client_fingerprint == client_fingerprint,
-                InteractionSession.last_event_ts >= time_threshold
-            ).order_by(InteractionSession.last_event_ts.desc())).scalar_one_or_none()
-            if merged:
-                return merged
+            recent = db.execute(
+                select(InteractionSession.session_id).where(
+                    InteractionSession.client_fingerprint == client_fingerprint,
+                    InteractionSession.last_event_ts >= time_threshold
+                ).order_by(InteractionSession.last_event_ts.desc()).limit(1)
+            ).first()
+            if recent:
+                canonical_id = recent[0]
+                if canonical_id != incoming_session_id:
+                    try:
+                        alias_kwargs = {"alias_session_id": incoming_session_id, "canonical_session_id": canonical_id}
+                        db.add(InteractionSessionAlias(**alias_kwargs))
+                        try:
+                            db.flush()
+                        except IntegrityError:
+                            try:
+                                db.rollback()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                return canonical_id
         except Exception:
             pass
 
-    # No merge found: create new session row with the incoming session id and fingerprint (if present)
-    new_sess = InteractionSession(session_id=incoming_session_id, last_event_ts=ev_client_ts or now, session_start_ts=ev_client_ts or now, client_fingerprint=client_fingerprint)
-    db.add(new_sess)
-    # flush so the session is visible in subsequent selects within this transaction
-    db.flush()
-    return new_sess
+    # 4) Create new session with incoming id
+    try:
+        db.add(InteractionSession(session_id=incoming_session_id, last_event_ts=now, session_start_ts=now, client_fingerprint=client_fingerprint))
+        db.flush()
+        return incoming_session_id
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        # Race: someone created it meanwhile
+        direct = db.execute(select(InteractionSession.session_id).where(InteractionSession.session_id == incoming_session_id)).first()
+        if direct:
+            return direct[0]
+        raise
 
 
 def recompute_segments(db: Session, session_id: str, scene_id: str, scene_watch_id: int):
@@ -428,7 +479,7 @@ def _find_or_create_scene_watch(db: Session, session_id: str, scene_id: str, ev_
         if scene_events:
             page_entered_at = min(scene_events, key=lambda x: x.ts).ts
         else:
-            page_entered_at = datetime.utcnow()
+            page_entered_at = datetime.now(timezone.utc)
     # Try to infer page_left_at from session metadata if not present in events
     if page_left_at is None:
         try:

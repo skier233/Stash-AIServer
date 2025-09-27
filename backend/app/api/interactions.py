@@ -12,19 +12,14 @@ router = APIRouter(prefix='/interactions', tags=['interactions'])
 
 
 @router.post('/sync', response_model=InteractionIngestResult)
-async def sync_events(body: Union[List[InteractionEventIn], InteractionEventIn], request: Request, db: Session = Depends(get_db)):
+async def sync_events(body: List[InteractionEventIn], request: Request, db: Session = Depends(get_db)):
     """Ingest interaction events.
 
     Accepts either a JSON array of events (preferred) or a single event object
     for backward/edge-case compatibility. If a single object is sent, we wrap
     it into a list before processing.
     """
-    if isinstance(body, list):
-        events = body
-        shape = 'list'
-    else:
-        events = [body]
-        shape = 'single'
+    events = body
     # If the client included a persistent client_id in the event payload, prefer that
     # as the canonical client fingerprint. Otherwise fall back to hashing IP+UA.
     # prefer client_id if present on the first event
@@ -45,14 +40,9 @@ async def sync_events(body: Union[List[InteractionEventIn], InteractionEventIn],
         client_fingerprint = hashlib.sha256(fp_src.encode('utf-8')).hexdigest()
 
     accepted, duplicates, errors = ingest_events(db, events, client_fingerprint=client_fingerprint)
-    if shape == 'single':
-        try:
-            print(f'[ingest_warn] single object received at /sync; consider sending an array. session_ids={[e.session_id for e in events]}', flush=True)
-        except Exception:
-            pass
     if errors:
         try:
-            print(f'[ingest_errors] accepted={accepted} duplicates={duplicates} errors={errors} shape={shape}', flush=True)
+            print(f'[ingest_errors] accepted={accepted} duplicates={duplicates} errors={errors}', flush=True)
         except Exception:
             pass
     return InteractionIngestResult(accepted=accepted, duplicates=duplicates, errors=errors)

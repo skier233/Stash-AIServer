@@ -1,4 +1,5 @@
 from __future__ import annotations
+from time import timezone
 from sqlalchemy import Integer, String, DateTime, JSON, Float, Index, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime
@@ -42,6 +43,17 @@ class InteractionSession(Base):
     # client fingerprint for session merging across tabs/refresh
     client_fingerprint: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
 
+
+# Optional alias mapping from an incoming frontend session id to a canonical backend session id.
+# This ensures that when we opportunistically merge a new incoming session id into an
+# existing canonical session (soft continuation), subsequent events using the same
+# incoming id remain consistently mapped during the alias TTL.
+class InteractionSessionAlias(Base):
+    __tablename__ = 'interaction_session_aliases'
+    alias_session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    canonical_session_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+
 # Aggregated per-session per-scene summary (built on ingest for now)
 class SceneWatch(Base):
     __tablename__ = 'scene_watch'
@@ -54,7 +66,7 @@ class SceneWatch(Base):
     # watch statistics for this page visit
     total_watched_s: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     watch_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now(timezone.utc), nullable=False)
 
 
 class SceneWatchSegment(Base):

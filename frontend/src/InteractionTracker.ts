@@ -47,20 +47,18 @@ export type InteractionEventType =
   | 'gallery_view'
   | 'library_search';
 
+// NOTE: This event interface intentionally mirrors the minimal backend schema
+// (see backend InteractionEventIn) — legacy top-level fields like page_url,
+// user_agent, viewport, schema_version were removed to reduce payload size.
 export interface InteractionEvent<TMeta = any> {
-  id: string;                 // unique client event id
-  session_id: string;         // session scope
-  client_id?: string;         // persistent client identifier (localStorage)
-  ts: string;                 // ISO timestamp
-  type: InteractionEventType; // event type
+  id: string;
+  session_id: string;
+  client_id?: string;
+  ts: string;
+  type: InteractionEventType;
   entity_type: 'scene' | 'image' | 'gallery' | 'session' | 'library';
-  entity_id: string;          // numeric id as string or 'session'
-  metadata?: TMeta;           // structured extras
-  page_url: string;
-  user_agent: string;
-  viewport?: { w: number; h: number };
-  // versioning for evolution
-  schema_version: 1;
+  entity_id: string;
+  metadata?: TMeta; // Arbitrary structured metadata; put page_url here if needed.
 }
 
 // Internal persisted queue shape (allows future extension)
@@ -153,7 +151,7 @@ export class InteractionTracker {
   immediateTypes: ['session_start','scene_watch_complete'],
       localStorageKey: 'ai_overhaul_event_queue',
       maxQueueLength: 1000,
-      debug: true, // enable verbose logging by default for initial verification
+  debug: false, // default off; can be toggled via enableInteractionDebug()
       autoDetect: true,
       integratePageContext: true,
       videoAutoInstrument: true,
@@ -615,23 +613,18 @@ export class InteractionTracker {
     const ev: InteractionEvent = {
       id: 'evt_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
       session_id: this.sessionId,
-      // attach stable client id for session merging on backend
       client_id: this.clientId,
       ts: new Date().toISOString(),
       type,
       entity_type: entityType,
       entity_id: entityId,
-      metadata,
-      page_url: window.location.href,
-      user_agent: navigator.userAgent,
-      viewport: { w: window.innerWidth, h: window.innerHeight },
-      schema_version: 1
+      metadata
     };
 
     // Queue
     if (this.cfg.enabled) this.enqueue(ev); else return;
     // Immediate flush logic
-    if (this.cfg.immediateTypes.includes(type)) this.flushQueue();
+  if (this.cfg.immediateTypes.includes(type)) this.flushQueue();
     // Always provide a clear structured console output when debug is on
     this.log('event captured', ev);
     // Additionally emit a more visible console.info for quick manual QA when debug is true
@@ -642,7 +635,10 @@ export class InteractionTracker {
 
   private enqueue(ev: InteractionEvent) {
     this.queue.push({ event: ev, attempts: 0 });
-    if (this.queue.length > this.cfg.maxQueueLength) this.queue.splice(0, this.queue.length - this.cfg.maxQueueLength);
+    if (this.queue.length > this.cfg.maxQueueLength) {
+      // Drop oldest events beyond cap
+      this.queue.splice(0, this.queue.length - this.cfg.maxQueueLength);
+    }
     this.persistQueue();
   }
 
@@ -658,9 +654,8 @@ export class InteractionTracker {
     try {
       const batch = this.queue.slice(0, this.cfg.maxBatchSize);
       const payload = batch.map(r => r.event);
-    const url = this.cfg.endpoint + this.cfg.batchPath;
-      const isBatch = payload.length > 1;
-      // Prefer navigator.sendBeacon for unload scenarios (handled separately)
+      const url = this.cfg.endpoint + this.cfg.batchPath;
+      // Always send an array (backend expects a list)
       const sendBody = JSON.stringify(payload.length > 1 ? payload : [payload[0]]);
       const res = await fetch(url, {
         method: 'POST',
@@ -684,7 +679,7 @@ export class InteractionTracker {
     } catch (err) {
       this.log('flush failed', err);
       // Mark attempts
-      this.queue.forEach((r,i) => { if (i < this.cfg.maxBatchSize) r.attempts++; });
+  this.queue.forEach((r,i) => { if (i < this.cfg.maxBatchSize) r.attempts++; });
       // Optional: drop after N attempts (not implemented yet) to avoid poison queue
     } finally {
       this.flushInFlight = false;
@@ -716,12 +711,11 @@ export class InteractionTracker {
   private flushWithBeacon() {
     if (!this.queue.length) return;
     try {
-      const payload = this.queue.map(r => r.event);
-  const url = this.cfg.endpoint + this.cfg.batchPath;
-  // Always send an array payload to match /sync expectation
-  // Explicit: always send an array; wrap single-event into a 1-element array
-  const body = JSON.stringify(payload.length > 1 ? payload : [payload[0]]);
-  const blob = new Blob([body], { type: 'application/json' });
+    const payload = this.queue.map(r => r.event);
+    const url = this.cfg.endpoint + this.cfg.batchPath;
+    // Always send as array (single element list if only one)
+    const body = JSON.stringify(payload.length > 1 ? payload : [payload[0]]);
+    const blob = new Blob([body], { type: 'application/json' });
       let ok = false;
       try {
         ok = (navigator as any).sendBeacon ? (navigator as any).sendBeacon(url, blob) : false;
