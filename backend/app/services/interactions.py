@@ -604,25 +604,21 @@ def _process_scene_summaries(db: Session, ev_list: list, errors: list[str]):
     }
 
     new_watches = []
-    timing_changed: dict[tuple[str,str], bool] = {}
 
     # 3. Build / update SceneWatch rows
     for (sid, scene_id), sc_events in scene_events_by_pair.items():
         try:
             watch = watch_map.get((sid, scene_id))
             if watch:
-                changed = False
                 # Preserve earliest enter; only update if we don't have one or found an earlier
                 for ev in sc_events:
-                    if ev.type == 'scene_page_enter':
+                    if ev.type == 'scene_page_enter' or ev.type == 'scene_view':
                         if watch.page_entered_at is None or ev.ts < watch.page_entered_at:
                             watch.page_entered_at = ev.ts
-                            changed = True
                     elif ev.type == 'scene_page_leave':
                         # Only set/extend leave if it's truly later (avoid overwriting with earlier leaves)
                         if watch.page_left_at is None or ev.ts > watch.page_left_at:
                             watch.page_left_at = ev.ts
-                            changed = True
                 # Session fallback ONLY if user navigated away from this scene (different last_entity)
                 if watch.page_left_at is None:
                     sess = session_map.get(sid)
@@ -632,22 +628,18 @@ def _process_scene_summaries(db: Session, ev_list: list, errors: list[str]):
                                 cand = getattr(sess, 'last_entity_event_ts', None) or getattr(sess, 'last_event_ts', None)
                                 if cand and (watch.page_entered_at is None or cand >= watch.page_entered_at):
                                     watch.page_left_at = cand
-                                    changed = True
                         except Exception:
                             pass
-                if changed:
-                    timing_changed[(sid, scene_id)] = True
             else:
                 page_entered_at = None
                 page_left_at = None
-                changed = False
                 for ev in sc_events:
-                    if ev.type == 'scene_page_enter':
-                        page_entered_at = ev.ts
+                    if ev.type == 'scene_page_enter' or ev.type == 'scene_view':
+                        if page_entered_at is None or ev.ts < page_entered_at:
+                            page_entered_at = ev.ts
                     elif ev.type == 'scene_page_leave':
-                        page_left_at = ev.ts
-                    elif ev.type == 'scene_view' and page_entered_at is None:
-                        page_entered_at = ev.ts
+                        if page_left_at is None or ev.ts > page_left_at:
+                            page_left_at = ev.ts
                 if page_entered_at is None:
                     page_entered_at = min(sc_events, key=lambda x: x.ts).ts
                 # Infer leave ONLY if user clearly navigated away
@@ -671,7 +663,6 @@ def _process_scene_summaries(db: Session, ev_list: list, errors: list[str]):
                 db.add(watch)
                 new_watches.append(watch)
                 watch_map[(sid, scene_id)] = watch
-                timing_changed[(sid, scene_id)] = True
         except Exception as e:  # pragma: no cover
             errors.append(f'scene_watch {sid}/{scene_id}: {e}')
 
@@ -687,7 +678,7 @@ def _process_scene_summaries(db: Session, ev_list: list, errors: list[str]):
         if not watch:
             continue
         try:
-            if timing_changed.get((sid, scene_id)) or any(ev.type in watch_related_types for ev in sc_events):
+            if any(ev.type in watch_related_types for ev in sc_events):
                 segments = recompute_segments(db, sid, scene_id, watch.id)
                 db.execute(
                     delete(SceneWatchSegment).where(
