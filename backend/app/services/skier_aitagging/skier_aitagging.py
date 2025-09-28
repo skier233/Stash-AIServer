@@ -1,9 +1,12 @@
 from __future__ import annotations
 import asyncio
+import time
 from typing import Any
 from app.services.registry import ServiceBase, services
-from app.actions.registry import action
+from app.actions.registry import action, registry as action_registry
 from app.actions.models import ContextRule, ContextInput
+from app.tasks.manager import manager as task_manager
+from app.tasks.models import TaskPriority
 
 
 class Skier_AITagging_Service(ServiceBase):
@@ -106,9 +109,7 @@ class Skier_AITagging_Service(ServiceBase):
         selected = ctx.selected_ids or []
         if not selected:
             return {'message': 'No scenes selected'}
-        from app.actions.registry import registry as reg
-        from app.tasks.manager import manager as task_manager
-        from app.tasks.models import TaskPriority
+        reg = action_registry
         spawned: list[str] = []
         for sid in selected:
             detail_ctx = ContextInput(page='scenes', entityId=sid, isDetailView=True, selectedIds=[])
@@ -122,7 +123,6 @@ class Skier_AITagging_Service(ServiceBase):
         hold = params.get('hold_children', True)
         # Optional minimum hold duration even if children finish early, to allow a cancellation window.
         min_hold = float(params.get('hold_parent_seconds', 0) or 0)
-        import time
         start_time = time.time()
         if hold:
             while True:

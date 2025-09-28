@@ -1,5 +1,7 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.api import interactions as interactions_router
 from app.api import actions as actions_router
@@ -11,17 +13,54 @@ from app.recommendations.models import RecContext
 from app.tasks.manager import manager
 from app.db.session import engine, Base
 import importlib, pkgutil, pathlib, hashlib, os, sys
+from contextlib import asynccontextmanager
 from app.services import registry as services_registry  # ensures registry defined
 
-# Ensure tables exist if migrations not yet run (dev convenience)
+# Ensure tables exist if migrations not yet run (development convenience)
 Base.metadata.create_all(bind=engine)
 
 
-app = FastAPI(title=settings.app_name)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan handler: run startup actions here instead of @app.on_event.
 
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
-from fastapi import Request
+    We perform service auto-registration, start the in-memory task manager, and
+    pre-load recommender modules. Shutdown actions can be added to the
+    finally-block if/when graceful stop support is implemented for the task
+    manager.
+    """
+    try:
+        # Auto-register discovered service packages (development convenience)
+        _auto_register_services()
+
+        # Dev-mode fingerprinting for quick debugging
+        if os.getenv('AIO_DEVMODE'):
+            try:
+                h = hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()[:12]
+                print(f'[dev] main.py sha256 {h}', flush=True)
+            except Exception as _e:
+                print(f'[dev] hash error: {_e}', flush=True)
+
+        # Start background task manager
+        await manager.start()
+
+        # Pre-load recommender modules to surface startup failures early
+        _auto_discover_recommenders()
+        if not recommender_registry.list_for_context(RecContext.global_feed):
+            try:
+                importlib.import_module('app.recommendations.recommenders.baseline_popularity.popularity')
+                importlib.import_module('app.recommendations.recommenders.random_recent.random_recent')
+            except Exception as e:
+                print('[recommenders] startup fallback import error', e, flush=True)
+        print(f"[recommenders] initialized count={len(recommender_registry._defs)}", flush=True)
+
+        yield
+    finally:
+        # Placeholder for graceful shutdown (task manager stop/cancel) if/when added
+        pass
+
+
+app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
 
 @app.exception_handler(RequestValidationError)
@@ -52,14 +91,6 @@ def _auto_register_services():
         except Exception as e:
             print(f'[services] failed {full}: {e}', flush=True)
 
-_auto_register_services()
-
-if os.getenv('AIO_DEVMODE'):
-    try:
-        h = hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()[:12]
-        print(f'[dev] main.py sha256 {h}', flush=True)
-    except Exception as _e:
-        print(f'[dev] hash error: {_e}', flush=True)
 
 # Routers
 app.include_router(actions_router.router, prefix=settings.api_v1_prefix)
@@ -82,20 +113,4 @@ async def root():
     return {'status': 'ok', 'app': settings.app_name}
 
 
-@app.on_event('startup')
-async def _start_task_manager():
-    await manager.start()
 
-@app.on_event('startup')
-async def _init_recommenders():
-    """Pre-load recommender modules at startup so first request is fast and
-    failures surface early."""
-    _auto_discover_recommenders()
-    if not recommender_registry.list_for_context(RecContext.global_feed):
-        try:
-            import importlib
-            importlib.import_module('app.recommendations.recommenders.baseline_popularity.popularity')
-            importlib.import_module('app.recommendations.recommenders.random_recent.random_recent')
-        except Exception as e:
-            print('[recommenders] startup fallback import error', e, flush=True)
-    print(f"[recommenders] initialized count={len(recommender_registry._defs)}", flush=True)

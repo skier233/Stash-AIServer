@@ -6,7 +6,9 @@ import asyncio
 
 router = APIRouter()
 
+
 class ConnectionManager:
+    """Lightweight websocket connection manager."""
     def __init__(self):
         self.active: List[WebSocket] = []
 
@@ -29,9 +31,12 @@ class ConnectionManager:
         for ws in stale:
             self.remove(ws)
 
+
 ws_manager = ConnectionManager()
 
+
 def _task_event_listener(event: str, task, extra):
+    """Forward task events to connected websockets asynchronously."""
     payload = {'type': f'task.{event}', 'task': task.summary()}
 
     async def _do_send():
@@ -44,7 +49,6 @@ def _task_event_listener(event: str, task, extra):
     if loop and loop.is_running():
         loop.create_task(_do_send())
     else:
-        # Fallback scheduling for calls outside running loop context
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
@@ -54,16 +58,18 @@ def _task_event_listener(event: str, task, extra):
         except Exception:
             asyncio.run(_do_send())
 
-# Register listener once
+
+# Register listener
 try:
     manager.on_event(_task_event_listener)
 except Exception:
     pass
 
+
 @router.websocket('/ws/tasks')
 async def tasks_ws(ws: WebSocket):
+    """Websocket endpoint that sends a task snapshot then streams updates."""
     await ws_manager.connect(ws)
-    # Send snapshot (ignore individual send failures silently)
     for t in manager.list():
         try:
             await ws.send_text(json.dumps({'type': 'task.snapshot', 'task': t.summary()}))
@@ -71,7 +77,6 @@ async def tasks_ws(ws: WebSocket):
             pass
     try:
         while True:
-            # Read to detect disconnect; ignore payload content
             await ws.receive_text()
     except WebSocketDisconnect:
         ws_manager.remove(ws)

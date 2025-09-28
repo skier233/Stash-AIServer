@@ -20,10 +20,7 @@ class RecommendationContext(BaseModel):
     isDetailView: Optional[bool] = None
     selectedIds: List[str] | None = None
 
-"""Legacy algorithm request/response models removed (frontend now uses hydrated recommender API)."""
-
-
-"""Removed legacy algorithm discovery models and stub ID corpus."""
+"""Recommendation endpoints backed by recommender_registry."""
 
 
 # ------------------- Recommender Endpoints (Design Spec Alignment) -------------------
@@ -52,12 +49,7 @@ class RecommendationQueryResponse(BaseModel):
 """Recommenders are initialized at FastAPI startup (see main._init_recommenders)."""
 
 def _validate_config(defn: RecommenderDefinition, raw: dict) -> tuple[dict, list[str]]:
-    """Apply defaults + type/constraint validation for config fields.
-
-    Currently lenient: returns (validated_config, warnings). Future enhancement
-    could raise instead. Only fields declared in defn.config are retained; extras
-    are ignored (with a warning).
-    """
+    """Apply defaults and basic validation; return (validated_config, warnings)."""
     if not defn.config:
         return raw or {}, []
     spec: dict[str, RecommenderConfigField] = {c.name: c for c in defn.config}
@@ -110,6 +102,7 @@ async def list_recommenders(context: RecContext = Query(...)):
 
 @router.post('/query', response_model=RecommendationQueryResponse)
 async def query_recommendations(payload: RecommendationQueryBody = Body(...)):
+    """Run a recommender handler and return validated, paginated results."""
     resolved = recommender_registry.get(payload.recommenderId)
     if not resolved:
         raise HTTPException(status_code=404, detail='Recommender not found')
@@ -118,11 +111,8 @@ async def query_recommendations(payload: RecommendationQueryBody = Body(...)):
         raise HTTPException(status_code=400, detail='Recommender not valid for context')
     if definition.needs_seed_scenes and not payload.seedSceneIds:
         raise HTTPException(status_code=400, detail='MISSING_SEED_SCENES')
-    # Multi-seed restriction
-    seed_ids = payload.seedSceneIds or []
-    if not definition.allows_multi_seed and len(seed_ids) > 1:
-        seed_ids = seed_ids[:1]
-    # Config validation (lenient warnings)
+
+    seed_ids = (payload.seedSceneIds or [])[:1] if not definition.allows_multi_seed else (payload.seedSceneIds or [])
     validated_config, cfg_warnings = _validate_config(definition, payload.config or {})
     req = NewRecommendationRequest(
         context=payload.context,
@@ -135,10 +125,10 @@ async def query_recommendations(payload: RecommendationQueryBody = Body(...)):
     warnings: list[str] = []
     warnings.extend(cfg_warnings)
     try:
-        raw_result = await handler({}, req)  # ctx dict placeholder
-    except Exception as e:  # bubble error gracefully
+        raw_result = await handler({}, req)
+    except Exception as e:
         raise HTTPException(status_code=500, detail=f'recommender_execution_failed: {e}')
-    # Handler may return either a list[scene] OR a dict with keys: scenes, total, has_more
+
     if isinstance(raw_result, dict):
         raw_scenes = raw_result.get('scenes', [])
         handler_total = raw_result.get('total')
@@ -147,54 +137,37 @@ async def query_recommendations(payload: RecommendationQueryBody = Body(...)):
         raw_scenes = raw_result  # type: ignore
         handler_total = None
         handler_has_more = None
+
     validated: list[dict] = []
     for idx, sc in enumerate(raw_scenes):  # type: ignore
         try:
             model = SceneModel.parse_obj(sc)
             validated.append(model.dict())
         except ValidationError as ve:
-            warnings.append(f'scene[{idx}] validation failed: {ve.errors()[0].get("loc")}')
-    # Pagination slicing (offset-based). If recommender does not support pagination we still slice deterministically in handler order.
-    offset = payload.offset or 0
-    if offset < 0:
-        offset = 0
+            warnings.append(f'scene[{idx}] validation failed')
+
+    # Pagination handling: trust handler when it provides totals/has_more; otherwise slice here
+    offset = max(payload.offset or 0, 0)
     limit = payload.limit or len(validated)
     total_available = handler_total if isinstance(handler_total, int) and handler_total >= len(validated) else len(validated)
-    # If handler already handled pagination (indicated by handler_total or handler_has_more), trust it and do not re-slice
+
     if handler_total is not None or handler_has_more is not None:
         page_slice = validated
         has_more = bool(handler_has_more)
-        # Derive has_more if only total provided
         if handler_has_more is None and handler_total is not None:
             has_more = offset + len(validated) < handler_total
-        # Guarantee floor: total cannot be less than the highest index we have displayed
         computed_floor = offset + len(validated)
         total_value = handler_total if handler_total is not None else (offset + len(validated) + (1 if has_more else 0))
-        if total_value < computed_floor:
-            total_value = computed_floor
+        total_value = max(total_value, computed_floor)
         next_offset = (offset + len(validated)) if has_more else None
-        meta = {
-            'total': total_value,
-            'offset': offset,
-            'limit': limit,
-            'nextOffset': next_offset,
-            'hasMore': has_more,
-        }
+        meta = {'total': total_value, 'offset': offset, 'limit': limit, 'nextOffset': next_offset, 'hasMore': has_more}
         return RecommendationQueryResponse(recommenderId=payload.recommenderId, scenes=page_slice, meta=meta, warnings=warnings or None)
-    # Fallback: slice in API layer
+
     end = offset + limit
     page_slice = validated[offset:end]
     has_more = end < len(validated)
     next_offset = end if has_more else None
     computed_floor = offset + len(page_slice)
-    total_val = total_available
-    if total_val < computed_floor:
-        total_val = computed_floor
-    meta = {
-        'total': total_val,
-        'offset': offset,
-        'limit': limit,
-        'nextOffset': next_offset,
-        'hasMore': has_more,
-    }
+    total_val = max(total_available, computed_floor)
+    meta = {'total': total_val, 'offset': offset, 'limit': limit, 'nextOffset': next_offset, 'hasMore': has_more}
     return RecommendationQueryResponse(recommenderId=payload.recommenderId, scenes=page_slice, meta=meta, warnings=warnings or None)

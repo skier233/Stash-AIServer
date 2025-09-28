@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import heapq
+import inspect
 from typing import Dict, List, Tuple, Optional, Any, Callable
 import os
 import logging
@@ -194,8 +195,7 @@ class TaskManager:
         try:
             # Removed external connectivity HEAD check to simplify initial testing and avoid httpx dependency.
             # Resolve handler again (action could have changed though unlikely)
-            from app.actions.registry import registry as reg
-            resolved = reg.resolve(task.action_id, task.context)
+            resolved = action_registry.resolve(task.action_id, task.context)
             if not resolved:
                 task.status = TaskStatus.failed
                 task.error = 'Action no longer available'
@@ -203,7 +203,6 @@ class TaskManager:
                 return
             definition, handler = resolved
             token = self.cancel_tokens.get(task.id)
-            import inspect
             sig = inspect.signature(handler)
             if len(sig.parameters) >= 3:
                 result = await handler(task.context, task.params, task)  # type: ignore

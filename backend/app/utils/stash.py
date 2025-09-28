@@ -61,12 +61,11 @@ def _rewrite_scene_paths(scene: Dict[str, Any]):
         p = scene.get('paths') if isinstance(scene, dict) else None
         if not isinstance(p, dict):
             return
-        for key in ('screenshot','preview'):
+        for key in ('screenshot', 'preview'):
             url = p.get(key)
             if not isinstance(url, str):
                 continue
             if 'host.docker.internal' in url or STASH_PUBLIC_BASE:
-                from urllib.parse import urlparse
                 parsed = urlparse(url)
                 new_path = parsed.path or ''
                 if parsed.query:
@@ -82,7 +81,6 @@ def _rewrite_scene_paths(scene: Dict[str, Any]):
                 if isinstance(perf, dict):
                     img = perf.get('image_path')
                     if isinstance(img, str) and ( 'host.docker.internal' in img or STASH_PUBLIC_BASE ):
-                        from urllib.parse import urlparse
                         parsed = urlparse(img)
                         new_path = parsed.path or ''
                         if parsed.query:

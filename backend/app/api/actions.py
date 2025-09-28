@@ -10,19 +10,12 @@ router = APIRouter(prefix='/actions', tags=['actions'])
 
 
 class ActionsAvailableResponse(ActionDefinition):
-    # When listing available actions we present the context-resolved variant only.
     pass
 
 
 @router.post('/available', response_model=list[ActionsAvailableResponse])
 async def list_available_actions(context: ContextInput = Body(..., embed=True)):
-    """Return actions applicable to provided context.
-
-    Body shape: { "context": { ...pageContextFields }}
-    """
-    # Simplified: just collect all registered action definitions whose own context rules match.
-    # This naturally yields only the single variant on detail pages and only the bulk variant on library pages
-    # because their ContextRule.matches() are mutually exclusive (detail vs non-detail).
+    """Return actions applicable to provided context."""
     results: list[ActionDefinition] = []
     for definition in action_registry.list_all():
         if definition.is_applicable(context):
@@ -50,7 +43,7 @@ async def submit_action(payload: SubmitActionRequest):
     definition, handler = resolved
     if not definition.is_applicable(ctx):
         raise HTTPException(status_code=400, detail='Action not applicable to provided context')
-    # Infer priority: detail(single) => high, library(bulk) => low unless overridden.
+    # Infer priority (detail -> high, bulk -> low) unless overridden.
     inferred = 'high' if ctx.is_detail_view else 'low'
     if payload.priority in ('high', 'normal', 'low'):
         inferred = payload.priority

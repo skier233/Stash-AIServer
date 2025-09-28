@@ -13,24 +13,16 @@ router = APIRouter(prefix='/interactions', tags=['interactions'])
 
 @router.post('/sync', response_model=InteractionIngestResult)
 async def sync_events(body: List[InteractionEventIn], request: Request, db: Session = Depends(get_db)):
-    """Ingest interaction events.
-
-    Accepts either a JSON array of events (preferred) or a single event object
-    for backward/edge-case compatibility. If a single object is sent, we wrap
-    it into a list before processing.
-    """
+    """Ingest interaction events and return an ingest summary."""
     events = body
-    # If the client included a persistent client_id in the event payload, prefer that
-    # as the canonical client fingerprint. Otherwise fall back to hashing IP+UA.
-    # prefer client_id if present on the first event
+    # Prefer explicit client_id, else hash IP+UA to form a fingerprint
     provided_client_id = None
-    if events and len(events) > 0:
+    if events:
         provided_client_id = getattr(events[0], 'client_id', None)
 
     if provided_client_id:
         client_fingerprint = str(provided_client_id)
     else:
-        # Fallback to IP+UA hash for fingerprinting
         try:
             client_ip = request.client.host
         except Exception:

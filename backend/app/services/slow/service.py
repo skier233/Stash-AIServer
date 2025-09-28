@@ -2,8 +2,10 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 from app.services.registry import ServiceBase, services
-from app.actions.registry import action
+from app.actions.registry import action, registry as action_registry
 from app.actions.models import ContextRule, ContextInput
+from app.tasks.manager import manager as task_manager
+from app.tasks.models import TaskPriority
 
 
 class SlowService(ServiceBase):
@@ -71,9 +73,7 @@ class SlowService(ServiceBase):
         count = int(params.get('count', 3))
         duration = float(params.get('seconds', 1.0))
         hold = float(params.get('hold', 0))  # optional delay (seconds) to keep parent running for cancellation tests
-        from app.actions.registry import registry as reg
-        from app.tasks.manager import manager as task_manager
-        from app.tasks.models import TaskPriority
+        reg = action_registry
         spawned: list[str] = []
         for i in range(count):
             detail_ctx = ContextInput(page='scenes', entityId=f'scene-{i}', isDetailView=True, selectedIds=[])
@@ -85,7 +85,6 @@ class SlowService(ServiceBase):
             spawned.append(child.id)
         # Optional hold to allow external cancellation of parent while children run
         if hold > 0:
-            import asyncio
             elapsed = 0.0
             step = 0.05
             while elapsed < hold:

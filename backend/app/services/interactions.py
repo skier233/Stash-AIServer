@@ -25,8 +25,6 @@ try:
 except Exception:
     InteractionLibrarySearch = None
 
-# Normalize datetime to naive UTC for consistent comparisons/storage
-# Normalize datetime to naive UTC for consistent comparisons/storage
 def _to_naive(dt: datetime | None) -> datetime | None:
     if dt is None:
         return None
@@ -177,11 +175,7 @@ def _update_session(db: Session, ev: InteractionEvent, sess: InteractionSession 
         pass
 
 def _finalize_stale_sessions_for_fingerprint(db: Session, client_fingerprint: str, time_threshold: datetime):
-    """End stale sessions for a fingerprint and increment derived counts for their last-viewed entity.
-
-    This follows the 'finalize-on-supersede' behavior: we only credit/close sessions
-    when a new non-mergeable session is created for the same fingerprint.
-    """
+    """Finalize stale sessions and increment derived counts for their last viewed entity."""
     try:
         # Select candidate sessions to finalize
         stale_sessions: list[InteractionSession] = db.execute(
@@ -275,13 +269,9 @@ def _finalize_stale_sessions_for_fingerprint(db: Session, client_fingerprint: st
 
 
 def _find_or_create_session_id(db: Session, incoming_session_id: str, client_fingerprint: str | None):
-    """Resolve or create a canonical session id for an incoming session identifier.
+    """Resolve or create a canonical session id for an incoming id.
 
-    Strategy summary:
-      1) If the incoming id already exists as a session -> return it.
-      2) If an alias points to a canonical session -> return the canonical id.
-      3) If a recent (non-finalized) session exists for the same fingerprint -> create alias, return it.
-      4) Otherwise create a new session and (before that) finalize stale sessions for the fingerprint.
+    Behaviors: direct match, alias lookup, fingerprint merge, or new session creation.
     """
 
     # 1) Direct session id exists -> canonical

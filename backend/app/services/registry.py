@@ -1,19 +1,25 @@
 from __future__ import annotations
+
 from typing import Dict, List
 from app.actions.registry import registry as action_registry, collect_actions
+
+# Optional task manager: not required in minimal setups
+try:
+    from app.tasks.manager import manager as task_manager
+except Exception:
+    task_manager = None
 
 
 class ServiceBase:
     name: str = 'unnamed'
     description: str = ''
-    server_url: str | None = None  # external server backing this logical service
+    server_url: str | None = None
     max_concurrency: int = 1
-    # Optional default priorities (could be used later for auto-priority decisions)
+    # Optional default priorities
     default_single_priority: str = 'high'
     default_bulk_priority: str = 'low'
 
     def connectivity(self) -> str:
-        # Placeholder: later implement health ping / handshake
         return 'unknown'
 
 
@@ -31,10 +37,10 @@ class ServiceRegistry:
             if not definition.service:
                 definition.service = service.name
             action_registry.register(definition, handler)
-        # Configure task manager (if present) dynamically
+        # Configure task manager dynamically if available
         try:
-            from app.tasks.manager import manager as task_manager
-            task_manager.configure_service(service.name, service.max_concurrency, service.server_url)
+            if task_manager is not None:
+                task_manager.configure_service(service.name, service.max_concurrency, service.server_url)
         except Exception:
             # Task system optional at this stage
             pass

@@ -21,7 +21,7 @@ class SubmitTaskResponse(BaseModel):
     task_id: str
     status: str
 
-# NOTE: Define history endpoint BEFORE dynamic '/{task_id}' routes to avoid them capturing 'history' as a task_id.
+# Keep '/history' route defined before '/{task_id}' to avoid route capture issues.
 class HistoryItem(BaseModel):
     task_id: str
     action_id: str
@@ -37,7 +37,7 @@ class HistoryItem(BaseModel):
 
 @router.get('/history')
 def task_history(limit: int = 50, service: str | None = None, status: str | None = None, db: Session = Depends(get_db)) -> dict:
-    """Return recent top-level task history (bounded, newest first)."""
+    """Return recent task history (newest first)."""
     q = db.query(TaskHistory)
     if service:
         q = q.filter(TaskHistory.service == service)
@@ -48,13 +48,12 @@ def task_history(limit: int = 50, service: str | None = None, status: str | None
 
 @router.post('/submit', response_model=SubmitTaskResponse)
 async def submit_task(payload: SubmitTaskRequest):
-    """Submit a new task for the resolved action id with optional priority."""
+    """Resolve action and submit a task to the manager."""
     ctx = payload.context
     resolved = action_registry.resolve(payload.action_id, ctx)
     if not resolved:
         raise HTTPException(status_code=404, detail='Action not found')
     definition, handler = resolved
-    # Map priority string
     prio = TaskPriority.normal
     if payload.priority == 'high':
         prio = TaskPriority.high
