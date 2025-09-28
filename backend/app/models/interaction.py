@@ -42,6 +42,8 @@ class InteractionSession(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now(timezone.utc), onupdate=datetime.now(timezone.utc), nullable=False)
     # client fingerprint for session merging across tabs/refresh
     client_fingerprint: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    # finalized session marker (only set once the session is superseded by a new one)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
 
 
 # Optional alias mapping from an incoming frontend session id to a canonical backend session id.

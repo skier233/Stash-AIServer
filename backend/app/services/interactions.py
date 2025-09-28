@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Iterable, List, Tuple
 from sqlalchemy.orm import Session
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, update
 from datetime import datetime, timezone, timedelta
 import traceback
 from app.models.interaction import InteractionEvent, InteractionSession, SceneWatch, SceneWatchSegment, SceneDerived, InteractionSessionAlias
@@ -9,6 +9,8 @@ from sqlalchemy.exc import IntegrityError
 import os
 from app.schemas.interaction import InteractionEventIn
 from collections import defaultdict
+from app.models.interaction import SceneDerived
+from app.models.interaction import ImageDerived
 
 # Normalize datetime to naive UTC for consistent comparisons/storage
 def _to_naive(dt: datetime | None) -> datetime | None:
@@ -172,6 +174,103 @@ def _update_session(db: Session, ev: InteractionEvent, sess: InteractionSession 
     except Exception:
         pass
 
+def _finalize_stale_sessions_for_fingerprint(db: Session, client_fingerprint: str, time_threshold: datetime):
+    """Finalize (end) all sessions for this fingerprint that are older than time_threshold
+    and update derived_o_count incrementally for their last viewed scene/image.
+
+    This implements Option B: only finalize when a new non-mergeable session is created.
+    """
+    try:
+        # Select candidate sessions to finalize
+        stale_sessions: list[InteractionSession] = db.execute(
+            select(InteractionSession).where(
+                InteractionSession.client_fingerprint == client_fingerprint,
+                InteractionSession.ended_at.is_(None),
+                InteractionSession.last_event_ts < time_threshold
+            )
+        ).scalars().all()
+    except Exception:
+        return
+    if not stale_sessions:
+        return
+
+    # Qualification threshold (reuse existing config)
+    try:
+        min_session_minutes = int(os.getenv('INTERACTION_MIN_SESSION_MINUTES', '10'))
+    except Exception:
+        min_session_minutes = 10
+    min_session_seconds = min_session_minutes * 60
+
+    scene_counts: dict[str,int] = defaultdict(int)
+    image_counts: dict[str,int] = defaultdict(int)
+    finalize_ids: list[int] = []
+
+    for s in stale_sessions:
+        try:
+            if not (s.last_event_ts and s.session_start_ts):
+                continue
+            dur = (s.last_event_ts - s.session_start_ts).total_seconds()
+            if dur < min_session_seconds:
+                # session too short; still finalize but no derived credit
+                finalize_ids.append(s.id)
+                continue
+            ent_type = getattr(s, 'last_entity_type', None)
+            ent_id = getattr(s, 'last_entity_id', None)
+            if not ent_type or not ent_id:
+                finalize_ids.append(s.id)
+                continue
+            if ent_type == 'scene':
+                scene_counts[str(ent_id)] += 1
+            elif ent_type == 'image':
+                image_counts[str(ent_id)] += 1
+            finalize_ids.append(s.id)
+        except Exception:
+            continue
+
+    if finalize_ids:
+        try:
+            db.execute(
+                update(InteractionSession)
+                .where(InteractionSession.id.in_(finalize_ids))
+                .values(ended_at=InteractionSession.last_event_ts)
+            )
+        except Exception:
+            pass
+
+    # Increment scene derived counts
+    if scene_counts:
+        existing = db.execute(select(SceneDerived).where(SceneDerived.scene_id.in_(list(scene_counts.keys())))).scalars().all()
+        existing_map = {r.scene_id: r for r in existing}
+        for sid, inc in scene_counts.items():
+            row = existing_map.get(sid)
+            if row:
+                try:
+                    row.derived_o_count = (row.derived_o_count or 0) + inc
+                except Exception:
+                    pass
+            else:
+                db.add(SceneDerived(scene_id=sid, derived_o_count=inc, view_count=inc, last_viewed_at=None))
+
+    # Increment image derived counts
+    if image_counts:
+        existing = db.execute(select(ImageDerived).where(ImageDerived.image_id.in_(list(image_counts.keys())))).scalars().all()
+        existing_map = {r.image_id: r for r in existing}
+        for iid, inc in image_counts.items():
+            row = existing_map.get(iid)
+            if row:
+                try:
+                    row.derived_o_count = (row.derived_o_count or 0) + inc
+                except Exception:
+                    pass
+            else:
+                db.add(ImageDerived(image_id=iid, derived_o_count=inc, view_count=inc, last_viewed_at=None))
+
+    # Flush so increments are persisted before new session proceeds
+    try:
+        db.flush()
+    except Exception:
+        pass
+
 
 def _find_or_create_session_id(db: Session, incoming_session_id: str, client_fingerprint: str | None):
     """Resolve incoming_session_id to a canonical session_id string.
@@ -186,6 +285,9 @@ def _find_or_create_session_id(db: Session, incoming_session_id: str, client_fin
     - Otherwise create a brand new session row with incoming_session_id and return it.
 
     Aliases are durable pointers; their usefulness is gated by the recency of the canonical session.
+    Session finalization (ended_at) follows Option B: only finalize when creating
+    a new, non-mergeable session for the same fingerprint. This keeps existing
+    sessions open through long pauses until superseded.
     """
 
     # 1) Direct session id exists -> canonical
@@ -210,13 +312,14 @@ def _find_or_create_session_id(db: Session, incoming_session_id: str, client_fin
         # alias table might not exist yet; ignore
         pass
 
-    # 3) Fingerprint merge: recent session for same fingerprint
+    # 3) Fingerprint merge: recent session for same fingerprint (only consider non-finalized sessions)
     if client_fingerprint:
         try:
             recent = db.execute(
                 select(InteractionSession.session_id).where(
                     InteractionSession.client_fingerprint == client_fingerprint,
-                    InteractionSession.last_event_ts >= time_threshold
+                    InteractionSession.last_event_ts >= time_threshold,
+                    InteractionSession.ended_at.is_(None)
                 ).order_by(InteractionSession.last_event_ts.desc()).limit(1)
             ).first()
             if recent:
@@ -240,6 +343,11 @@ def _find_or_create_session_id(db: Session, incoming_session_id: str, client_fin
 
     # 4) Create new session with incoming id
     try:
+        # Before creating a brand new session, finalize any stale sessions for this fingerprint
+        # (Option B strategy: only finalize when superseded by a new non-merged session)
+        if client_fingerprint:
+            # Finalize and increment derived counts for stale sessions before creating new one
+            _finalize_stale_sessions_for_fingerprint(db, client_fingerprint, time_threshold)
         db.add(InteractionSession(session_id=incoming_session_id, last_event_ts=now, session_start_ts=now, client_fingerprint=client_fingerprint))
         db.flush()
         return incoming_session_id
@@ -412,29 +520,6 @@ def update_image_derived(db: Session, image_id: str, ev_list: list):
     else:
         db.add(ImageDerived(image_id=image_id, last_viewed_at=last_view, derived_o_count=0, view_count=view_events))
 
-    # Recompute derived_o_count for images: count sessions where this image is the
-    # last_entity and session duration >= threshold
-    try:
-        import os
-        min_session_minutes = int(os.getenv('INTERACTION_MIN_SESSION_MINUTES', '10'))
-        min_session_seconds = min_session_minutes * 60
-        sessions = db.execute(select(InteractionSession).where(
-            (InteractionSession.last_entity_type == 'image') & (InteractionSession.last_entity_id == image_id)
-        )).scalars().all()
-        qualified = 0
-        for s in sessions:
-            try:
-                if s.last_event_ts and s.session_start_ts:
-                    duration = (s.last_event_ts - s.session_start_ts).total_seconds()
-                    if duration >= min_session_seconds:
-                        qualified += 1
-            except Exception:
-                continue
-        existing = db.execute(select(ImageDerived).where(ImageDerived.image_id==image_id)).scalar_one_or_none()
-        if existing:
-            existing.derived_o_count = qualified
-    except Exception:
-        pass
 
 
 def _bulk_update_scene_derived(db: Session, scene_ev_list: list, scene_ids: set[str]):
@@ -444,12 +529,7 @@ def _bulk_update_scene_derived(db: Session, scene_ev_list: list, scene_ids: set[
       - view_count += number of scene_view events in this batch for that scene
       - last_viewed_at updated to latest scene_view in batch if present
       - Ensure row exists (create if absent)
-      - derived_o_count = count of distinct sessions qualifying by any rule:
-            * InteractionSession: last_entity == scene and (last_event_ts - session_start_ts) >= threshold
-            * SceneWatch: (page_left_at - page_entered_at) >= threshold
-            * SceneWatch: total_watched_s >= threshold
 
-    All heavy queries are done in bulk across all target scenes.
     """
     if not scene_ids:
         return
@@ -506,36 +586,7 @@ def _bulk_update_scene_derived(db: Session, scene_ev_list: list, scene_ids: set[
         for obj in to_create:
             existing_map[obj.scene_id] = obj
 
-    # 4. Compute derived_o_count in bulk
-    qualified_sessions_by_scene: dict[str,set[str]] = {sid: set() for sid in scene_ids}
-
-    # 4a. Sessions qualification (last entity == scene)
-    try:
-        session_rows = db.execute(
-            select(InteractionSession).where(
-                (InteractionSession.last_entity_type == 'scene') & (InteractionSession.last_entity_id.in_(list(scene_ids)))
-            )
-        ).scalars().all()
-        for s in session_rows:
-            try:
-                if s.last_event_ts and s.session_start_ts:
-                    dur = (s.last_event_ts - s.session_start_ts).total_seconds()
-                    if dur >= min_session_seconds:
-                        qualified_sessions_by_scene.setdefault(s.last_entity_id, set()).add(s.session_id)
-            except Exception:
-                continue
-    except Exception:
-        pass
-
-    # 5. Persist derived_o_count
-    for sid, row in existing_map.items():
-        try:
-            qual = qualified_sessions_by_scene.get(sid)
-            if qual is not None:
-                row.derived_o_count = len(qual)
-        except Exception:
-            continue
-    # image-derived handled elsewhere
+    # derived_o_count intentionally NOT recomputed here; it's incremented at session finalization time.
 
 
 # -------------------------- Helper aggregation sections --------------------------
