@@ -488,19 +488,46 @@ export class InteractionTracker {
     this.currentScene = state;
 
     const onPlay = () => {
-      if (!state.duration && video.duration && isFinite(video.duration)) state.duration = video.duration;
+      // Refresh duration if metadata now available
+      if (video.duration && isFinite(video.duration)) {
+        if (!state.duration || Math.abs((state.duration ?? 0) - video.duration) > 0.5) {
+          state.duration = video.duration;
+        }
+      }
       state.lastPlayTs = Date.now();
-      this.trackInternal('scene_watch_start','scene',sceneId,{ position: video.currentTime });
+      this.trackInternal('scene_watch_start','scene',sceneId,{
+        position: video.currentTime,
+        duration: state.duration ?? (isFinite(video.duration) ? video.duration : undefined)
+      });
     };
     const onPause = () => {
       const added = this.captureSegment();
-      // Emit an explicit pause event (position + cumulative watched)
+      // Refresh duration if newly known
+      if (video.duration && isFinite(video.duration)) {
+          if (!state.duration || Math.abs((state.duration ?? 0) - video.duration) > 0.5) state.duration = video.duration;
+      }
       try {
         const total = this.currentScene ? this.totalWatched(this.currentScene) : undefined;
-        this.trackInternal('scene_watch_pause','scene',sceneId,{ position: video.currentTime, total_watched: total, segment_added: added });
+        this.trackInternal('scene_watch_pause','scene',sceneId,{
+          position: video.currentTime,
+          total_watched: total,
+            duration: state.duration ?? (isFinite(video.duration) ? video.duration : undefined),
+          segment_added: added
+        });
       } catch {}
     };
-  const onEnded = () => { this.captureSegment(true); this.trackInternal('scene_watch_complete','scene',sceneId,{ duration: state.duration, total_watched: this.totalWatched(state), segments: state.segments }); state.completed = true; };
+    const onEnded = () => {
+      this.captureSegment(true);
+      if (video.duration && isFinite(video.duration)) {
+        state.duration = video.duration;
+      }
+      this.trackInternal('scene_watch_complete','scene',sceneId,{
+        duration: state.duration ?? (isFinite(video.duration) ? video.duration : undefined),
+        total_watched: this.totalWatched(state),
+        segments: state.segments
+      });
+      state.completed = true;
+    };
     const onTimeUpdate = () => {
       const current = video.currentTime;
       const prev = state.lastPosition;
@@ -514,6 +541,8 @@ export class InteractionTracker {
         }
       }
       state.lastPosition = current;
+      // Capture duration mid-playback if it becomes available
+      if (!state.duration && video.duration && isFinite(video.duration)) state.duration = video.duration;
       this.maybeEmitProgress();
     };
     const onLoaded = () => { if (video.duration && isFinite(video.duration)) state.duration = video.duration; };
@@ -809,9 +838,16 @@ export class InteractionTracker {
     if (state.video.paused || state.video.seeking) return;
     state.lastProgressEmit = now;
     const position = state.video.currentTime;
-    const duration = state.video.duration || state.duration;
+    const duration = (state.video.duration && isFinite(state.video.duration)) ? state.video.duration : state.duration;
+    if (duration && (!state.duration || Math.abs(state.duration - duration) > 0.5)) {
+      state.duration = duration;
+    }
     const percent = duration ? (position / duration) * 100 : undefined;
-    this.trackInternal('scene_watch_progress','scene',state.sceneId,{ position, percent });
+    this.trackInternal('scene_watch_progress','scene',state.sceneId,{
+      position,
+      percent,
+      duration: state.duration ?? duration
+    });
     state.lastPosition = position;
   }
 
