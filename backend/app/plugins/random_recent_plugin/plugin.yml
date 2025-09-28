@@ -1,4 +1,6 @@
 name: random_recent_plugin
+human_name: Random Recent
+server_link: https://github.com/example/random-recent
 version: 0.1.0
 required_backend: '>=0.0.0'
 files:

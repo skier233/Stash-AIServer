@@ -8,6 +8,7 @@ from app.api import actions as actions_router
 from app.api import tasks as tasks_router
 from app.api import ws as ws_router
 from app.api import recommendations as recommendations_router
+from app.api import plugins as plugins_router
 from app.recommendations.registry import recommender_registry
 from app.recommendations.models import RecContext
 from app.tasks.manager import manager
@@ -76,6 +77,7 @@ app.include_router(actions_router.router, prefix=settings.api_v1_prefix)
 app.include_router(tasks_router.router, prefix=settings.api_v1_prefix)
 app.include_router(ws_router.router, prefix=settings.api_v1_prefix)
 app.include_router(recommendations_router.router, prefix=settings.api_v1_prefix)
+app.include_router(plugins_router.router, prefix=settings.api_v1_prefix)
 app.include_router(interactions_router.router, prefix=settings.api_v1_prefix)
 
 # Basic CORS (development) – restrict/adjust later as needed

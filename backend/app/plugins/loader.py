@@ -8,6 +8,10 @@ from sqlalchemy import select
 from app.db.session import SessionLocal, engine
 from app.core.config import settings
 from app.models.plugin import PluginMeta
+import tempfile, zipfile, shutil
+from io import BytesIO
+import httpx
+from app.models.plugin import PluginSource
 
 PLUGIN_DIR = pathlib.Path(__file__).parent  # app/plugins
 
@@ -18,6 +22,8 @@ class PluginManifest:
     required_backend: str
     files: List[str]
     depends_on: List[str]
+    human_name: str | None = None
+    server_link: str | None = None
 
 def _parse_manifest(path: pathlib.Path) -> PluginManifest | None:
     try:
@@ -31,6 +37,8 @@ def _parse_manifest(path: pathlib.Path) -> PluginManifest | None:
         depends_on = data.get('depends_on', []) or []
         if not isinstance(depends_on, list):
             depends_on = []
+        human_name = data.get('human_name') or data.get('title') or data.get('label')
+        server_link = data.get('server_link') or data.get('serverLink')
         if not (name and ver and req):
             print(f"[plugin] invalid manifest missing fields: {path}", flush=True)
             return None
@@ -38,7 +46,7 @@ def _parse_manifest(path: pathlib.Path) -> PluginManifest | None:
         if path.parent.name != name:
             print(f"[plugin] manifest name mismatch dir={path.parent.name} name={name}", flush=True)
             return None
-        return PluginManifest(name=name, version=str(ver), required_backend=str(req), files=[str(f) for f in files], depends_on=[str(d) for d in depends_on])
+        return PluginManifest(name=name, version=str(ver), required_backend=str(req), files=[str(f) for f in files], depends_on=[str(d) for d in depends_on], human_name=human_name, server_link=server_link)
     except Exception as e:
         print(f"[plugin] failed to parse {path}: {e}", flush=True)
         return None
@@ -151,6 +159,11 @@ def initialize_plugins():
     if not PLUGIN_DIR.exists():
         return
     db = SessionLocal()
+    # Ensure builtin official source exists (can be overridden via API)
+    try:
+        _ensure_builtin_source(db)
+    except Exception:
+        pass
     try:
         # Gather manifests
         manifests: Dict[str, PluginManifest] = {}
@@ -200,6 +213,8 @@ def initialize_plugins():
                     _apply_migrations(mf, meta)
                     _import_files(mf)
                     meta.version = mf.version
+                    meta.human_name = mf.human_name
+                    meta.server_link = mf.server_link
                     if meta.status != 'error':
                         meta.status = 'active'
                     db.commit()
@@ -236,3 +251,144 @@ def initialize_plugins():
             db.close()
         except Exception:
             pass
+
+
+def _ensure_builtin_source(db: Session):
+    """Create a default registered source named 'official' if missing. Point to the official catalog repo raw root."""
+    existing = db.execute(select(PluginSource).where(PluginSource.name == 'official')).scalar_one_or_none()
+    if existing:
+        return existing
+    # raw.githubusercontent path to the published plugins_index.json
+    url = 'https://raw.githubusercontent.com/skier233/AIOverhaul_Plugin_Catalog_Official/main'
+    src = PluginSource(name='official', url=url, enabled=True)
+    db.add(src)
+    db.commit()
+    db.refresh(src)
+    return src
+
+def _download_repo_subpath_to_dir(repo_base_url: str, subpath: str, dest: pathlib.Path):
+    """Download only the files under a repo subpath using the GitHub contents API.
+
+    This avoids downloading the entire repo zip. It supports both raw.githubusercontent
+    style URLs and web github.com URLs.
+    """
+    # resolve owner/repo/branch similarly to _download_repo_zip
+    parts = repo_base_url.rstrip('/').split('/')
+    owner = repo = branch = None
+    if 'raw.githubusercontent.com' in repo_base_url:
+        # raw root like https://raw.githubusercontent.com/owner/repo/main
+        if len(parts) >= 6:
+            owner = parts[3]
+            repo = parts[4]
+            branch = parts[5]
+    else:
+        # web url like https://github.com/owner/repo
+        if len(parts) >= 5 and 'github.com' in parts[2]:
+            owner = parts[3]
+            repo = parts[4]
+            branch = 'main'
+
+    if not (owner and repo and branch):
+        raise ValueError('unsupported repo url for api subpath')
+
+
+    def _fetch_path(path: str, target_dir: pathlib.Path):
+        api_url = f'https://api.github.com/repos/{owner}/{repo}/contents/{path}'
+        params = {'ref': branch}
+        r = httpx.get(api_url, params=params, timeout=30)
+        if r.status_code == 404:
+            raise FileNotFoundError(f'subpath {path} not found in repo via API')
+        r.raise_for_status()
+        data = r.json()
+        # if data is a dict, it's a file; if list, it's directory entries
+        if isinstance(data, dict):
+            # single file
+            download_url = data.get('download_url')
+            if not download_url:
+                raise RuntimeError(f'no download_url for file {path}')
+            target_dir.mkdir(parents=True, exist_ok=True)
+            filename = pathlib.Path(data.get('name')).name
+            dst = target_dir / filename
+            rr = httpx.get(download_url, timeout=30)
+            rr.raise_for_status()
+            dst.write_bytes(rr.content)
+            return
+        if isinstance(data, list):
+            for entry in data:
+                etype = entry.get('type')
+                name = entry.get('name')
+                if not name:
+                    continue
+                entry_path = entry.get('path')
+                if etype == 'file':
+                    download_url = entry.get('download_url')
+                    if not download_url:
+                        continue
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    dst = target_dir / name
+                    rr = httpx.get(download_url, timeout=30)
+                    rr.raise_for_status()
+                    dst.write_bytes(rr.content)
+                elif etype == 'dir':
+                    # recurse into directory
+                    _fetch_path(entry_path, target_dir / name)
+                # symlinks and submodules ignored for now
+
+    # start fetching into dest
+    _fetch_path(subpath.strip('/'), dest)
+    return True
+
+def install_plugin_from_catalog(db: Session, source_row, catalog_row, overwrite: bool = False):
+    """Install a plugin from a catalog entry (source_row: PluginSource, catalog_row: PluginCatalog).
+
+    This downloads the repo zip, extracts the plugin path into PLUGIN_DIR/<plugin_name>,
+    runs migrations and imports, and updates PluginMeta.
+    """
+    from app.models.plugin import PluginMeta as _PM
+    plugin_name = catalog_row.plugin_name
+    plugin_path_in_repo = (catalog_row.manifest_json or {}).get('path') or (catalog_row.manifest_json or {}).get('plugin_path') or catalog_row.plugin_name
+    if not plugin_path_in_repo:
+        raise ValueError('catalog entry missing path')
+    target_dir = PLUGIN_DIR / plugin_name
+    if target_dir.exists():
+        if not overwrite:
+            raise FileExistsError(f'plugin {plugin_name} already exists')
+        # remove existing
+        shutil.rmtree(target_dir)
+    # Download only the plugin subpath using GitHub Contents API.
+    target_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        _download_repo_subpath_to_dir(source_row.url, plugin_path_in_repo, target_dir)
+    except Exception:
+        # cleanup on failure and propagate the error
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+        raise
+
+    # Parse manifest and run migrations/imports
+    manifest_file = target_dir / 'plugin.yml'
+    manifest = _parse_manifest(manifest_file)
+    if not manifest:
+        raise RuntimeError('invalid manifest after extraction')
+    meta = _load_or_create_meta(db, manifest)
+    _apply_migrations(manifest, meta)
+    _import_files(manifest)
+    meta.version = manifest.version
+    meta.human_name = manifest.human_name
+    meta.server_link = manifest.server_link
+    if meta.status != 'error':
+        meta.status = 'active'
+    db.commit()
+    return meta
+
+
+def remove_plugin(plugin_name: str, db: Session):
+    target_dir = PLUGIN_DIR / plugin_name
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
+    # mark meta as removed
+    row = db.execute(select(PluginMeta).where(PluginMeta.name == plugin_name)).scalar_one_or_none()
+    if row:
+        row.status = 'removed'
+        db.commit()
+    return True

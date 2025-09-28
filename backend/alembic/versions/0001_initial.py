@@ -30,10 +30,54 @@ def upgrade() -> None:  # noqa: D401
         sa.Column('status', sa.String(length=30), nullable=False, server_default='active'),
         sa.Column('migration_head', sa.String(length=100), nullable=True),
         sa.Column('last_error', sa.Text, nullable=True),
+        sa.Column('human_name', sa.String(length=150), nullable=True),
+        sa.Column('server_link', sa.String(length=500), nullable=True),
         sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.Column('updated_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
     )
     op.create_index('ix_plugin_meta_name', 'plugin_meta', ['name'])
+
+    # plugin_sources (remote registries) / plugin_catalog (available plugins) / plugin_settings (persisted config)
+    op.create_table(
+        'plugin_sources',
+        sa.Column('id', sa.Integer, primary_key=True),
+        sa.Column('name', sa.String(length=100), nullable=False, unique=True),
+        sa.Column('url', sa.String(length=500), nullable=False),
+        sa.Column('enabled', sa.Boolean, nullable=False, server_default=sa.text('1')),
+        sa.Column('last_refreshed_at', sa.DateTime, nullable=True),
+        sa.Column('last_error', sa.Text, nullable=True),
+        sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+        sa.Column('updated_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+    )
+    op.create_index('ix_plugin_sources_name', 'plugin_sources', ['name'])
+
+    op.create_table(
+        'plugin_catalog',
+        sa.Column('id', sa.Integer, primary_key=True),
+        sa.Column('source_id', sa.Integer, sa.ForeignKey('plugin_sources.id', ondelete='CASCADE'), nullable=False),
+        sa.Column('plugin_name', sa.String(length=100), nullable=False),
+        sa.Column('version', sa.String(length=50), nullable=False),
+        sa.Column('description', sa.String(length=500), nullable=True),
+        sa.Column('human_name', sa.String(length=150), nullable=True),
+        sa.Column('server_link', sa.String(length=500), nullable=True),
+        sa.Column('dependencies_json', sa.JSON, nullable=True),
+        sa.Column('manifest_json', sa.JSON, nullable=True),
+        sa.Column('updated_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+    )
+    op.create_index('ix_plugin_catalog_source_id', 'plugin_catalog', ['source_id'])
+    op.create_index('ix_plugin_catalog_plugin_name', 'plugin_catalog', ['plugin_name'])
+
+    op.create_table(
+        'plugin_settings',
+        sa.Column('id', sa.Integer, primary_key=True),
+        sa.Column('plugin_name', sa.String(length=100), nullable=False),
+        sa.Column('key', sa.String(length=100), nullable=False),
+        sa.Column('value', sa.JSON, nullable=True),
+        sa.Column('updated_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+        sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+    )
+    op.create_index('ix_plugin_settings_plugin_name', 'plugin_settings', ['plugin_name'])
+    op.create_index('ix_plugin_settings_plugin_name_key', 'plugin_settings', ['plugin_name', 'key'])
     # task_history (lightweight execution log) — keep minimal needed fields
     op.create_table(
         'task_history',
