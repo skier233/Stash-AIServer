@@ -8,14 +8,14 @@ from app.api import actions as actions_router
 from app.api import tasks as tasks_router
 from app.api import ws as ws_router
 from app.api import recommendations as recommendations_router
-from app.recommendations.registry import autodiscover as _auto_discover_recommenders, recommender_registry
+from app.recommendations.registry import recommender_registry
 from app.recommendations.models import RecContext
 from app.tasks.manager import manager
 from app.db.session import engine, Base
-import importlib, pkgutil, pathlib, hashlib, os, sys
+import pathlib, hashlib, os
 from contextlib import asynccontextmanager
 from app.plugins.loader import initialize_plugins
-from app.services import registry as services_registry  # ensures registry defined
+from app.services import registry as services_registry  # registry remains for core non-plugin definitions (if any)
 
 # Ensure tables exist if migrations not yet run (development convenience)
 Base.metadata.create_all(bind=engine)
@@ -25,14 +25,12 @@ Base.metadata.create_all(bind=engine)
 async def lifespan(app: FastAPI):
     """Application lifespan handler: run startup actions here instead of @app.on_event.
 
-    We perform service auto-registration, start the in-memory task manager, and
-    pre-load recommender modules. Shutdown actions can be added to the
-    finally-block if/when graceful stop support is implemented for the task
-    manager.
+    We start the in-memory task manager and load plugins (which themselves
+    register services, actions, and recommenders). Legacy autodiscovery of
+    services/recommenders has been removed in favor of the explicit plugin
+    system.
     """
     # Setup / startup
-    # Auto-register service packages (development convenience)
-    _auto_register_services()
 
     if os.getenv('AIO_DEVMODE'):
         try:
@@ -50,14 +48,7 @@ async def lifespan(app: FastAPI):
     # Start background task manager
     await manager.start()
 
-    # Pre-load recommender modules to surface startup failures early
-    _auto_discover_recommenders()
-    if not recommender_registry.list_for_context(RecContext.global_feed):
-        try:
-            importlib.import_module('app.recommendations.recommenders.baseline_popularity.popularity')
-            importlib.import_module('app.recommendations.recommenders.random_recent.random_recent')
-        except Exception as e:
-            print('[recommenders] startup fallback import error', e, flush=True)
+    # Diagnostic count of registered recommenders (populated by plugins)
     print(f"[recommenders] initialized count={len(recommender_registry._defs)}", flush=True)
 
     # Yield control to application runtime
@@ -78,25 +69,6 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         body = b''
     print('[validation_error] url=', request.url, 'body=', body.decode(errors='replace'), 'errors=', exc.errors(), flush=True)
     return JSONResponse(status_code=422, content={'detail': exc.errors()})
-
-# Auto-discover and register service packages (each may expose register())
-def _auto_register_services():
-    services_path = pathlib.Path(__file__).parent / 'services'
-    if not services_path.exists():
-        print('[services] directory missing:', services_path, flush=True)
-        return
-    for m in pkgutil.iter_modules([str(services_path)]):
-        name = m.name
-        full = f'app.services.{name}'
-        try:
-            mod = importlib.import_module(full)
-            if hasattr(mod, 'register'):
-                mod.register()
-                print(f'[services] registered {full}', flush=True)
-            else:
-                print(f'[services] no register() in {full}', flush=True)
-        except Exception as e:
-            print(f'[services] failed {full}: {e}', flush=True)
 
 
 # Routers
