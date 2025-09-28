@@ -66,6 +66,10 @@ class SceneWatch(Base):
     # watch statistics for this page visit
     total_watched_s: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     watch_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # durable pointer for incremental segment processing
+    last_processed_event_ts: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # optimistic concurrency / retry guard
+    processed_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now(timezone.utc), nullable=False)
 
 

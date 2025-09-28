@@ -9,6 +9,14 @@ from sqlalchemy.exc import IntegrityError
 import os
 from app.schemas.interaction import InteractionEventIn
 
+# Normalize datetime to naive UTC for consistent comparisons/storage
+def _to_naive(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)
+
 # Simple in-place segment reconstruction per (session_id, scene_id)
 # Based on primitive events sequence ordering by client_ts
 
@@ -19,19 +27,48 @@ def ingest_events(db: Session, events: Iterable[InteractionEventIn], client_fing
     # Sort by client timestamp for deterministic processing
     ev_list = sorted(list(events), key=lambda e: e.ts)
 
-    def _to_naive_utc(dt: datetime | None) -> datetime | None:
-        if dt is None:
-            return None
-        if dt.tzinfo is None:
-            return dt
-        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    # Pre-dedupe: collect client_event_ids and query which already exist to avoid per-event selects
+    client_ids = {e.id for e in ev_list if getattr(e, 'id', None) is not None}
+    existing_client_ids: set = set()
+    if client_ids:
+        try:
+            rows = db.execute(select(InteractionEvent.client_event_id).where(InteractionEvent.client_event_id.in_(list(client_ids)))).scalars().all()
+            existing_client_ids = set(rows)
+        except Exception:
+            existing_client_ids = set()
+
+    # Resolve incoming session ids to canonical ids once per unique incoming id
+    session_resolution_cache: dict[str, str] = {}
+    unique_incoming = {e.session_id for e in ev_list if getattr(e, 'session_id', None) is not None}
+    for incoming in unique_incoming:
+        try:
+            session_resolution_cache[incoming] = _find_or_create_session_id(db, incoming, client_fingerprint)
+        except Exception:
+            # leave unresolved; events will error later
+            pass
+
+    # Fetch InteractionSession objects for canonical ids used in this batch to avoid per-event session queries
+    canonical_ids = {sid for sid in session_resolution_cache.values() if sid is not None}
+    session_obj_cache: dict[str, InteractionSession] = {}
+    if canonical_ids:
+        try:
+            sess_rows = db.execute(select(InteractionSession).where(InteractionSession.session_id.in_(list(canonical_ids)))).scalars().all()
+            session_obj_cache = {s.session_id: s for s in sess_rows}
+        except Exception:
+            session_obj_cache = {}
+
+    # use module-level helper
 
     for ev in ev_list:
         # determine canonical session first (so stored events and summaries use same session id)
         try:
-            client_ts_val = _to_naive_utc(ev.ts)
-            # find or create canonical session for this event
-            sess_id = _find_or_create_session_id(db, ev.session_id, client_fingerprint)
+            client_ts_val = _to_naive(ev.ts)
+            # find or use cached canonical session id
+            sess_id = session_resolution_cache.get(ev.session_id) if ev.session_id is not None else None
+            if sess_id is None and getattr(ev, 'session_id', None) is not None:
+                # fallback to resolving on-the-fly
+                sess_id = _find_or_create_session_id(db, ev.session_id, client_fingerprint)
+                session_resolution_cache[ev.session_id] = sess_id
             # set the event's session_id to the canonical session id so we store under that session
             ev.session_id = sess_id
         except Exception as e:
@@ -39,12 +76,10 @@ def ingest_events(db: Session, events: Iterable[InteractionEventIn], client_fing
             errors.append(f'event={getattr(ev, "id", None)} session={getattr(ev, "session_id", None)} type={getattr(ev, "type", None)} err={e} trace={tb}')
             continue
 
-        # Dedup by client_event_id (ev.id)
-        if ev.id:
-            existing = db.execute(select(InteractionEvent.id).where(InteractionEvent.client_event_id==ev.id)).first()
-            if existing:
-                duplicates += 1
-                continue
+        # Dedup by client_event_id (ev.id) using pre-fetched set
+        if ev.id and ev.id in existing_client_ids:
+            duplicates += 1
+            continue
 
         try:
             # Use a nested transaction (savepoint) so a failing event doesn't roll back others
@@ -62,7 +97,8 @@ def ingest_events(db: Session, events: Iterable[InteractionEventIn], client_fing
                 # Flush inside the nested transaction to surface issues
                 db.flush()
                 # Update session state only after successful flush (no merging here)
-                _update_session(db, obj)
+                sess_obj = session_obj_cache.get(ev.session_id)
+                _update_session(db, obj, sess_obj)
             accepted += 1
         except Exception as e:  # pragma: no cover (best-effort logging)
             tb = traceback.format_exc()
@@ -77,16 +113,13 @@ def ingest_events(db: Session, events: Iterable[InteractionEventIn], client_fing
     return accepted, duplicates, errors
 
 
-def _update_session(db: Session, ev: InteractionEvent):
-    sess = db.execute(select(InteractionSession).where(InteractionSession.session_id==ev.session_id)).scalar_one_or_none()
+def _update_session(db: Session, ev: InteractionEvent, sess: InteractionSession | None = None):
+    # Accept a pre-fetched session object to avoid extra queries when available
+    if sess is None:
+        sess = db.execute(select(InteractionSession).where(InteractionSession.session_id==ev.session_id)).scalar_one_or_none()
     # scene_related variable removed (unused)
     # normalize event timestamps to naive UTC for comparison
-    def _to_naive(dt: datetime | None) -> datetime | None:
-        if dt is None:
-            return None
-        if dt.tzinfo is None:
-            return dt
-        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    # use module-level helper
 
     ev_client_ts = _to_naive(ev.client_ts)
 
@@ -222,13 +255,22 @@ def _find_or_create_session_id(db: Session, incoming_session_id: str, client_fin
 
 
 def recompute_segments(db: Session, session_id: str, scene_id: str, scene_watch_id: int):
-    rows = db.execute(select(InteractionEvent).where(
-        InteractionEvent.session_id==session_id,
-        InteractionEvent.entity_type=='scene',
-        InteractionEvent.entity_id==scene_id
-    ).order_by(InteractionEvent.client_ts.asc())).scalars().all()
+    # Fetch rows and delegate to the rows-based implementation
+    rows = db.execute(
+        select(InteractionEvent).where(
+            InteractionEvent.session_id == session_id,
+            InteractionEvent.entity_type == 'scene',
+            InteractionEvent.entity_id == scene_id,
+        ).order_by(InteractionEvent.client_ts.asc())
+    ).scalars().all()
+    return recompute_segments_from_rows(rows, session_id, scene_id, scene_watch_id)
 
-    segments: list[tuple[float,float]] = []
+
+def recompute_segments_from_rows(rows: list, session_id: str, scene_id: str, scene_watch_id: int, merge_gap: float = 1.0):
+    """Compute segments from a list of InteractionEvent rows (ordered by client_ts).
+    This mirrors recompute_segments but operates on provided rows so callers can fetch a limited window.
+    """
+    segments: list[tuple[float, float]] = []
     last_play_start_pos: float | None = None
     last_position: float | None = None
 
@@ -248,29 +290,23 @@ def recompute_segments(db: Session, session_id: str, scene_id: str, scene_watch_
         if et == 'scene_watch_start':
             last_play_start_pos = float(meta.get('position') if meta.get('position') is not None else (last_position or 0.0))
         elif et == 'scene_seek':
-            # Frontend now guarantees metadata { from, to } with accurate pre/post positions.
             was_playing = last_play_start_pos is not None
             from_pos = meta.get('from')
             to_pos = meta.get('to')
             try:
                 if was_playing:
-                    # Close existing playing segment at "from" (or last_position fallback)
                     end_pos = float(from_pos) if from_pos is not None else (last_position if last_position is not None else last_play_start_pos)
                     close_segment(end_pos)
                 if to_pos is not None:
                     new_pos = float(to_pos)
                     last_position = new_pos
-                    # Resume playing continuity only if we were playing before the seek
                     if was_playing:
                         last_play_start_pos = new_pos
                     else:
-                        # If not previously playing, don't start a new segment automatically
                         last_play_start_pos = None
                 else:
-                    # Missing destination: just drop play state to avoid corrupt spans
                     last_play_start_pos = None
             except Exception:
-                # On malformed metadata, stop current segment safely
                 if was_playing:
                     close_segment(last_position if last_position is not None else (last_play_start_pos or 0.0))
                 last_play_start_pos = None
@@ -287,26 +323,25 @@ def recompute_segments(db: Session, session_id: str, scene_id: str, scene_watch_
             if pos is not None:
                 last_position = float(pos)
 
-    # Merge
-    merged: list[tuple[float,float]] = []
+    # Merge intervals using provided merge_gap
+    merged: list[list[float]] = []
     for seg in sorted(segments, key=lambda s: s[0]):
         if not merged:
-            merged.append(list(seg))
+            merged.append([seg[0], seg[1]])
             continue
         last = merged[-1]
-        if seg[0] <= last[1] + 1.0:
+        if seg[0] <= last[1] + merge_gap:
             last[1] = max(last[1], seg[1])
         else:
-            merged.append(list(seg))
+            merged.append([seg[0], seg[1]])
 
-    # Convert to SceneWatchSegment objects
-    out = []
+    out: list[SceneWatchSegment] = []
     for s in merged:
         start, end = float(s[0]), float(s[1])
         watched = max(0.0, end - start)
         out.append(SceneWatchSegment(scene_watch_id=scene_watch_id, session_id=session_id, scene_id=scene_id, start_s=start, end_s=end, watched_s=watched))
     return out
-
+ 
 def update_scene_derived(db: Session, scene_id: str, ev_list: list):
     # Touch last_viewed_at and update view_count and derived_o_count.
     # view_count increments by number of scene_view events in ev_list for this scene.
@@ -387,83 +422,6 @@ def update_scene_derived(db: Session, scene_id: str, ev_list: list):
         pass
 
     # image-derived is handled separately
-
-
-def _find_or_create_scene_watch(db: Session, session_id: str, scene_id: str, ev_list: list) -> SceneWatch:
-    """Find existing scene watch record or create one based on scene_page_enter/scene_view events"""
-    # Look for existing scene watch record
-    existing = db.execute(select(SceneWatch).where(
-        SceneWatch.session_id == session_id,
-        SceneWatch.scene_id == scene_id
-    )).scalar_one_or_none()
-    
-    if existing:
-        # Update page_left_at if we have scene_page_leave events
-        for e in ev_list:
-            if e.entity_id == scene_id and e.entity_type == 'scene' and e.type == 'scene_page_leave':
-                existing.page_left_at = e.ts
-        # If still missing, try to infer from session metadata (session end / last entity ts)
-        if existing.page_left_at is None:
-            try:
-                sess = db.execute(select(InteractionSession).where(InteractionSession.session_id==session_id)).scalar_one_or_none()
-                if sess:
-                    if getattr(sess, 'last_entity_type', None) == 'scene' and getattr(sess, 'last_entity_id', None) == scene_id and getattr(sess, 'last_entity_event_ts', None):
-                        existing.page_left_at = sess.last_entity_event_ts
-                    elif getattr(sess, 'last_event_ts', None):
-                        existing.page_left_at = sess.last_event_ts
-            except Exception:
-                pass
-        return existing
-    
-    # Create new scene watch record
-    page_entered_at = None
-    page_left_at = None
-    
-    # Find page enter/leave events
-    for e in ev_list:
-        if e.entity_id == scene_id and e.entity_type == 'scene':
-            if e.type == 'scene_page_enter':
-                page_entered_at = e.ts
-            elif e.type == 'scene_page_leave':
-                page_left_at = e.ts
-            elif e.type == 'scene_view' and page_entered_at is None:
-                # Fallback: use scene_view as page enter if no explicit page_enter event
-                page_entered_at = e.ts
-    
-    if page_entered_at is None:
-        # Default to earliest event timestamp for this scene
-        scene_events = [e for e in ev_list if e.entity_id == scene_id and e.entity_type == 'scene']
-        if scene_events:
-            page_entered_at = min(scene_events, key=lambda x: x.ts).ts
-        else:
-            page_entered_at = datetime.now(timezone.utc)
-    # Try to infer page_left_at from session metadata if not present in events
-    if page_left_at is None:
-        try:
-            sess = db.execute(select(InteractionSession).where(InteractionSession.session_id==session_id)).scalar_one_or_none()
-            if sess:
-                if getattr(sess, 'last_entity_type', None) == 'scene' and getattr(sess, 'last_entity_id', None) == scene_id and getattr(sess, 'last_entity_event_ts', None):
-                    page_left_at = sess.last_entity_event_ts
-                elif getattr(sess, 'last_event_ts', None):
-                    page_left_at = sess.last_event_ts
-        except Exception:
-            pass
-    # Final fallback: use latest scene event timestamp in the batch
-    if page_left_at is None:
-        scene_events = [e for e in ev_list if e.entity_id == scene_id and e.entity_type == 'scene']
-        if scene_events:
-            page_left_at = max(scene_events, key=lambda x: x.ts).ts
-    
-    new_watch = SceneWatch(
-        session_id=session_id,
-        scene_id=scene_id,
-        page_entered_at=page_entered_at,
-        page_left_at=page_left_at
-    )
-    db.add(new_watch)
-    db.flush()
-    return new_watch
-
 
 def _update_scene_watch_stats(db: Session, scene_watch: SceneWatch, segments: list[SceneWatchSegment]):
     """Update scene watch statistics based on computed segments"""
@@ -557,6 +515,17 @@ def update_image_derived(db: Session, image_id: str, ev_list: list):
         pass
 
 
+def _bulk_update_scene_derived(db: Session, ev_list: list, scene_ids: set[str]):
+    """Run update_scene_derived once per scene id (deduped) after processing segments.
+    Avoids counting view events multiple times when multiple (session,scene) pairs of same scene appear in a batch.
+    """
+    for sid in scene_ids:
+        try:
+            update_scene_derived(db, sid, ev_list)
+        except Exception:
+            continue
+
+
 # -------------------------- Helper aggregation sections --------------------------
 def _process_scene_summaries(db: Session, ev_list: list, errors: list[str]):
     """Efficiently aggregate per (session, scene) without O(N*M) rescans.
@@ -578,6 +547,13 @@ def _process_scene_summaries(db: Session, ev_list: list, errors: list[str]):
     scene_events_by_pair = defaultdict(list)
     for ev in ev_list:
         if getattr(ev, 'entity_type', None) == 'scene' and ev.entity_id:
+            # Normalize timestamp once to naive UTC for ordering safety
+            try:
+                norm_ts = _to_naive(ev.ts)
+                if norm_ts is not None:
+                    ev.ts = norm_ts  # safe mutation of schema object
+            except Exception:
+                pass
             scene_events_by_pair[(ev.session_id, ev.entity_id)].append(ev)
     if not scene_events_by_pair:
         return
@@ -672,26 +648,213 @@ def _process_scene_summaries(db: Session, ev_list: list, errors: list[str]):
         except Exception as e:  # pragma: no cover
             errors.append(f'scene_watch_flush: {e}')
 
-    # 4 & 5. Segments & derived updates
+    # 4 & 5. Segments & derived updates (windowed replay + pointer)
+    # configuration
+    TIME_MARGIN_SECONDS = float(os.getenv('INTERACTION_SEGMENT_TIME_MARGIN_SECONDS', '2'))
+    # Unified merge gap precedence: SEGMENT_MERGE_GAP_SECONDS > INTERACTION_SEGMENT_POS_MARGIN_SECONDS > 0.5
+    MERGE_GAP_SECONDS = float(os.getenv('SEGMENT_MERGE_GAP_SECONDS', os.getenv('INTERACTION_SEGMENT_POS_MARGIN_SECONDS', '0.5')))
+
     for (sid, scene_id), sc_events in scene_events_by_pair.items():
         watch = watch_map.get((sid, scene_id))
         if not watch:
             continue
         try:
             if any(ev.type in watch_related_types for ev in sc_events):
-                segments = recompute_segments(db, sid, scene_id, watch.id)
-                db.execute(
-                    delete(SceneWatchSegment).where(
+                # compute batch time window
+                batch_min_ts = min(ev.ts for ev in sc_events)
+                batch_max_ts = max(ev.ts for ev in sc_events)
+
+                # determine window to query (expand by margin)
+                window_min = batch_min_ts - timedelta(seconds=TIME_MARGIN_SECONDS)
+                window_max = batch_max_ts + timedelta(seconds=TIME_MARGIN_SECONDS)
+
+                # fetch boundary events (one before window_min, plus additional up to 4 for context)
+                before_rows_full = db.execute(
+                    select(InteractionEvent).where(
+                        InteractionEvent.session_id == sid,
+                        InteractionEvent.entity_type == 'scene',
+                        InteractionEvent.entity_id == scene_id,
+                        InteractionEvent.client_ts < window_min
+                    ).order_by(InteractionEvent.client_ts.desc()).limit(5)
+                ).scalars().all()
+                # always include at least the most recent prior event (if any) even in append-fast mode
+                before_rows = before_rows_full
+                after_ev = db.execute(
+                    select(InteractionEvent).where(
+                        InteractionEvent.session_id == sid,
+                        InteractionEvent.entity_type == 'scene',
+                        InteractionEvent.entity_id == scene_id,
+                        InteractionEvent.client_ts > window_max
+                    ).order_by(InteractionEvent.client_ts.asc()).limit(1)
+                ).scalars().first()
+
+                # fetch events inside window
+                window_rows = db.execute(
+                    select(InteractionEvent).where(
+                        InteractionEvent.session_id == sid,
+                        InteractionEvent.entity_type == 'scene',
+                        InteractionEvent.entity_id == scene_id,
+                        InteractionEvent.client_ts >= window_min,
+                        InteractionEvent.client_ts <= window_max
+                    ).order_by(InteractionEvent.client_ts.asc())
+                ).scalars().all()
+
+                # Decide if this is an append-only fast path
+                # Append-fast heuristic kept but we still include at least 1 prior event for continuity
+                append_fast = False
+                try:
+                    last_ptr = getattr(watch, 'last_processed_event_ts', None)
+                    if last_ptr is not None and batch_min_ts > (last_ptr + timedelta(seconds=TIME_MARGIN_SECONDS)):
+                        append_fast = True
+                except Exception:
+                    pass
+
+                rows_for_replay: list[InteractionEvent] = []
+                # Always keep at least one prior event (most recent) for state continuity
+                if before_rows:
+                    # reverse to chronological order
+                    rows_for_replay.extend(reversed(before_rows))
+                rows_for_replay.extend(window_rows)
+                if not append_fast and after_ev:
+                    rows_for_replay.append(after_ev)
+
+                # compute new segments for this window
+                new_segments = recompute_segments_from_rows(rows_for_replay, sid, scene_id, watch.id, merge_gap=MERGE_GAP_SECONDS)
+
+                # fetch existing segments for this pair
+                existing_segments = db.execute(
+                    select(SceneWatchSegment).where(
                         SceneWatchSegment.session_id == sid,
                         SceneWatchSegment.scene_id == scene_id
+                    ).order_by(SceneWatchSegment.start_s.asc())
+                ).scalars().all()
+
+                # Combine existing and new segments as intervals and merge them into a final set
+                intervals: list[tuple[float,float]] = []
+                for seg in existing_segments:
+                    intervals.append((float(seg.start_s), float(seg.end_s)))
+                for seg in new_segments:
+                    intervals.append((float(seg.start_s), float(seg.end_s)))
+
+                merged_intervals: list[list[float]] = []
+                for seg in sorted(intervals, key=lambda s: s[0]):
+                    if not merged_intervals:
+                        merged_intervals.append([seg[0], seg[1]])
+                        continue
+                    last_iv = merged_intervals[-1]
+                    if seg[0] <= last_iv[1] + MERGE_GAP_SECONDS:
+                        last_iv[1] = max(last_iv[1], seg[1])
+                    else:
+                        merged_intervals.append([seg[0], seg[1]])
+
+                # Convert merged intervals to SceneWatchSegment objects
+                final_segments: list[SceneWatchSegment] = []  # (unused now, replaced by final_rows assembly)
+
+                # Replace existing segments for this pair with the merged final set
+                # Strategy: keep existing non-overlapping segments as-is; for overlapping regions
+                # reuse one existing segment row (expand it) and delete other overlapping fragments.
+                # For final intervals with no overlap, create new rows. This preserves IDs where possible.
+                to_delete_ids = set()
+                inserted = []
+
+                # helper to find existing segments overlapping an interval
+                def overlapping_existing(start: float, end: float) -> list:
+                    out = []
+                    for seg in existing_segments:
+                        if not (seg.end_s < (start - MERGE_GAP_SECONDS) or seg.start_s > (end + MERGE_GAP_SECONDS)):
+                            out.append(seg)
+                    return out
+                for interval in merged_intervals:
+                    fs, fe = float(interval[0]), float(interval[1])
+                    overlaps = overlapping_existing(fs, fe)
+                    if overlaps:
+                        # pick one existing segment as primary (prefer largest overlap)
+                        overlaps_sorted = sorted(overlaps, key=lambda s: max(0.0, min(s.end_s, fe) - max(s.start_s, fs)), reverse=True)
+                        primary = overlaps_sorted[0]
+                        # expand primary to cover union
+                        new_start = min(float(primary.start_s), fs)
+                        new_end = max(float(primary.end_s), fe)
+                        primary.start_s = new_start
+                        primary.end_s = new_end
+                        try:
+                            primary.watched_s = max(0.0, new_end - new_start)
+                        except Exception:
+                            pass
+                        # primary segment is now updated in-place
+                        # mark other overlapping existing segments for deletion
+                        for other in overlaps_sorted[1:]:
+                            to_delete_ids.add(int(other.id))
+                    else:
+                        # create new segment row
+                        new_seg = SceneWatchSegment(scene_watch_id=watch.id, session_id=sid, scene_id=scene_id, start_s=fs, end_s=fe, watched_s=max(0.0, fe-fs))
+                        db.add(new_seg)
+                        inserted.append(new_seg)
+
+                # delete only the marked overlapping fragments (if any)
+                if to_delete_ids:
+                    db.execute(
+                        delete(SceneWatchSegment).where(SceneWatchSegment.id.in_(list(to_delete_ids)))
                     )
-                )
-                for s in segments:
-                    db.add(s)
-                _update_scene_watch_stats(db, watch, segments)
-            update_scene_derived(db, scene_id, ev_list)
+
+                # final set for stats: combine kept existing segments (including updated primaries) and newly inserted
+                final_rows: list[SceneWatchSegment] = []
+                # include existing segments that were not deleted and belong to this pair
+                for seg in existing_segments:
+                    if int(seg.id) in to_delete_ids:
+                        continue
+                    # ensure the segment belongs to this pair (it will)
+                    final_rows.append(seg)
+                final_rows.extend(inserted)
+
+                # Continuous playback extension: if no control events and only progress events advanced position
+                control_types = {'scene_watch_start','scene_watch_pause','scene_watch_complete','scene_seek'}
+                has_control = any(ev.type in control_types for ev in sc_events)
+                has_progress = any(ev.type == 'scene_watch_progress' for ev in sc_events)
+                if (has_progress and not has_control and not new_segments and final_rows):
+                    # derive highest progress position from batch events (prefer numeric positions)
+                    max_progress = None
+                    for ev in sc_events:
+                        if ev.type == 'scene_watch_progress':
+                            try:
+                                pos = (ev.metadata or {}).get('position') if hasattr(ev, 'metadata') else None
+                                if pos is None:
+                                    meta = getattr(ev, 'event_metadata', {}) or {}
+                                    pos = meta.get('position')
+                                if pos is not None:
+                                    pos_f = float(pos)
+                                    if max_progress is None or pos_f > max_progress:
+                                        max_progress = pos_f
+                            except Exception:
+                                pass
+                    if max_progress is not None:
+                        # extend only if within acceptable gap (avoid gigantic jump without a seek)
+                        last_seg = max(final_rows, key=lambda s: (float(s.end_s), float(s.start_s)))
+                        if max_progress > float(last_seg.end_s) and max_progress <= float(last_seg.end_s) + (MERGE_GAP_SECONDS * 4):
+                            try:
+                                last_seg.end_s = max_progress
+                                last_seg.watched_s = max(0.0, float(last_seg.end_s) - float(last_seg.start_s))
+                            except Exception:
+                                pass
+
+                # update stats using final_rows
+                _update_scene_watch_stats(db, watch, final_rows)
+
+                # advance pointer conservatively
+                try:
+                    if getattr(watch, 'last_processed_event_ts', None) is None or batch_max_ts > watch.last_processed_event_ts:
+                        watch.last_processed_event_ts = batch_max_ts
+                        watch.processed_version = getattr(watch, 'processed_version', 0) + 1
+                except Exception:
+                    pass
+            # defer scene_derived updates until after loop (bulk, deduped)
         except Exception as e:  # pragma: no cover
             errors.append(f'summary {sid}/{scene_id}: {e}')
+
+    # Bulk update scene derived metrics once per unique scene to avoid double counting
+    try:
+        _bulk_update_scene_derived(db, ev_list, scene_ids)
+    except Exception as e:  # pragma: no cover
+        errors.append(f'scene_derived_bulk: {e}')
 
 
 def _process_image_derived(db: Session, ev_list: list, errors: list[str]):
