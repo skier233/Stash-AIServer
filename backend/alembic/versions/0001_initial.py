@@ -20,6 +20,20 @@ depends_on = None
 
 
 def upgrade() -> None:  # noqa: D401
+    # plugin_meta (tracks simple plugin state)
+    op.create_table(
+        'plugin_meta',
+        sa.Column('id', sa.Integer, primary_key=True),
+        sa.Column('name', sa.String(length=100), nullable=False, unique=True, index=True),
+        sa.Column('version', sa.String(length=50), nullable=False),
+        sa.Column('required_backend', sa.String(length=50), nullable=False),
+        sa.Column('status', sa.String(length=30), nullable=False, server_default='active'),
+        sa.Column('migration_head', sa.String(length=100), nullable=True),
+        sa.Column('last_error', sa.Text, nullable=True),
+        sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+        sa.Column('updated_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+    )
+    op.create_index('ix_plugin_meta_name', 'plugin_meta', ['name'])
     # task_history (lightweight execution log) — keep minimal needed fields
     op.create_table(
         'task_history',

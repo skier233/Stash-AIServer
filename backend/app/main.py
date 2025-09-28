@@ -14,6 +14,7 @@ from app.tasks.manager import manager
 from app.db.session import engine, Base
 import importlib, pkgutil, pathlib, hashlib, os, sys
 from contextlib import asynccontextmanager
+from app.plugins.loader import initialize_plugins
 from app.services import registry as services_registry  # ensures registry defined
 
 # Ensure tables exist if migrations not yet run (development convenience)
@@ -29,35 +30,41 @@ async def lifespan(app: FastAPI):
     finally-block if/when graceful stop support is implemented for the task
     manager.
     """
+    # Setup / startup
+    # Auto-register service packages (development convenience)
+    _auto_register_services()
+
+    if os.getenv('AIO_DEVMODE'):
+        try:
+            h = hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()[:12]
+            print(f'[dev] main.py sha256 {h}', flush=True)
+        except Exception as _e:
+            print(f'[dev] hash error: {_e}', flush=True)
+
+    # Load plugins (migrations + registration via decorator imports)
     try:
-        # Auto-register discovered service packages (development convenience)
-        _auto_register_services()
+        initialize_plugins()
+    except Exception as e:  # plugin loading errors are logged internally; keep startup going
+        print(f"[plugin] unexpected loader exception: {e}", flush=True)
 
-        # Dev-mode fingerprinting for quick debugging
-        if os.getenv('AIO_DEVMODE'):
-            try:
-                h = hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()[:12]
-                print(f'[dev] main.py sha256 {h}', flush=True)
-            except Exception as _e:
-                print(f'[dev] hash error: {_e}', flush=True)
+    # Start background task manager
+    await manager.start()
 
-        # Start background task manager
-        await manager.start()
+    # Pre-load recommender modules to surface startup failures early
+    _auto_discover_recommenders()
+    if not recommender_registry.list_for_context(RecContext.global_feed):
+        try:
+            importlib.import_module('app.recommendations.recommenders.baseline_popularity.popularity')
+            importlib.import_module('app.recommendations.recommenders.random_recent.random_recent')
+        except Exception as e:
+            print('[recommenders] startup fallback import error', e, flush=True)
+    print(f"[recommenders] initialized count={len(recommender_registry._defs)}", flush=True)
 
-        # Pre-load recommender modules to surface startup failures early
-        _auto_discover_recommenders()
-        if not recommender_registry.list_for_context(RecContext.global_feed):
-            try:
-                importlib.import_module('app.recommendations.recommenders.baseline_popularity.popularity')
-                importlib.import_module('app.recommendations.recommenders.random_recent.random_recent')
-            except Exception as e:
-                print('[recommenders] startup fallback import error', e, flush=True)
-        print(f"[recommenders] initialized count={len(recommender_registry._defs)}", flush=True)
+    # Yield control to application runtime
+    yield
 
-        yield
-    finally:
-        # Placeholder for graceful shutdown (task manager stop/cancel) if/when added
-        pass
+    # Shutdown placeholder (graceful task manager stop could go here later)
+    # Currently no explicit teardown required.
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
