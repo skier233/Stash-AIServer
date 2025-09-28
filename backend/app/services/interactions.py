@@ -8,6 +8,7 @@ from app.models.interaction import InteractionEvent, InteractionSession, SceneWa
 from sqlalchemy.exc import IntegrityError
 import os
 from app.schemas.interaction import InteractionEventIn
+from collections import defaultdict
 
 # Normalize datetime to naive UTC for consistent comparisons/storage
 def _to_naive(dt: datetime | None) -> datetime | None:
@@ -342,86 +343,7 @@ def recompute_segments_from_rows(rows: list, session_id: str, scene_id: str, sce
         out.append(SceneWatchSegment(scene_watch_id=scene_watch_id, session_id=session_id, scene_id=scene_id, start_s=start, end_s=end, watched_s=watched))
     return out
  
-def update_scene_derived(db: Session, scene_id: str, ev_list: list):
-    # Touch last_viewed_at and update view_count and derived_o_count.
-    # view_count increments by number of scene_view events in ev_list for this scene.
-    last_view = None
-    view_events = 0
-    for e in ev_list:
-        if e.entity_id == scene_id and e.entity_type == 'scene' and e.type == 'scene_view':
-            last_view = e.ts
-            view_events += 1
-
-    # Ensure a SceneDerived row exists so we can persist derived_o_count even when
-    # there are no explicit scene_view events in the batch (e.g. only scene_watch events).
-    existing = db.execute(select(SceneDerived).where(SceneDerived.scene_id==scene_id)).scalar_one_or_none()
-    if existing:
-        if last_view is not None:
-            existing.last_viewed_at = last_view
-        if view_events:
-            existing.view_count = existing.view_count + view_events
-    else:
-        # create with whatever view_events we have (may be zero)
-        db.add(SceneDerived(scene_id=scene_id, last_viewed_at=last_view, derived_o_count=0, view_count=view_events))
-
-    # Recompute derived_o_count using a union of signals so flaky timestamps
-    # or reordering won't prevent expected updates. We consider a session
-    # "qualified" if ANY of the following hold:
-    #  - InteractionSession where this scene is last_scene_id and session duration >= threshold
-    #  - SceneWatch for this scene where page_left_at - page_entered_at >= threshold
-    #  - SceneWatch where total_watched_s >= threshold
-    try:
-        import os
-        min_session_minutes = int(os.getenv('INTERACTION_MIN_SESSION_MINUTES', '10'))
-        min_session_seconds = min_session_minutes * 60
-
-        qualified_session_ids: set[str] = set()
-
-        # 1) Sessions where this scene was the last entity in the session and session duration >= threshold
-        sessions = db.execute(select(InteractionSession).where(
-            (InteractionSession.last_entity_type == 'scene') & (InteractionSession.last_entity_id == scene_id)
-        )).scalars().all()
-        for sess in sessions:
-            try:
-                if sess.last_event_ts and sess.session_start_ts:
-                    duration = (sess.last_event_ts - sess.session_start_ts).total_seconds()
-                    if duration >= min_session_seconds:
-                        qualified_session_ids.add(sess.session_id)
-            except Exception:
-                # ignore malformed timestamps for a best-effort count
-                continue
-
-        # 2) SceneWatch rows where page duration meets threshold
-        try:
-            from app.models.interaction import SceneWatch
-            watches = db.execute(select(SceneWatch).where(SceneWatch.scene_id == scene_id)).scalars().all()
-            for w in watches:
-                if w.page_entered_at and w.page_left_at:
-                    try:
-                        dur = (w.page_left_at - w.page_entered_at).total_seconds()
-                        if dur >= min_session_seconds:
-                            qualified_session_ids.add(w.session_id)
-                    except Exception:
-                        pass
-                # also consider total_watched_s as qualification
-                try:
-                    if getattr(w, 'total_watched_s', 0) and w.total_watched_s >= float(min_session_seconds):
-                        qualified_session_ids.add(w.session_id)
-                except Exception:
-                    pass
-        except Exception:
-            # If SceneWatch model/table isn't present or query fails, ignore
-            pass
-
-        # Persist the computed derived_o_count
-        existing = db.execute(select(SceneDerived).where(SceneDerived.scene_id==scene_id)).scalar_one_or_none()
-        if existing:
-            existing.derived_o_count = len(qualified_session_ids)
-    except Exception:
-        # best-effort; don't fail ingestion on analytics recompute
-        pass
-
-    # image-derived is handled separately
+    # (Removed in favor of bulk implementation)
 
 def _update_scene_watch_stats(db: Session, scene_watch: SceneWatch, segments: list[SceneWatchSegment]):
     """Update scene watch statistics based on computed segments"""
@@ -515,15 +437,105 @@ def update_image_derived(db: Session, image_id: str, ev_list: list):
         pass
 
 
-def _bulk_update_scene_derived(db: Session, ev_list: list, scene_ids: set[str]):
-    """Run update_scene_derived once per scene id (deduped) after processing segments.
-    Avoids counting view events multiple times when multiple (session,scene) pairs of same scene appear in a batch.
+def _bulk_update_scene_derived(db: Session, scene_ev_list: list, scene_ids: set[str]):
+    """Efficiently update SceneDerived rows for a set of scene_ids using batched queries.
+
+    Logic per scene:
+      - view_count += number of scene_view events in this batch for that scene
+      - last_viewed_at updated to latest scene_view in batch if present
+      - Ensure row exists (create if absent)
+      - derived_o_count = count of distinct sessions qualifying by any rule:
+            * InteractionSession: last_entity == scene and (last_event_ts - session_start_ts) >= threshold
+            * SceneWatch: (page_left_at - page_entered_at) >= threshold
+            * SceneWatch: total_watched_s >= threshold
+
+    All heavy queries are done in bulk across all target scenes.
     """
+    if not scene_ids:
+        return
+    try:
+        min_session_minutes = int(os.getenv('INTERACTION_MIN_SESSION_MINUTES', '10'))
+    except Exception:
+        min_session_minutes = 10
+    min_session_seconds = min_session_minutes * 60
+
+    # 1. Aggregate batch scene_view counts & last_view timestamps in one pass over scene_ev_list
+    view_counts: dict[str,int] = defaultdict(int)
+    last_view_ts: dict[str,datetime] = {}
+    for e in scene_ev_list:
+        # caller guarantees these are scene-relevant events and filtered to scene_ids
+        if getattr(e, 'type', None) == 'scene_view' and getattr(e, 'entity_id', None) in scene_ids:
+            sid = e.entity_id
+            view_counts[sid] += 1
+            ts = getattr(e, 'ts', None)
+            if ts is not None:
+                prev = last_view_ts.get(sid)
+                if prev is None or ts > prev:
+                    last_view_ts[sid] = ts
+
+    # 2. Fetch existing SceneDerived rows in bulk
+    existing_rows = db.execute(select(SceneDerived).where(SceneDerived.scene_id.in_(list(scene_ids)))).scalars().all()
+    existing_map = {r.scene_id: r for r in existing_rows}
+
+    # 3. Upsert basic fields (view_count, last_viewed_at)
+    to_create: list[SceneDerived] = []
     for sid in scene_ids:
+        row = existing_map.get(sid)
+        if row:
+            # increment view_count
+            inc = view_counts.get(sid, 0)
+            if inc:
+                try:
+                    row.view_count = (row.view_count or 0) + inc
+                except Exception:
+                    pass
+            lv = last_view_ts.get(sid)
+            if lv is not None:
+                if row.last_viewed_at is None or lv > row.last_viewed_at:
+                    row.last_viewed_at = lv
+        else:
+            to_create.append(SceneDerived(scene_id=sid, last_viewed_at=last_view_ts.get(sid), view_count=view_counts.get(sid,0), derived_o_count=0))
+    if to_create:
+        for obj in to_create:
+            db.add(obj)
         try:
-            update_scene_derived(db, sid, ev_list)
+            db.flush()
+        except Exception:
+            pass
+        # refresh existing_map with any newly created
+        for obj in to_create:
+            existing_map[obj.scene_id] = obj
+
+    # 4. Compute derived_o_count in bulk
+    qualified_sessions_by_scene: dict[str,set[str]] = {sid: set() for sid in scene_ids}
+
+    # 4a. Sessions qualification (last entity == scene)
+    try:
+        session_rows = db.execute(
+            select(InteractionSession).where(
+                (InteractionSession.last_entity_type == 'scene') & (InteractionSession.last_entity_id.in_(list(scene_ids)))
+            )
+        ).scalars().all()
+        for s in session_rows:
+            try:
+                if s.last_event_ts and s.session_start_ts:
+                    dur = (s.last_event_ts - s.session_start_ts).total_seconds()
+                    if dur >= min_session_seconds:
+                        qualified_sessions_by_scene.setdefault(s.last_entity_id, set()).add(s.session_id)
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    # 5. Persist derived_o_count
+    for sid, row in existing_map.items():
+        try:
+            qual = qualified_sessions_by_scene.get(sid)
+            if qual is not None:
+                row.derived_o_count = len(qual)
         except Exception:
             continue
+    # image-derived handled elsewhere
 
 
 # -------------------------- Helper aggregation sections --------------------------
@@ -852,7 +864,9 @@ def _process_scene_summaries(db: Session, ev_list: list, errors: list[str]):
 
     # Bulk update scene derived metrics once per unique scene to avoid double counting
     try:
-        _bulk_update_scene_derived(db, ev_list, scene_ids)
+        # Flatten only the scene_view events we grouped above (we only need scene_view for derived updates)
+        scene_ev_list = [ev for evs in scene_events_by_pair.values() for ev in evs if getattr(ev, 'type', None) == 'scene_view']
+        _bulk_update_scene_derived(db, scene_ev_list, scene_ids)
     except Exception as e:  # pragma: no cover
         errors.append(f'scene_derived_bulk: {e}')
 
