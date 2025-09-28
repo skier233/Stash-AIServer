@@ -1,7 +1,7 @@
 from __future__ import annotations
 import pathlib, yaml, importlib, sys, traceback
 from dataclasses import dataclass
-from typing import List
+from typing import List, Dict, Set
 from packaging import version as _v  # if packaging not present this will fail; add to requirements if needed
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -17,6 +17,7 @@ class PluginManifest:
     version: str
     required_backend: str
     files: List[str]
+    depends_on: List[str]
 
 def _parse_manifest(path: pathlib.Path) -> PluginManifest | None:
     try:
@@ -27,6 +28,9 @@ def _parse_manifest(path: pathlib.Path) -> PluginManifest | None:
         files = data.get('files', [])
         if not isinstance(files, list):
             files = []
+        depends_on = data.get('depends_on', []) or []
+        if not isinstance(depends_on, list):
+            depends_on = []
         if not (name and ver and req):
             print(f"[plugin] invalid manifest missing fields: {path}", flush=True)
             return None
@@ -34,7 +38,7 @@ def _parse_manifest(path: pathlib.Path) -> PluginManifest | None:
         if path.parent.name != name:
             print(f"[plugin] manifest name mismatch dir={path.parent.name} name={name}", flush=True)
             return None
-        return PluginManifest(name=name, version=str(ver), required_backend=str(req), files=[str(f) for f in files])
+        return PluginManifest(name=name, version=str(ver), required_backend=str(req), files=[str(f) for f in files], depends_on=[str(d) for d in depends_on])
     except Exception as e:
         print(f"[plugin] failed to parse {path}: {e}", flush=True)
         return None
@@ -131,35 +135,101 @@ def _import_files(manifest: PluginManifest):
             raise
 
 def initialize_plugins():
+    """Load plugins respecting inter-plugin dependencies.
+
+    Manifest may declare:
+      depends_on: [other_plugin_names]
+
+    Status codes:
+      active                - loaded successfully
+      error                 - runtime error during migration/import
+      incompatible          - backend version constraint not met
+      dependency_missing    - manifest lists plugin not present
+      dependency_inactive   - dependency present but not active (errored/incompatible)
+      dependency_cycle      - cycle detected preventing load
+    """
     if not PLUGIN_DIR.exists():
         return
     db = SessionLocal()
     try:
+        # Gather manifests
+        manifests: Dict[str, PluginManifest] = {}
         for manifest_path in PLUGIN_DIR.glob('*/plugin.yml'):
-            manifest = _parse_manifest(manifest_path)
-            if not manifest:
-                continue
-            meta = _load_or_create_meta(db, manifest)
-            # Check compatibility
-            if not _backend_version_ok(manifest.required_backend):
-                meta.status = 'incompatible'
+            m = _parse_manifest(manifest_path)
+            if m:
+                manifests[m.name] = m
+
+        # Pre-create metadata rows (or load existing)
+        metas: Dict[str, PluginMeta] = {name: _load_or_create_meta(db, mf) for name, mf in manifests.items()}
+
+        # Identify missing dependencies (not even declared as plugins)
+        missing_map: Dict[str, List[str]] = {}
+        for name, mf in manifests.items():
+            missing = [d for d in mf.depends_on if d not in manifests]
+            if missing:
+                missing_map[name] = missing
+                meta = metas[name]
+                meta.status = 'dependency_missing'
+                meta.last_error = f"missing deps: {missing}"
                 db.commit()
-                print(f"[plugin] name={manifest.name} incompatible required_backend={manifest.required_backend}", flush=True)
-                continue
-            try:
-                # Migrations first
-                _apply_migrations(manifest, meta)
-                # Import declared files (decorators will self-register)
-                _import_files(manifest)
-                # Update meta
-                meta.version = manifest.version
-                if meta.status != 'error':
-                    meta.status = 'active'
-                db.commit()
-                print(f"[plugin] name={manifest.name} status={meta.status}", flush=True)
-            except Exception:
-                meta.status = 'error'
-                meta.last_error = traceback.format_exc()[-4000:]
+                print(f"[plugin] name={name} dependency_missing deps={missing}", flush=True)
+
+        # Active set for loaded plugins
+        active: Set[str] = set()
+
+        # Attempt iterative load until no progress
+        remaining: Set[str] = {n for n in manifests if n not in missing_map}
+        progressed = True
+        while progressed and remaining:
+            progressed = False
+            for name in list(remaining):
+                mf = manifests[name]
+                # All deps must be active
+                if any(d not in active for d in mf.depends_on):
+                    continue
+                meta = metas[name]
+                # Check backend compatibility before migrations/import
+                if not _backend_version_ok(mf.required_backend):
+                    meta.status = 'incompatible'
+                    db.commit()
+                    print(f"[plugin] name={name} incompatible required_backend={mf.required_backend}", flush=True)
+                    remaining.remove(name)
+                    progressed = True
+                    continue
+                try:
+                    _apply_migrations(mf, meta)
+                    _import_files(mf)
+                    meta.version = mf.version
+                    if meta.status != 'error':
+                        meta.status = 'active'
+                    db.commit()
+                    active.add(name)
+                    remaining.remove(name)
+                    progressed = True
+                    print(f"[plugin] name={name} status={meta.status}", flush=True)
+                except Exception:
+                    meta.status = 'error'
+                    meta.last_error = traceback.format_exc()[-4000:]
+                    db.commit()
+                    remaining.remove(name)
+                    progressed = True
+
+        # Any still remaining after no progress -> cycle or inactive dependency
+        if remaining:
+            for name in remaining:
+                mf = manifests[name]
+                meta = metas[name]
+                unmet = [d for d in mf.depends_on if d not in active]
+                # Distinguish cycle vs dependency that failed separately
+                # If all unmet are themselves in remaining, it's a cycle
+                if all(d in remaining for d in unmet) and unmet:
+                    meta.status = 'dependency_cycle'
+                    meta.last_error = f"cycle with deps {unmet}"
+                    print(f"[plugin] name={name} dependency_cycle deps={unmet}", flush=True)
+                else:
+                    meta.status = 'dependency_inactive'
+                    meta.last_error = f"inactive deps: {unmet}"
+                    print(f"[plugin] name={name} dependency_inactive deps={unmet}", flush=True)
                 db.commit()
     finally:
         try:
