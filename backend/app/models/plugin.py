@@ -53,6 +53,11 @@ class PluginSetting(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     plugin_name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     key: Mapped[str] = mapped_column(String(100), nullable=False)
+    type: Mapped[str] = mapped_column(String(32), nullable=False, default='string')
+    label: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    default_value: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    options: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # store list or dict
     value: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now(timezone.utc), onupdate=datetime.now(timezone.utc), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now(timezone.utc), nullable=False)

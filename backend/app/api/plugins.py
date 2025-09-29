@@ -46,10 +46,16 @@ class PluginSourceModel(PluginSourceCreate):
     class Config:
         orm_mode = True
 
-class PluginSettingModel(BaseModel):
-    plugin_name: str
+
+
+class PluginConfigOption(BaseModel):
     key: str
-    value: Any | None = None
+    label: Optional[str] = None
+    type: str = 'string'  # string|number|boolean|select
+    default: Optional[Any] = None
+    options: Optional[List[Any]] = None
+    description: Optional[str] = None
+    value: Optional[Any] = None
 
 class RefreshResult(BaseModel):
     source: str
@@ -57,9 +63,24 @@ class RefreshResult(BaseModel):
     errors: List[str] = []
 
 @router.get('/installed', response_model=List[PluginMetaModel])
-async def list_installed(db: Session = Depends(get_db)):
-    rows = db.execute(select(PluginMeta)).scalars().all()
-    return rows
+async def list_installed(active_only: bool = False, include_removed: bool = False, db: Session = Depends(get_db)):
+    """List plugin metadata rows.
+
+    Query params:
+      active_only: if true, return only rows whose status == 'active'
+      include_removed: if false, filter out rows with status == 'removed'
+    By default we return everything except removed to avoid confusing UI listing.
+    """
+    q = select(PluginMeta)
+    rows = db.execute(q).scalars().all()
+    out = []
+    for r in rows:
+        if active_only and r.status != 'active':
+            continue
+        if not include_removed and r.status == 'removed':
+            continue
+        out.append(r)
+    return out
 
 @router.get('/sources', response_model=List[PluginSourceModel])
 async def list_sources(db: Session = Depends(get_db)):
@@ -88,10 +109,24 @@ async def delete_source(source_name: str, db: Session = Depends(get_db)):
     db.commit()
     return {'status': 'deleted'}
 
-@router.get('/settings/{plugin_name}', response_model=List[PluginSettingModel])
-async def list_settings(plugin_name: str, db: Session = Depends(get_db)):
+
+
+@router.get('/config/{plugin_name}', response_model=List[PluginConfigOption])
+async def get_plugin_config(plugin_name: str, db: Session = Depends(get_db)):
+    """Return stored setting definitions + current values for a plugin."""
     rows = db.execute(select(PluginSetting).where(PluginSetting.plugin_name == plugin_name)).scalars().all()
-    return [{'plugin_name': r.plugin_name, 'key': r.key, 'value': r.value} for r in rows]
+    out: List[PluginConfigOption] = []
+    for r in rows:
+        out.append(PluginConfigOption(
+            key=r.key,
+            label=r.label or r.key,
+            type=r.type or 'string',
+            default=r.default_value,
+            options=r.options if isinstance(r.options, list) else r.options,  # allow list or dict
+            description=r.description,
+            value=r.value if r.value is not None else r.default_value,
+        ))
+    return out
 
 class SettingUpsert(BaseModel):
     value: Any | None = None
@@ -99,22 +134,38 @@ class SettingUpsert(BaseModel):
 @router.put('/settings/{plugin_name}/{key}')
 async def upsert_setting(plugin_name: str, key: str, payload: SettingUpsert, db: Session = Depends(get_db)):
     row = db.execute(select(PluginSetting).where(PluginSetting.plugin_name == plugin_name, PluginSetting.key == key)).scalar_one_or_none()
-    if row:
-        row.value = payload.value
-    else:
-        row = PluginSetting(plugin_name=plugin_name, key=key, value=payload.value)
+    if not row:
+        # Create with minimal metadata; caller can later register richer definition
+        row = PluginSetting(plugin_name=plugin_name, key=key, type='string', value=None, label=key)
         db.add(row)
+        db.commit()
+        db.refresh(row)
+    # Basic validation by type
+    v = payload.value
+    if v is not None:
+        if row.type == 'number':
+            try:
+                v = float(v)
+            except Exception:
+                raise HTTPException(status_code=400, detail='INVALID_NUMBER')
+        elif row.type == 'boolean':
+            if not isinstance(v, bool):
+                # Accept 0/1/'true'/'false'
+                if isinstance(v, (int, float)):
+                    v = bool(v)
+                elif isinstance(v, str) and v.lower() in ('true','false'):
+                    v = v.lower() == 'true'
+                else:
+                    raise HTTPException(status_code=400, detail='INVALID_BOOLEAN')
+        elif row.type == 'select' and row.options:
+            opts = row.options if isinstance(row.options, list) else []
+            if v not in opts:
+                raise HTTPException(status_code=400, detail='INVALID_OPTION')
+    # Null means reset to default
+    row.value = v
     db.commit()
     return {'status': 'ok'}
 
-@router.delete('/settings/{plugin_name}/{key}')
-async def delete_setting(plugin_name: str, key: str, db: Session = Depends(get_db)):
-    row = db.execute(select(PluginSetting).where(PluginSetting.plugin_name == plugin_name, PluginSetting.key == key)).scalar_one_or_none()
-    if not row:
-        raise HTTPException(status_code=404, detail='NOT_FOUND')
-    db.delete(row)
-    db.commit()
-    return {'status': 'deleted'}
 
 
 INDEX_EXPECTED_SCHEMA = 1

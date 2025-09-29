@@ -96,18 +96,11 @@ interface SceneWatchState {
   completed?: boolean;
 }
 
-// Derive backend base similarly to AIButton.tsx so we hit the correct host/port.
+// Resolve backend base using the shared helper when available.
 function _resolveBackendBase(): string {
-  try {
-    const explicit = (window as any).AI_BACKEND_URL as string | undefined;
-    if (explicit) return explicit.replace(/\/$/, '');
-    let origin = (location && location.origin) || '';
-    if (origin) {
-      try { const u = new URL(origin); if (u.port === '3000') { u.port = '8000'; origin = u.toString(); } } catch { /* ignore */ }
-    }
-    if (!origin) origin = 'http://localhost:8000';
-    return origin.replace(/\/$/, '');
-  } catch { return 'http://localhost:8000'; }
+  const globalFn = (window as any).AIDefaultBackendBase;
+  if (typeof globalFn !== 'function') throw new Error('AIDefaultBackendBase not initialized. Ensure backendBase is loaded first.');
+  return globalFn();
 }
 
 // ------------------------------ Tracker Class ------------------------------
@@ -757,13 +750,8 @@ export class InteractionTracker {
         // Fallback: try fetch with keepalive (best-effort)
         try {
           const f = fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true });
+          f.then(res => { if (res && res.ok) { this.queue = []; this.persistQueue(); } }).catch(()=>{});
           // Note: can't reliably await in unload, but attempt to clear queue anyway
-          f.then(res => {
-            if (res && res.ok) {
-              this.queue = [];
-              this.persistQueue();
-            }
-          }).catch(() => { /* ignore */ });
         } catch (e) {
           // ignore
         }

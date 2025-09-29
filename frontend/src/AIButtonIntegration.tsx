@@ -20,6 +20,7 @@
 
   function getMinimalButton(){ return g.MinimalAIButton || g.AIButton; }
   function getTaskDashboard(){ return g.TaskDashboard || g.AITaskDashboard; }
+  function getPluginSettings(){ return g.AIPluginSettings; }
 
   // Main nav utility items: inject AI button + nav link
   try {
@@ -43,6 +44,31 @@
     dlog('Registered /plugins/ai-tasks route');
   } catch(e){ if (debug) console.warn('[AIIntegration] route register failed', e); }
 
+  // Register settings route (event-driven, no polling)
+  try {
+    const SettingsWrapper = () => {
+      const [Comp, setComp] = React.useState(()=> getPluginSettings());
+      React.useEffect(() => {
+        if (Comp) return; // already there
+        const handler = () => {
+          const found = getPluginSettings();
+          if (found) {
+            if (debug) console.debug('[AIIntegration] AIPluginSettingsReady event captured');
+            setComp(() => found);
+          }
+        };
+        window.addEventListener('AIPluginSettingsReady', handler);
+        // one immediate async attempt (in case script loaded right after)
+        setTimeout(handler, 0);
+        return () => window.removeEventListener('AIPluginSettingsReady', handler);
+      }, [Comp]);
+      const C = Comp;
+      return C ? React.createElement(C, {}) : React.createElement('div', { style:{padding:16}}, 'Loading AI Plugin Settings...');
+    };
+    PluginApi.register.route('/plugins/ai-settings', () => React.createElement(SettingsWrapper));
+    dlog('Registered /plugins/ai-settings route (event)');
+  } catch(e){ if (debug) console.warn('[AIIntegration] settings route register failed', e); }
+
   // Settings tools entry
   try {
     PluginApi.patch.before('SettingsToolsSection', function(props:any){
@@ -51,7 +77,10 @@
       return [{ children: (<>
         {props.children}
         <Setting heading={
-          Link ? <Link to="/plugins/ai-tasks"><Button>AI Tasks</Button></Link> : React.createElement(Button, { onClick:()=> (location.href = '#/plugins/ai-tasks') }, 'AI Tasks')
+          Link ? <Link to="/plugins/ai-tasks"><Button>AI Tasks</Button></Link> : React.createElement(Button, { onClick:()=> (location.href = '/plugins/ai-tasks') }, 'AI Tasks')
+        } />
+        <Setting heading={
+          Link ? <Link to="/plugins/ai-settings"><Button>AI Plugin Settings</Button></Link> : React.createElement(Button, { onClick:()=> (location.href = '/plugins/ai-settings') }, 'AI Plugin Settings')
         } />
       </>)}];
     });

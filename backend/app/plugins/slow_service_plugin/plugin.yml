@@ -1,7 +1,7 @@
 name: slow_service_plugin
 human_name: Slow Service
 server_link: https://github.com/example/slow-service
-version: 0.1.0
+version: 0.2.0
 required_backend: '>=0.0.0'
 files:
   - service

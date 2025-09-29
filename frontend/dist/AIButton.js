@@ -10,19 +10,10 @@
 //  - Only parent/controller task IDs are tracked in activeTasks; child task events still drive progress inference.
 // ---- Small internal helpers (pure / non-visual) ----
 const getBackendBase = () => {
-    const explicit = window.AI_BACKEND_URL;
-    if (explicit)
-        return explicit.replace(/\/$/, '');
-    const loc = (location && location.origin) || '';
-    try {
-        const u = new URL(loc);
-        if (u.port === '3000') {
-            u.port = '8000';
-            return u.toString().replace(/\/$/, '');
-        }
-    }
-    catch { }
-    return (loc || 'http://localhost:8000').replace(/\/$/, '');
+    const fn = window.AIDefaultBackendBase;
+    if (typeof fn !== 'function')
+        throw new Error('AIDefaultBackendBase not initialized. Ensure backendBase is loaded first.');
+    return fn();
 };
 const debugEnabled = () => !!window.AIDebug;
 const dlog = (...a) => { if (debugEnabled())

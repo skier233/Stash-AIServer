@@ -4,14 +4,16 @@ version: 0.4.0-core-min
 ui:
   javascript:
     - dist/pageContext.js
+    - dist/BackendBase.js
     - dist/RecommendationUtils.js
     - dist/AIButton.js
-    - dist/AIButtonIntegration.js
     - dist/TaskDashboard.js
+    - dist/PluginSettings.js      # ensure settings component registers before integration
     - dist/RecommendedScenes.js
     - dist/SimilarScenes.js
     - dist/SimilarTabIntegration.js
     - dist/InteractionTracker.js
+    - dist/AIButtonIntegration.js # integration last after components
   css:
     - AIOverhaul.css
     - src/recommendedscenes.css

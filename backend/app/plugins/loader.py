@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 from app.db.session import SessionLocal, engine
 from app.core.config import settings
-from app.models.plugin import PluginMeta
+from app.models.plugin import PluginMeta, PluginSetting
+from app.plugins.settings_registry import register_settings
 import tempfile, zipfile, shutil
 from io import BytesIO
 import httpx
@@ -167,10 +168,16 @@ def initialize_plugins():
     try:
         # Gather manifests
         manifests: Dict[str, PluginManifest] = {}
+        manifest_data_map = {}
         for manifest_path in PLUGIN_DIR.glob('*/plugin.yml'):
+            try:
+                raw = yaml.safe_load(manifest_path.read_text()) or {}
+            except Exception:
+                raw = {}
             m = _parse_manifest(manifest_path)
             if m:
                 manifests[m.name] = m
+                manifest_data_map[m.name] = raw
 
         # Pre-create metadata rows (or load existing)
         metas: Dict[str, PluginMeta] = {name: _load_or_create_meta(db, mf) for name, mf in manifests.items()}
@@ -211,6 +218,25 @@ def initialize_plugins():
                     continue
                 try:
                     _apply_migrations(mf, meta)
+                    # Register settings (if present in manifest) before importing Python code so code can rely on them
+                    raw = manifest_data_map.get(name, {})
+                    settings_defs = []
+                    cfg = raw.get('settings') or raw.get('ui_settings') or raw.get('config') or []
+                    if isinstance(cfg, dict):
+                        for k,v in cfg.items():
+                            if isinstance(v, dict):
+                                settings_defs.append({'key': k, **v})
+                            else:
+                                settings_defs.append({'key': k, 'default': v})
+                    elif isinstance(cfg, list):
+                        for item in cfg:
+                            if isinstance(item, dict):
+                                settings_defs.append(item)
+                    if settings_defs:
+                        try:
+                            register_settings(db, mf.name, settings_defs)
+                        except Exception as e:
+                            print(f"[plugin] settings registration failed name={mf.name}: {e}", flush=True)
                     _import_files(mf)
                     meta.version = mf.version
                     meta.human_name = mf.human_name
