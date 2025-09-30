@@ -5,8 +5,7 @@ from typing import List, Optional, Any
 import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import select, delete
-import httpx, json, traceback
-from packaging import version as _v
+import httpx, traceback  # json unused
 from app.db.session import SessionLocal
 from app.models.plugin import PluginMeta, PluginSource, PluginCatalog, PluginSetting
 from app.plugins import loader as plugin_loader
@@ -48,12 +47,12 @@ class PluginSourceModel(PluginSourceCreate):
 
 
 
-class PluginConfigOption(BaseModel):
+class PluginSettingModel(BaseModel):
     key: str
     label: Optional[str] = None
-    type: str = 'string'  # string|number|boolean|select
+    type: str = 'string'
     default: Optional[Any] = None
-    options: Optional[List[Any]] = None
+    options: Optional[Any] = None
     description: Optional[str] = None
     value: Optional[Any] = None
 
@@ -111,22 +110,19 @@ async def delete_source(source_name: str, db: Session = Depends(get_db)):
 
 
 
-@router.get('/config/{plugin_name}', response_model=List[PluginConfigOption])
-async def get_plugin_config(plugin_name: str, db: Session = Depends(get_db)):
-    """Return stored setting definitions + current values for a plugin."""
+@router.get('/settings/{plugin_name}', response_model=List[PluginSettingModel])
+async def list_plugin_settings(plugin_name: str, db: Session = Depends(get_db)):
+    """List stored plugin settings (definitions + current values)."""
     rows = db.execute(select(PluginSetting).where(PluginSetting.plugin_name == plugin_name)).scalars().all()
-    out: List[PluginConfigOption] = []
-    for r in rows:
-        out.append(PluginConfigOption(
-            key=r.key,
-            label=r.label or r.key,
-            type=r.type or 'string',
-            default=r.default_value,
-            options=r.options if isinstance(r.options, list) else r.options,  # allow list or dict
-            description=r.description,
-            value=r.value if r.value is not None else r.default_value,
-        ))
-    return out
+    return [PluginSettingModel(
+        key=r.key,
+        label=r.label or r.key,
+        type=r.type or 'string',
+        default=r.default_value,
+        options=r.options,
+        description=r.description,
+        value=(r.value if r.value is not None else r.default_value)
+    ) for r in rows]
 
 class SettingUpsert(BaseModel):
     value: Any | None = None
@@ -169,12 +165,6 @@ async def upsert_setting(plugin_name: str, key: str, payload: SettingUpsert, db:
 
 
 INDEX_EXPECTED_SCHEMA = 1
-
-def _semantic_newer(a: str, b: str) -> bool:
-    try:
-        return _v.parse(a) > _v.parse(b)
-    except Exception:
-        return a > b
 
 @router.post('/sources/{source_name}/refresh', response_model=RefreshResult)
 async def refresh_source(source_name: str, db: Session = Depends(get_db)):

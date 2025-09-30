@@ -51,7 +51,7 @@ const PluginSettings = () => {
   const [installed, setInstalled] = React.useState([] as any as InstalledPlugin[]);
   const [sources, setSources] = React.useState([] as any as Source[]);
   const [catalog, setCatalog] = React.useState({} as Record<string, CatalogEntry[]>);
-  const [pluginConfigs, setPluginConfigs] = React.useState({} as Record<string, any[]>);
+  const [pluginSettings, setPluginSettings] = React.useState({} as Record<string, any[]>);
   const [openConfig, setOpenConfig] = React.useState(null as string | null);
   const [selectedSource, setSelectedSource] = React.useState(null as string | null);
   const [loading, setLoading] = React.useState({installed:false, sources:false, catalog:false} as {installed:boolean; sources:boolean; catalog:boolean; action?:string});
@@ -128,10 +128,10 @@ const PluginSettings = () => {
     try { await jfetch(`${backendBase}/api/v1/plugins/remove`, { method:'POST', body: JSON.stringify({ plugin }) }); await loadInstalled(); } catch(e:any){ setError(e.message); }
   }, [backendBase, loadInstalled]);
 
-  const loadPluginConfig = React.useCallback(async (pluginName: string) => {
+  const loadPluginSettings = React.useCallback(async (pluginName: string) => {
     try {
-      const data = await jfetch(`${backendBase}/api/v1/plugins/config/${pluginName}`);
-      setPluginConfigs((p:any) => ({...p, [pluginName]: Array.isArray(data)?data:[]}));
+      const data = await jfetch(`${backendBase}/api/v1/plugins/settings/${pluginName}`);
+      setPluginSettings((p:any) => ({...p, [pluginName]: Array.isArray(data)?data:[]}));
     } catch(e:any) { setError(e.message); }
   }, [backendBase]);
 
@@ -139,7 +139,7 @@ const PluginSettings = () => {
     try {
       await jfetch(`${backendBase}/api/v1/plugins/settings/${pluginName}/${encodeURIComponent(key)}`, { method:'PUT', body: JSON.stringify({ value }) });
       // update local copy
-      setPluginConfigs((p:any) => {
+      setPluginSettings((p:any) => {
         const cur = (p[pluginName] || []).map((f:any) => f.key === key ? ({...f, value}) : f);
         return {...p, [pluginName]: cur};
       });
@@ -219,7 +219,7 @@ const PluginSettings = () => {
                 <button style={smallBtn} onClick={async ()=>{
                   if (openConfig === p.name) { setOpenConfig(null); return; }
                   setOpenConfig(p.name);
-                  if (!pluginConfigs[p.name]) await loadPluginConfig(p.name);
+                  if (!pluginSettings[p.name]) await loadPluginSettings(p.name);
                 }}>{openConfig===p.name ? 'Close' : 'Configure'}</button>
               </td>
             </tr>;
@@ -348,13 +348,13 @@ const PluginSettings = () => {
       <div style={sectionStyle}>
         <h3 style={headingStyle}>Installed Plugins {loading.installed && <span style={{fontSize:11, opacity:0.7}}>loading…</span>}</h3>
         {renderInstalled()}
-        {openConfig && pluginConfigs[openConfig] && <div style={{marginTop:12, padding:10, border:'1px solid #333', borderRadius:6, background:'#151515'}}>
+  {openConfig && pluginSettings[openConfig] && <div style={{marginTop:12, padding:10, border:'1px solid #333', borderRadius:6, background:'#151515'}}>
           <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
             <div style={{fontSize:13}}><strong>Configure {openConfig}</strong></div>
             <div style={{fontSize:12, opacity:0.7}}><button style={smallBtn} onClick={()=>{ setOpenConfig(null); }}>Close</button></div>
           </div>
           <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop:10}}>
-            {pluginConfigs[openConfig].map((f:any)=>(<div key={f.key} style={{minWidth:200}}><FieldRenderer f={f} pluginName={openConfig} /></div>))}
+            {pluginSettings[openConfig].map((f:any)=>(<div key={f.key} style={{minWidth:200}}><FieldRenderer f={f} pluginName={openConfig} /></div>))}
           </div>
         </div>}
       </div>

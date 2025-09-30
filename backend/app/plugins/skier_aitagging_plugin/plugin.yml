@@ -1,8 +1,0 @@
-name: skier_aitagging_plugin
-human_name: Skier AI Tagging
-server_link: https://github.com/example/ai-tagging
-version: 0.2.0
-required_backend: '>=0.0.0'
-files:
-  - service
-depends_on: []

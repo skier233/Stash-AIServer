@@ -3,8 +3,8 @@ description: Core AI action button with Similar Scenes tab
 version: 0.4.0-core-min
 ui:
   javascript:
-    - dist/pageContext.js
     - dist/BackendBase.js
+    - dist/pageContext.js
     - dist/RecommendationUtils.js
     - dist/AIButton.js
     - dist/TaskDashboard.js
@@ -18,4 +18,9 @@ ui:
     - AIOverhaul.css
     - src/recommendedscenes.css
     - src/css/SimilarScenes.css
+  csp:
+    connect-src:
+      - http://localhost:8000
+      - ws://localhost:8000
+      - https://localhost:8000
 interface: raw

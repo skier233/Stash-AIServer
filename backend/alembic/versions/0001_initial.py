@@ -3,7 +3,6 @@
 This replaces the earlier incremental chain (legacy files 0001-0006). It is
 aligned with the current ORM models in `app.models.interaction`.
 
-NO ai_requests table (feature removed).
 
 If you have an existing dev DB that previously ran old migrations, either
 rebuild it fresh or manually stamp:
