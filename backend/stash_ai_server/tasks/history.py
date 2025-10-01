@@ -2,7 +2,7 @@ from __future__ import annotations
 from sqlalchemy import String, Integer, Float, DateTime, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime
-from app.db.session import Base
+from stash_ai_server.db.session import Base
 
 
 class TaskHistory(Base):

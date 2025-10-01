@@ -39,7 +39,7 @@ try:
 except Exception:
     pass
 
-# Provide a synthetic namespace package 'app.plugins' pointed at PLUGIN_DIR
+# Provide a synthetic namespace package 'stash_ai_server.plugins' pointed at PLUGIN_DIR
 # so that import paths like stash_ai_server.plugins.<plugin_name> work even when the
 # installed wheel does not ship an 'stash_ai_server.plugins' package containing those
 # plugin subpackages (they are runtime additions / mounted volume).

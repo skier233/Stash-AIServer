@@ -7,7 +7,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./backend/stash_ai_server:/app/app:rw
+      - ./backend/stash_ai_server:/app/stash_ai_server:rw
       - ./backend/alembic:/app/alembic:rw
       - ./backend/alembic.ini:/app/alembic.ini:ro
       - ./backend/data:/app/data

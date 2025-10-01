@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt || true
 #############################
 FROM base AS dev
 ENV AIO_DEVMODE=1
-# In docker-compose dev we will bind mount ./backend/stash_ai_server over /app/app for live edits.
+# In docker-compose dev we bind mount ./backend/stash_ai_server -> /app/stash_ai_server for live edits.
 CMD ["python", "-m", "stash_ai_server.dev_entrypoint"]
 
 #############################
