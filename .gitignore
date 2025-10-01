@@ -3,3 +3,4 @@
 *.pyc
 */dist/*
 /backend/app/plugins/*
+/backend/plugins/*
