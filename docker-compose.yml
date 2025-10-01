@@ -1,4 +1,3 @@
-version: '3.9'
 services:
   backend_dev:
     build:
@@ -17,19 +16,21 @@ services:
       - AIO_DEVMODE=1
       - STASH_API_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOiJza2kyMyIsImlhdCI6MTY2OTA2MjU4NCwic3ViIjoiQVBJS2V5In0.0QWitnVF0c0n8vjKDXN3c1Of7ZDreOyWg3iUcjlVzYw
       - STASH_INTERNAL_URL=http://host.docker.internal:3000
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: python -m app.dev_entrypoint
 
   backend_prod:
     build:
       context: ./backend
-      target: prod
+      target: runtime
     container_name: ai-overhaul-backend-prod
     ports:
       - "8000:8000"
     environment:
-      - STASH_API_KEY=REPLACE_ME
+      - STASH_API_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOiJza2kyMyIsImlhdCI6MTY2OTA2MjU4NCwic3ViIjoiQVBJS2V5In0.0QWitnVF0c0n8vjKDXN3c1Of7ZDreOyWg3iUcjlVzYw
       - STASH_INTERNAL_URL=http://host.docker.internal:3000
       - AI_SERVER_HOST=0.0.0.0
       - AI_SERVER_PORT=8000
+      - AI_SERVER_PLUGINS_DIR=/app/plugins
     volumes:
-      - ./backend/data:/app/data
+      - ./backend/data:/app/data:rw
+      - ./backend/plugins:/app/plugins:rw

@@ -8,7 +8,7 @@ mounted in Docker) while core loader logic ships with the backend image.
 Only path constant PLUGIN_DIR still points to the on-disk extensions folder
 (`app/plugins`). All previous functionality preserved.
 """
-import pathlib, yaml, importlib, sys, traceback, tempfile, zipfile, shutil
+import os, pathlib, yaml, importlib, sys, traceback, tempfile, zipfile, shutil
 from dataclasses import dataclass
 from typing import List, Dict, Set, Optional
 from packaging import version as _v
@@ -23,8 +23,15 @@ from io import BytesIO
 
 # NOTE: We still load plugin python packages from app.plugins.<plugin_name> so
 # that individual plugin code remains in that namespace. The loader itself is
-# now in app.plugin_runtime.
-PLUGIN_DIR = pathlib.Path(__file__).resolve().parent.parent / 'plugins'
+# now in app.plugin_runtime. Allow override via AI_SERVER_PLUGINS_DIR so prod
+# images can mount plugins externally.
+
+## TODO: move to real config
+env_plugins = os.getenv('AI_SERVER_PLUGINS_DIR')
+if env_plugins:
+    PLUGIN_DIR = pathlib.Path(env_plugins)
+else:
+    PLUGIN_DIR = pathlib.Path(__file__).resolve().parent.parent / 'plugins'
 
 @dataclass
 class PluginManifest:
