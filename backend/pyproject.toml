@@ -4,7 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stash-ai-server"
-version = "0.1.0"
+version = "0.0.0+local"
+# Note: The release workflow overwrites this value with the Git tag-derived
+# version before building the wheel. This default keeps local development and
+# local builds working when CI is not running.
 description = "Stash AI Overhaul Backend Server"
 authors = [ { name = "Stash AI Overhaul" } ]
 readme = "README.md"

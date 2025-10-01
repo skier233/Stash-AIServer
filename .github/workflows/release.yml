@@ -66,8 +66,25 @@ jobs:
           p=pathlib.Path('backend/pyproject.toml')
           s=p.read_text(encoding='utf8')
           v=os.environ['VERSION']
-          s=re.sub(r'(?m)^version\s*=\s*"[^"]+"', f'version = "{v}"', s)
-          p.write_text(s, encoding='utf8')
+          # Try to replace an existing version line first
+          new, n = re.subn(r'(?m)^version\s*=\s*"[^"]+"', f'version = "{v}"', s)
+          if n == 0:
+              # Insert the version under the [project] table if missing
+              parts = s.split('\n')
+              out = []
+              inserted = False
+              i = 0
+              while i < len(parts):
+                  out.append(parts[i])
+                  if parts[i].strip() == '[project]' and not inserted:
+                      # insert on next line
+                      i += 1
+                      out.append(f'version = "{v}"')
+                      inserted = True
+                      continue
+                  i += 1
+              new = '\n'.join(out)
+          p.write_text(new, encoding='utf8')
           print('Updated version ->', v)
           PY
       - name: Install build tooling
@@ -150,6 +167,8 @@ jobs:
           context: ./backend
           file: ./backend/Dockerfile
           target: runtime
+          build-args: |
+            VERSION=${{ needs.determine.outputs.version }}
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
