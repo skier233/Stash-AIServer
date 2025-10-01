@@ -1,0 +1,291 @@
+name: Release (build wheels -> publish -> build image)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}
+
+jobs:
+  determine:
+    name: Determine release
+    runs-on: ubuntu-latest
+    outputs:
+      is_release: ${{ steps.determine.outputs.is_release }}
+      tag: ${{ steps.determine.outputs.tag }}
+      version: ${{ steps.determine.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: determine
+        name: Determine tag and whether it's on main
+        run: |
+          REF="${GITHUB_REF}"
+          if [[ "$REF" == refs/tags/v* ]]; then
+            TAG="${REF#refs/tags/}"
+            # strip leading 'v' to form a PEP440 version
+            VERSION=${TAG#v}
+            # Ensure we have origin/main for the ancestry check
+            git fetch origin main --depth=1 || git fetch origin main || true
+            COMMIT=$(git rev-parse "$REF")
+            if git merge-base --is-ancestor "$COMMIT" origin/main; then
+              echo "is_release=true" >> $GITHUB_OUTPUT
+              echo "tag=${TAG}" >> $GITHUB_OUTPUT
+              echo "version=${VERSION}" >> $GITHUB_OUTPUT
+            else
+              echo "is_release=false" >> $GITHUB_OUTPUT
+              echo "tag=${TAG}-not-on-main" >> $GITHUB_OUTPUT
+              echo "version=${VERSION}" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "is_release=false" >> $GITHUB_OUTPUT
+            SHORT_SHA=$(git rev-parse --short HEAD)
+            echo "tag=dev-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          fi
+
+  build-wheels-linux:
+    name: Build wheels (linux)
+    runs-on: ubuntu-latest
+    needs: determine
+    if: needs.determine.outputs.is_release == 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Sync package version to tag
+        env:
+          VERSION: ${{ needs.determine.outputs.version }}
+        run: |
+          echo "Setting backend/pyproject.toml version to $VERSION"
+          python - <<'PY'
+import os,re
+p='backend/pyproject.toml'
+v=os.environ['VERSION']
+s=open(p,'r',encoding='utf8').read()
+s2=re.sub(r'(?m)^version\s*=\s*"[^"]+"', f'version = "{v}"', s)
+open(p,'w',encoding='utf8').write(s2)
+print('ok')
+PY
+
+      - name: Install cibuildwheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install cibuildwheel
+
+      - name: Build wheels (linux)
+        working-directory: backend
+        run: |
+          python -m cibuildwheel --output-dir dist/wheelhouse
+
+      - name: Upload wheels (linux)
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux
+          path: backend/dist/wheelhouse/*.whl
+  build-wheels-macos:
+    name: Build wheels (macos)
+    runs-on: macos-latest
+    needs: determine
+    if: needs.determine.outputs.is_release == 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Sync package version to tag
+        env:
+          VERSION: ${{ needs.determine.outputs.version }}
+        run: |
+          echo "Setting backend/pyproject.toml version to $VERSION"
+          python - <<'PY'
+import os,re
+p='backend/pyproject.toml'
+v=os.environ['VERSION']
+s=open(p,'r',encoding='utf8').read()
+s2=re.sub(r'(?m)^version\s*=\s*"[^"]+"', f'version = "{v}"', s)
+open(p,'w',encoding='utf8').write(s2)
+print('ok')
+PY
+
+      - name: Install cibuildwheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install cibuildwheel
+
+      - name: Build wheels (macos)
+        working-directory: backend
+        run: |
+          python -m cibuildwheel --output-dir dist/wheelhouse
+
+      - name: Upload wheels (macos)
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-macos
+          path: backend/dist/wheelhouse/*.whl
+
+  build-wheels-windows:
+    name: Build wheels (windows)
+    runs-on: windows-latest
+    needs: determine
+    if: needs.determine.outputs.is_release == 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Sync package version to tag
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.determine.outputs.version }}
+        run: |
+          Write-Host "Setting backend/pyproject.toml version to $env:VERSION"
+          python - <<'PY'
+import os,re
+p='backend/pyproject.toml'
+v=os.environ['VERSION']
+s=open(p,'r',encoding='utf8').read()
+s2=re.sub(r'(?m)^version\s*=\s*"[^"]+"', f'version = "{v}"', s)
+open(p,'w',encoding='utf8').write(s2)
+print('ok')
+PY
+
+      - name: Install cibuildwheel
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install cibuildwheel
+
+      - name: Build wheels (windows)
+        shell: pwsh
+        working-directory: backend
+        run: |
+          python -m cibuildwheel --output-dir dist/wheelhouse
+
+      - name: Upload wheels (windows)
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-windows
+          path: backend/dist/wheelhouse/*.whl
+
+  publish-wheels:
+    name: Publish wheels to PyPI
+    runs-on: ubuntu-latest
+    needs: [build-wheels-linux, build-wheels-macos, build-wheels-windows]
+    if: needs.determine.outputs.is_release == 'true'
+    steps:
+      - name: Download linux wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-linux
+          path: wheelhouse
+
+      - name: Download macos wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-macos
+          path: wheelhouse
+
+      - name: Download windows wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-windows
+          path: wheelhouse
+
+      - name: Show wheel files
+        run: ls -la wheelhouse || true
+
+      - name: Validate wheel versions match tag
+        env:
+          VERSION: ${{ needs.determine.outputs.version }}
+        run: |
+          python - <<'PY'
+import zipfile,sys,os
+v=os.environ['VERSION']
+errs=0
+for w in os.listdir('wheelhouse'):
+    if not w.endswith('.whl'): continue
+    with zipfile.ZipFile(os.path.join('wheelhouse',w)) as z:
+        md=''
+        for n in z.namelist():
+            if n.endswith('METADATA'):
+                md=z.read(n).decode()
+                break
+        for line in md.splitlines():
+            if line.startswith('Version:'):
+                got=line.split(':',1)[1].strip()
+                if got!=v:
+                    print('Wheel',w,'version mismatch:',got,'!=',v)
+                    errs+=1
+                else:
+                    print('Wheel',w,'version OK',got)
+                break
+        else:
+            print('No METADATA found in',w); errs+=1
+sys.exit(errs)
+PY
+      - name: Install twine
+        run: python -m pip install --upgrade pip twine
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          python -m twine upload wheelhouse/*.whl
+
+  build-and-push-image:
+    name: Build and push container (GHCR)
+    runs-on: ubuntu-latest
+    needs: publish-wheels
+    if: needs.determine.outputs.is_release == 'true' && needs.publish-wheels.result == 'success'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push runtime image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          target: runtime
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/stash-ai-server:${{ needs.determine.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/stash-ai-server:${{ needs.determine.outputs.tag }}
+            ghcr.io/${{ github.repository_owner }}/stash-ai-server:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
