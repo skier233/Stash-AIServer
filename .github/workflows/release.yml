@@ -90,7 +90,7 @@ jobs:
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wheels
+          name: wheels-${{ matrix.os }}
           path: backend/dist/*.whl
 
   publish:
@@ -99,24 +99,43 @@ jobs:
     needs: [determine, build-wheels]
     if: needs.determine.outputs.is_release == 'true'
     steps:
-      - name: Download wheel artifacts
+      - name: Download wheel artifacts (all OS)
         uses: actions/download-artifact@v4
         with:
-          name: wheels
+          pattern: wheels-*
           path: wheelhouse
-      - name: List wheels
-        run: ls -1 wheelhouse
+      - name: Collect wheels into single directory
+        run: |
+          python - <<'PY'
+          import os, shutil, pathlib
+          src=pathlib.Path('wheelhouse')
+          dest=pathlib.Path('all_wheels')
+          dest.mkdir(exist_ok=True)
+          seen=set()
+          for root, _, files in os.walk(src):
+              for f in files:
+                  if not f.endswith('.whl'): continue
+                  if f in seen:
+                      # duplicate pure-python wheel, skip
+                      continue
+                  seen.add(f)
+                  shutil.copy2(os.path.join(root,f), dest / f)
+          print('Collected', len(seen), 'unique wheel(s) into', dest)
+          for p in dest.glob('*.whl'): print(' -', p.name)
+          PY
+      - name: List collected wheels
+        run: ls -1 all_wheels
       - name: Validate wheel versions
         env:
           VERSION: ${{ needs.determine.outputs.version }}
         run: |
           python - <<'PY'
-          import os, zipfile, sys
+          import os, zipfile, sys, pathlib
           v=os.environ['VERSION']
           bad=0
-          for w in os.listdir('wheelhouse'):
-            if not w.endswith('.whl'): continue
-            with zipfile.ZipFile(os.path.join('wheelhouse', w)) as z:
+          for p in pathlib.Path('all_wheels').glob('*.whl'):
+            w=p.name
+            with zipfile.ZipFile(p) as z:
               meta = [n for n in z.namelist() if n.endswith('METADATA')]
               if not meta:
                 print('No METADATA in', w); bad+=1; continue
@@ -137,7 +156,7 @@ jobs:
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-        run: python -m twine upload wheelhouse/*.whl
+        run: python -m twine upload all_wheels/*.whl
 
   image:
     name: Build & push GHCR image
