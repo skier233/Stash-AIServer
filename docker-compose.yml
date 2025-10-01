@@ -18,10 +18,12 @@ services:
       - STASH_INTERNAL_URL=http://host.docker.internal:3000
     command: python -m app.dev_entrypoint
 
+  # If you prefer to run the dev container from the published image (no live reload),
+  # replace `build:` above with:
+  # image: ghcr.io/skier233/stash-ai-server:latest
+
   backend_prod:
-    build:
-      context: ./backend
-      target: runtime
+    image: ghcr.io/skier233/stash-ai-server:latest
     container_name: ai-overhaul-backend-prod
     ports:
       - "8000:8000"

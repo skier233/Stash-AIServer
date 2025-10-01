@@ -26,55 +26,45 @@ jobs:
           REF="${GITHUB_REF}"
           if [[ "$REF" == refs/tags/v* ]]; then
             TAG="${REF#refs/tags/}"
-            VERSION=${TAG#v}
-            git fetch origin main --depth=1 || true
-            COMMIT=$(git rev-parse "$REF")
-            if git merge-base --is-ancestor "$COMMIT" origin/main; then
-              echo "is_release=true" >> $GITHUB_OUTPUT
-            else
-              echo "is_release=false" >> $GITHUB_OUTPUT
-            fi
-            echo "tag=${TAG}" >> $GITHUB_OUTPUT
-            echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          else
-            echo "is_release=false" >> $GITHUB_OUTPUT
-            SHORT_SHA=$(git rev-parse --short HEAD)
-            echo "tag=dev-${SHORT_SHA}" >> $GITHUB_OUTPUT
-            echo "version=0.0.0" >> $GITHUB_OUTPUT
-          fi
-
-  build-wheels:
-    name: Build wheels (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    needs: determine
-    if: needs.determine.outputs.is_release == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            py: '3.12'
-          - os: macos-latest
-            py: '3.12'
-          - os: windows-latest
-            py: '3.12'
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.py }}
-      - name: Sync version from tag
-        env:
-          VERSION: ${{ needs.determine.outputs.version }}
-        shell: bash
-        run: |
-          echo "Setting backend/pyproject.toml version to $VERSION"
-          python - <<'PY'
-          import pathlib, os, re
-          p=pathlib.Path('backend/pyproject.toml')
+            build-wheel:
+              name: Build wheel (universal)
+              runs-on: ubuntu-latest
+              needs: determine
+              if: needs.determine.outputs.is_release == 'true'
+              steps:
+                - uses: actions/checkout@v4
+                  with:
+                    fetch-depth: 0
+                - name: Set up Python 3.12
+                  uses: actions/setup-python@v5
+                  with:
+                    python-version: '3.12'
+                - name: Sync version from tag
+                  env:
+                    VERSION: ${{ needs.determine.outputs.version }}
+                  run: |
+                    echo "Setting backend/pyproject.toml version to $VERSION"
+                    python - <<'PY'
+                    import pathlib, os, re
+                    p=pathlib.Path('backend/pyproject.toml')
+                    s=p.read_text(encoding='utf8')
+                    v=os.environ['VERSION']
+                    s=re.sub(r'(?m)^version\s*=\s*"[^"]+"', f'version = "{v}"', s)
+                    p.write_text(s, encoding='utf8')
+                    print('Updated version ->', v)
+                    PY
+                - name: Install build tooling
+                  run: python -m pip install --upgrade pip setuptools wheel build
+                - name: Build wheel
+                  working-directory: backend
+                  run: python -m build --wheel
+                - name: Show dist contents
+                  run: ls -l backend/dist
+                - name: Upload wheel artifact
+                  uses: actions/upload-artifact@v4
+                  with:
+                    name: wheel
+                    path: backend/dist/*.whl
           s=p.read_text(encoding='utf8')
           v=os.environ['VERSION']
           s=re.sub(r'(?m)^version\s*=\s*"[^"]+"', f'version = "{v}"', s)
@@ -94,52 +84,31 @@ jobs:
           path: backend/dist/*.whl
 
   publish:
-    name: Publish wheels to PyPI
+    name: Publish wheel to PyPI
     runs-on: ubuntu-latest
-    needs: [determine, build-wheels]
+    needs: [determine, build-wheel]
     if: needs.determine.outputs.is_release == 'true'
     steps:
-      - name: Download wheel artifacts (all OS)
+      - name: Download wheel artifact
         uses: actions/download-artifact@v4
         with:
-          pattern: wheels-*
-          path: wheelhouse
-      - name: Collect wheels into single directory
-        run: |
-          python - <<'PY'
-          import os, shutil, pathlib
-          src=pathlib.Path('wheelhouse')
-          dest=pathlib.Path('all_wheels')
-          dest.mkdir(exist_ok=True)
-          seen=set()
-          for root, _, files in os.walk(src):
-              for f in files:
-                  if not f.endswith('.whl'): continue
-                  if f in seen:
-                      # duplicate pure-python wheel, skip
-                      continue
-                  seen.add(f)
-                  shutil.copy2(os.path.join(root,f), dest / f)
-          print('Collected', len(seen), 'unique wheel(s) into', dest)
-          for p in dest.glob('*.whl'): print(' -', p.name)
-          PY
-      - name: List collected wheels
-        run: ls -1 all_wheels
-      - name: Validate wheel versions
+          name: wheel
+          path: dist_dl
+      - name: List wheel
+        run: ls -l dist_dl
+      - name: Validate wheel version
         env:
           VERSION: ${{ needs.determine.outputs.version }}
         run: |
           python - <<'PY'
-          import os, zipfile, sys, pathlib
+          import os, zipfile, sys, glob
           v=os.environ['VERSION']
           bad=0
-          for p in pathlib.Path('all_wheels').glob('*.whl'):
-            w=p.name
-            with zipfile.ZipFile(p) as z:
-              meta = [n for n in z.namelist() if n.endswith('METADATA')]
-              if not meta:
-                print('No METADATA in', w); bad+=1; continue
-              text = z.read(meta[0]).decode()
+          for w in glob.glob('dist_dl/*.whl'):
+            with zipfile.ZipFile(w) as z:
+              meta=[n for n in z.namelist() if n.endswith('METADATA')]
+              if not meta: print('No METADATA in', w); bad+=1; continue
+              text=z.read(meta[0]).decode()
               for line in text.splitlines():
                 if line.startswith('Version:'):
                   got=line.split(':',1)[1].strip()
@@ -156,7 +125,7 @@ jobs:
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-        run: python -m twine upload all_wheels/*.whl
+        run: python -m twine upload dist_dl/*.whl
 
   image:
     name: Build & push GHCR image
@@ -185,7 +154,6 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: |
             ghcr.io/${{ github.repository_owner }}/stash-ai-server:${{ needs.determine.outputs.version }}
-            ghcr.io/${{ github.repository_owner }}/stash-ai-server:${{ needs.determine.outputs.tag }}
             ghcr.io/${{ github.repository_owner }}/stash-ai-server:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
