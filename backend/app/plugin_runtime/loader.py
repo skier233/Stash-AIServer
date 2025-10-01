@@ -8,7 +8,7 @@ mounted in Docker) while core loader logic ships with the backend image.
 Only path constant PLUGIN_DIR still points to the on-disk extensions folder
 (`app/plugins`). All previous functionality preserved.
 """
-import os, pathlib, yaml, importlib, sys, traceback, tempfile, zipfile, shutil
+import os, pathlib, yaml, importlib, sys, traceback, tempfile, zipfile, shutil, types
 from dataclasses import dataclass
 from typing import List, Dict, Set, Optional
 from packaging import version as _v
@@ -32,6 +32,26 @@ if env_plugins:
     PLUGIN_DIR = pathlib.Path(env_plugins)
 else:
     PLUGIN_DIR = pathlib.Path(__file__).resolve().parent.parent / 'plugins'
+
+# Ensure plugin dir exists to avoid repeated existence checks
+try:
+    PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
+
+# Provide a synthetic namespace package 'app.plugins' pointed at PLUGIN_DIR
+# so that import paths like app.plugins.<plugin_name> work even when the
+# installed wheel does not ship an 'app.plugins' package containing those
+# plugin subpackages (they are runtime additions / mounted volume).
+if 'app.plugins' not in sys.modules:
+    try:
+        parent_pkg = importlib.import_module('app')
+        mod = types.ModuleType('app.plugins')
+        mod.__path__ = [str(PLUGIN_DIR)]  # namespace path
+        setattr(parent_pkg, 'plugins', mod)
+        sys.modules['app.plugins'] = mod
+    except Exception as e:  # pragma: no cover
+        print(f"[plugin] failed to create synthetic namespace: {e}", flush=True)
 
 @dataclass
 class PluginManifest:

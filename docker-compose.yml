@@ -33,6 +33,7 @@ services:
       - AI_SERVER_HOST=0.0.0.0
       - AI_SERVER_PORT=8000
       - AI_SERVER_PLUGINS_DIR=/app/plugins
+      - AI_SERVER_DATA_DIR=/app/data
     volumes:
       - ./backend/data:/app/data:rw
       - ./backend/plugins:/app/plugins:rw
