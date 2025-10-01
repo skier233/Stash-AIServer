@@ -96,18 +96,11 @@ interface SceneWatchState {
   completed?: boolean;
 }
 
-// Derive backend base similarly to AIButton.tsx so we hit the correct host/port.
+// Resolve backend base using the shared helper when available.
 function _resolveBackendBase(): string {
-  try {
-    const explicit = (window as any).AI_BACKEND_URL as string | undefined;
-    if (explicit) return explicit.replace(/\/$/, '');
-    let origin = (location && location.origin) || '';
-    if (origin) {
-      try { const u = new URL(origin); if (u.port === '3000') { u.port = '8000'; origin = u.toString(); } } catch { /* ignore */ }
-    }
-    if (!origin) origin = 'http://localhost:8000';
-    return origin.replace(/\/$/, '');
-  } catch { return 'http://localhost:8000'; }
+  const globalFn = (window as any).AIDefaultBackendBase;
+  if (typeof globalFn !== 'function') throw new Error('AIDefaultBackendBase not initialized. Ensure backendBase is loaded first.');
+  return globalFn();
 }
 
 // ------------------------------ Tracker Class ------------------------------
@@ -142,7 +135,10 @@ export class InteractionTracker {
 
   private buildConfig(partial: Partial<InteractionTrackerConfig>): Required<InteractionTrackerConfig> {
     const resolved = (partial.endpoint ?? _resolveBackendBase()).replace(/\/$/, '');
-    const base: Required<InteractionTrackerConfig> = {
+  // Determine persisted enabled flag from localStorage used by settings UI
+  let storedEnabled = true;
+  try { storedEnabled = localStorage.getItem('AI_INTERACTIONS_ENABLED') === '1'; } catch {}
+  const base: Required<InteractionTrackerConfig> = {
   endpoint: resolved,
       batchPath: '/api/v1/interactions/sync',
       sendIntervalMs: 5000,
@@ -155,7 +151,7 @@ export class InteractionTracker {
       autoDetect: true,
       integratePageContext: true,
       videoAutoInstrument: true,
-      enabled: true
+      enabled: storedEnabled
     };
     return { ...base, ...partial };
   }
@@ -640,6 +636,7 @@ export class InteractionTracker {
   // Runtime toggle for console debugging so integrators can verify events
   public enableDebug() { this.cfg.debug = true; this.log('debug enabled'); }
   public disableDebug() { this.log('debug disabled'); this.cfg.debug = false; }
+  public setEnabled(v: boolean) { this.cfg.enabled = v; this.log('enabled set to '+v); }
 
   // --------------------------- Internal Helpers ----------------------------
   private trackInternal(type: InteractionEventType, entityType: InteractionEvent['entity_type'], entityId: string, metadata?: any) {
@@ -757,13 +754,8 @@ export class InteractionTracker {
         // Fallback: try fetch with keepalive (best-effort)
         try {
           const f = fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true });
+          f.then(res => { if (res && res.ok) { this.queue = []; this.persistQueue(); } }).catch(()=>{});
           // Note: can't reliably await in unload, but attempt to clear queue anyway
-          f.then(res => {
-            if (res && res.ok) {
-              this.queue = [];
-              this.persistQueue();
-            }
-          }).catch(() => { /* ignore */ });
         } catch (e) {
           // ignore
         }

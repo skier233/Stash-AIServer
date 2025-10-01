@@ -3,17 +3,24 @@ description: Core AI action button with Similar Scenes tab
 version: 0.4.0-core-min
 ui:
   javascript:
+    - dist/BackendBase.js
     - dist/pageContext.js
     - dist/RecommendationUtils.js
     - dist/AIButton.js
-    - dist/AIButtonIntegration.js
     - dist/TaskDashboard.js
+    - dist/PluginSettings.js      # ensure settings component registers before integration
     - dist/RecommendedScenes.js
     - dist/SimilarScenes.js
     - dist/SimilarTabIntegration.js
     - dist/InteractionTracker.js
+    - dist/AIButtonIntegration.js # integration last after components
   css:
     - AIOverhaul.css
     - src/recommendedscenes.css
     - src/css/SimilarScenes.css
+  csp:
+    connect-src:
+      - http://localhost:8000
+      - ws://localhost:8000
+      - https://localhost:8000
 interface: raw

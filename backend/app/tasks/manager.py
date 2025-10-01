@@ -4,6 +4,7 @@ import heapq
 import inspect
 from typing import Dict, List, Tuple, Optional, Any, Callable
 import os
+from app.core.system_settings import get_value as sys_get
 import logging
 from app.tasks.models import TaskRecord, TaskStatus, TaskPriority, CancelToken
 from app.actions.registry import registry as action_registry
@@ -48,11 +49,16 @@ class TaskManager:
         self._service_locks: Dict[str, asyncio.Lock] = {}
         self._listeners: List[Callable[[str, TaskRecord, dict | None], None]] = []
         self._runner_started = False
+        # Values may be overridden at startup (main.py) after seeding system settings
         try:
-            self._loop_interval = float(os.getenv('TASK_LOOP_INTERVAL', '0.05'))
-        except ValueError:
+            self._loop_interval = float(sys_get('TASK_LOOP_INTERVAL', 0.05))
+        except Exception:
             self._loop_interval = 0.05
-        self._debug = os.getenv('TASK_DEBUG', '0') in ('1', 'true', 'True')
+        try:
+            dbg = sys_get('TASK_DEBUG', False)
+            self._debug = bool(dbg)
+        except Exception:
+            self._debug = False
         if self._debug:
             logging.basicConfig(level=logging.DEBUG, format='[TASK] %(message)s')
         self._log = logging.getLogger('task_manager')

@@ -13,8 +13,13 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from app.main import app
 
-# Register the slow test service only for tests
-from app.services.slow.service import register as register_slow_service
+# Register the slow test service only for tests. Prefer the plugin implementation
+# if the plugin is present, otherwise fall back to the local shim at
+# app.services.slow.service.
+try:
+    from app.plugins.slow_service_plugin.service import register as register_slow_service
+except Exception:
+    from app.services.slow.service import register as register_slow_service
 from app.tasks.manager import manager
 
 try:

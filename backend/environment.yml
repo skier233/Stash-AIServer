@@ -1,0 +1,8 @@
+name: stash-ai-server
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - stash-ai-server

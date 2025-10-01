@@ -133,13 +133,11 @@
       [recommenders, recommenderId]
     );
 
-    // Resolve backend base (mirror logic from RecommendedScenes for consistency)
+    // Resolve backend base using shared helper when available
     const backendBase = useMemo(() => {
-      const explicit = (w as any).AI_BACKEND_URL as string | undefined;
-      if (explicit) return explicit.replace(/\/$/, '');
-      const loc = (location && location.origin) || '';
-      try { const u = new URL(loc); if (u.port === '3000') { u.port = '8000'; return u.toString().replace(/\/$/, ''); } } catch {}
-      return (loc || 'http://localhost:8000').replace(/\/$/, '');
+      const globalFn = (w as any).AIDefaultBackendBase;
+      if (typeof globalFn !== 'function') throw new Error('AIDefaultBackendBase not initialized. Ensure backendBase is loaded first.');
+      return globalFn();
     }, []);
 
     // Discover available recommenders using the backend recommendations API

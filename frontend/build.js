@@ -15,7 +15,9 @@ let files = [
   'src/SimilarTabIntegration.tsx',
   'src/AIButton.tsx',
   'src/AIButtonIntegration.tsx',
-  'src/TaskDashboard.tsx'
+  'src/TaskDashboard.tsx',
+  'src/PluginSettings.tsx',
+  'src/BackendBase.ts'
 ].sort();
 const verbose = !!process.env.BUILD_VERBOSE;
 

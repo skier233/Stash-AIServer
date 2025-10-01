@@ -3,7 +3,6 @@
 This replaces the earlier incremental chain (legacy files 0001-0006). It is
 aligned with the current ORM models in `app.models.interaction`.
 
-NO ai_requests table (feature removed).
 
 If you have an existing dev DB that previously ran old migrations, either
 rebuild it fresh or manually stamp:
@@ -24,21 +23,70 @@ def upgrade() -> None:  # noqa: D401
     op.create_table(
         'plugin_meta',
         sa.Column('id', sa.Integer, primary_key=True),
-        sa.Column('name', sa.String(length=100), nullable=False, unique=True, index=True),
+        # Remove explicit index=True; unique constraint already creates an index
+        sa.Column('name', sa.String(length=100), nullable=False, unique=True),
         sa.Column('version', sa.String(length=50), nullable=False),
         sa.Column('required_backend', sa.String(length=50), nullable=False),
         sa.Column('status', sa.String(length=30), nullable=False, server_default='active'),
         sa.Column('migration_head', sa.String(length=100), nullable=True),
         sa.Column('last_error', sa.Text, nullable=True),
+        sa.Column('human_name', sa.String(length=150), nullable=True),
+        sa.Column('server_link', sa.String(length=500), nullable=True),
         sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.Column('updated_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
     )
-    op.create_index('ix_plugin_meta_name', 'plugin_meta', ['name'])
+
+    # plugin_sources (remote registries) / plugin_catalog (available plugins) / plugin_settings (persisted config)
+    op.create_table(
+        'plugin_sources',
+        sa.Column('id', sa.Integer, primary_key=True),
+        sa.Column('name', sa.String(length=100), nullable=False, unique=True),
+        sa.Column('url', sa.String(length=500), nullable=False),
+        sa.Column('enabled', sa.Boolean, nullable=False, server_default=sa.text('1')),
+        sa.Column('last_refreshed_at', sa.DateTime, nullable=True),
+        sa.Column('last_error', sa.Text, nullable=True),
+        sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+        sa.Column('updated_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+    )
+
+    op.create_table(
+        'plugin_catalog',
+        sa.Column('id', sa.Integer, primary_key=True),
+        sa.Column('source_id', sa.Integer, sa.ForeignKey('plugin_sources.id', ondelete='CASCADE'), nullable=False),
+        sa.Column('plugin_name', sa.String(length=100), nullable=False),
+        sa.Column('version', sa.String(length=50), nullable=False),
+        sa.Column('description', sa.String(length=500), nullable=True),
+        sa.Column('human_name', sa.String(length=150), nullable=True),
+        sa.Column('server_link', sa.String(length=500), nullable=True),
+        sa.Column('dependencies_json', sa.JSON, nullable=True),
+        sa.Column('manifest_json', sa.JSON, nullable=True),
+        sa.Column('updated_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+    )
+    op.create_index('ix_plugin_catalog_source_id', 'plugin_catalog', ['source_id'])
+    op.create_index('ix_plugin_catalog_plugin_name', 'plugin_catalog', ['plugin_name'])
+
+    op.create_table(
+        'plugin_settings',
+        sa.Column('id', sa.Integer, primary_key=True),
+        sa.Column('plugin_name', sa.String(length=100), nullable=False),
+        sa.Column('key', sa.String(length=100), nullable=False),
+        sa.Column('type', sa.String(length=32), nullable=False, server_default='string'),
+        sa.Column('label', sa.String(length=150), nullable=True),
+        sa.Column('description', sa.Text, nullable=True),
+        sa.Column('default_value', sa.JSON, nullable=True),
+        sa.Column('options', sa.JSON, nullable=True),
+        sa.Column('value', sa.JSON, nullable=True),
+        sa.Column('updated_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+        sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+    )
+    op.create_index('ix_plugin_settings_plugin_name', 'plugin_settings', ['plugin_name'])
+    op.create_index('ix_plugin_settings_plugin_name_key', 'plugin_settings', ['plugin_name', 'key'])
     # task_history (lightweight execution log) — keep minimal needed fields
     op.create_table(
         'task_history',
         sa.Column('id', sa.Integer, primary_key=True),
-        sa.Column('task_id', sa.String(length=64), nullable=False, unique=True, index=True),
+        # unique already implies an index; remove extra index=True
+        sa.Column('task_id', sa.String(length=64), nullable=False, unique=True),
         sa.Column('action_id', sa.String(length=200), nullable=False),
         sa.Column('service', sa.String(length=100), nullable=False),
         sa.Column('status', sa.String(length=50), nullable=False),
@@ -51,7 +99,6 @@ def upgrade() -> None:  # noqa: D401
         sa.Column('error', sa.Text, nullable=True),
         sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
     )
-    op.create_index('ix_task_history_task_id', 'task_history', ['task_id'])
     op.create_index('ix_task_history_created_at', 'task_history', ['created_at'])
     # High-value composite for filtered history queries (service/status + recency)
     op.create_index('ix_task_history_service_status_created', 'task_history', ['service', 'status', 'created_at'])
@@ -67,8 +114,8 @@ def upgrade() -> None:  # noqa: D401
         sa.Column('entity_id', sa.String(length=64), nullable=False),
         sa.Column('client_ts', sa.DateTime, nullable=False),
         sa.Column('metadata', sa.JSON, nullable=True),
+        sa.UniqueConstraint('client_event_id', name='uq_interaction_client_event_id')
     )
-    op.create_unique_constraint('uq_interaction_client_event_id', 'interaction_events', ['client_event_id'])
     op.create_index('ix_interaction_session_scene', 'interaction_events', ['session_id', 'entity_type', 'entity_id'])
     op.create_index('ix_interaction_client_ts', 'interaction_events', ['client_ts'])
     op.create_index('ix_interaction_events_event_type', 'interaction_events', ['event_type'])
@@ -93,8 +140,8 @@ def upgrade() -> None:  # noqa: D401
         sa.Column('updated_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.Column('client_fingerprint', sa.String(length=128), nullable=True),
         sa.Column('ended_at', sa.DateTime, nullable=True),
+        sa.UniqueConstraint('session_id', name='uq_interaction_session_id')
     )
-    op.create_unique_constraint('uq_interaction_session_id', 'interaction_sessions', ['session_id'])
     op.create_index('ix_interaction_sessions_session_id', 'interaction_sessions', ['session_id'])
     op.create_index('ix_interaction_sessions_ended_at', 'interaction_sessions', ['ended_at'])
     op.create_index('ix_interaction_sessions_client_fingerprint', 'interaction_sessions', ['client_fingerprint'])

@@ -8,17 +8,17 @@ from app.api import actions as actions_router
 from app.api import tasks as tasks_router
 from app.api import ws as ws_router
 from app.api import recommendations as recommendations_router
+from app.api import plugins as plugins_router
 from app.recommendations.registry import recommender_registry
 from app.recommendations.models import RecContext
 from app.tasks.manager import manager
 from app.db.session import engine, Base
 import pathlib, hashlib, os
 from contextlib import asynccontextmanager
-from app.plugins.loader import initialize_plugins
+from app.plugin_runtime.loader import initialize_plugins
+from app.core.system_settings import seed_system_settings, get_value as sys_get
 from app.services import registry as services_registry  # registry remains for core non-plugin definitions (if any)
 
-# Ensure tables exist if migrations not yet run (development convenience)
-Base.metadata.create_all(bind=engine)
 
 
 @asynccontextmanager
@@ -39,13 +39,25 @@ async def lifespan(app: FastAPI):
         except Exception as _e:
             print(f'[dev] hash error: {_e}', flush=True)
 
+    # Seed system (global) settings table entries before plugin load.
+    try:
+        seed_system_settings()
+    except Exception as e:
+        print(f"[system_settings] seed error: {e}", flush=True)
+
     # Load plugins (migrations + registration via decorator imports)
     try:
         initialize_plugins()
     except Exception as e:  # plugin loading errors are logged internally; keep startup going
         print(f"[plugin] unexpected loader exception: {e}", flush=True)
 
-    # Start background task manager
+    # Start background task manager with configured loop interval / debug flags
+    try:
+        loop_interval = float(sys_get('TASK_LOOP_INTERVAL', 0.05) or 0.05)
+    except Exception:
+        loop_interval = 0.05
+    manager._loop_interval = loop_interval  # internal tweak before start
+    manager._debug = bool(sys_get('TASK_DEBUG', False))
     await manager.start()
 
     # Diagnostic count of registered recommenders (populated by plugins)
@@ -76,6 +88,7 @@ app.include_router(actions_router.router, prefix=settings.api_v1_prefix)
 app.include_router(tasks_router.router, prefix=settings.api_v1_prefix)
 app.include_router(ws_router.router, prefix=settings.api_v1_prefix)
 app.include_router(recommendations_router.router, prefix=settings.api_v1_prefix)
+app.include_router(plugins_router.router, prefix=settings.api_v1_prefix)
 app.include_router(interactions_router.router, prefix=settings.api_v1_prefix)
 
 # Basic CORS (development) – restrict/adjust later as needed

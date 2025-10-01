@@ -1,5 +1,0 @@
-name: slow_service_plugin
-version: 0.1.0
-required_backend: '>=0.0.0'
-files:
-  - service
