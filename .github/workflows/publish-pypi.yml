@@ -1,0 +1,107 @@
+name: Build and Publish Wheels to PyPI
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}
+
+jobs:
+  build-linux:
+    name: Build wheels (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+      - name: Install cibuildwheel
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install cibuildwheel
+      - name: Build wheels (linux - manylinux)
+        run: |
+          python -m cibuildwheel --output-dir wheelhouse
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux
+          path: wheelhouse/*.whl
+
+  build-macos:
+    name: Build wheels (macos)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+      - name: Install cibuildwheel
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install cibuildwheel
+      - name: Build wheels (macos)
+        run: |
+          python -m cibuildwheel --output-dir wheelhouse
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-macos
+          path: wheelhouse/*.whl
+
+  build-windows:
+    name: Build wheels (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+      - name: Install cibuildwheel
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install cibuildwheel
+      - name: Build wheels (windows)
+        shell: pwsh
+        run: |
+          python -m cibuildwheel --output-dir wheelhouse
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-windows
+          path: wheelhouse/*.whl
+
+  publish:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    needs: [build-linux, build-macos, build-windows]
+    steps:
+      - name: Download linux wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-linux
+          path: wheelhouse
+      - name: Download macos wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-macos
+          path: wheelhouse
+      - name: Download windows wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-windows
+          path: wheelhouse
+      - name: Show wheel files
+        run: ls -la wheelhouse || true
+      - name: Install twine
+        run: python -m pip install --upgrade pip twine
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          python -m twine upload wheelhouse/*.whl
