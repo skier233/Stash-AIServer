@@ -1,0 +1,84 @@
+name: build-and-publish
+
+on:
+  push:
+    branches: [ main, newconfig ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+            python-version: '3.12'
+
+      - name: Install build deps
+        run: |
+          python -m pip install --upgrade pip build
+
+      - name: Build wheel
+        working-directory: backend
+        run: |
+          python -m build --wheel --no-isolation
+          ls -l dist
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-dist
+          path: backend/dist/*.whl
+
+      - name: Determine version/tag
+        id: version
+        run: |
+          REF="${GITHUB_REF}"
+          if [[ "$REF" == refs/tags/v* ]]; then
+             echo "is_release=true" >> $GITHUB_OUTPUT
+             echo "tag=${REF#refs/tags/}" >> $GITHUB_OUTPUT
+          else
+             echo "is_release=false" >> $GITHUB_OUTPUT
+             SHORT_SHA=$(git rev-parse --short HEAD)
+             echo "tag=dev-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to DockerHub (if publishing)
+        if: steps.version.outputs.is_release == 'true' && secrets.DOCKERHUB_USERNAME
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: backend
+          push: ${{ steps.version.outputs.is_release == 'true' && secrets.DOCKERHUB_USERNAME != '' }}
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/stash-ai-server:${{ steps.version.outputs.tag }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/stash-ai-server:latest
+          provenance: false
+
+      - name: Publish to PyPI (release tags only)
+        if: steps.version.outputs.is_release == 'true' && secrets.PYPI_API_TOKEN
+        env:
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          python -m pip install twine
+          python -m twine upload --non-interactive -u __token__ -p "$PYPI_API_TOKEN" backend/dist/*.whl
+
+      - name: Summary
+        run: |
+          echo "Release=${{ steps.version.outputs.is_release }} Tag=${{ steps.version.outputs.tag }}"

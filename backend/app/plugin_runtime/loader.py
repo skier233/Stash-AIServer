@@ -10,7 +10,7 @@ Only path constant PLUGIN_DIR still points to the on-disk extensions folder
 """
 import pathlib, yaml, importlib, sys, traceback, tempfile, zipfile, shutil
 from dataclasses import dataclass
-from typing import List, Dict, Set
+from typing import List, Dict, Set, Optional
 from packaging import version as _v
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -35,6 +35,7 @@ class PluginManifest:
     depends_on: List[str]
     human_name: str | None = None
     server_link: str | None = None
+    pip_dependencies: List[str] | None = None
 
 def _parse_manifest(path: pathlib.Path) -> PluginManifest | None:
     try:
@@ -50,13 +51,16 @@ def _parse_manifest(path: pathlib.Path) -> PluginManifest | None:
             depends_on = []
         human_name = data.get('human_name') or data.get('title') or data.get('label')
         server_link = data.get('server_link') or data.get('serverLink')
+        pip_deps = data.get('pip_dependencies') or data.get('pip-dependencies') or data.get('python_dependencies') or []
+        if not isinstance(pip_deps, list):
+            pip_deps = []
         if not (name and ver and req):
             print(f"[plugin] invalid manifest missing fields: {path}", flush=True)
             return None
         if path.parent.name != name:
             print(f"[plugin] manifest name mismatch dir={path.parent.name} name={name}", flush=True)
             return None
-        return PluginManifest(name=name, version=str(ver), required_backend=str(req), files=[str(f) for f in files], depends_on=[str(d) for d in depends_on], human_name=human_name, server_link=server_link)
+        return PluginManifest(name=name, version=str(ver), required_backend=str(req), files=[str(f) for f in files], depends_on=[str(d) for d in depends_on], human_name=human_name, server_link=server_link, pip_dependencies=[str(p) for p in pip_deps])
     except Exception as e:  # noqa: BLE001
         print(f"[plugin] failed to parse {path}: {e}", flush=True)
         return None
@@ -145,6 +149,30 @@ def _import_files(manifest: PluginManifest):
             print(f"[plugin] ERROR import {full}: {e}", flush=True)
             raise
 
+def _ensure_pip_dependencies(deps: Optional[List[str]]):
+    if not deps:
+        return
+    # Attempt import first to avoid unnecessary installs; simple heuristic using module==pkg or pkg name before extras/versions
+    import importlib
+    import subprocess, shutil
+    for spec in deps:
+        base = spec.split('[')[0].split('==')[0].split('>=')[0].split('<=')[0].strip()
+        mod_candidate = base.replace('-', '_')
+        try:
+            importlib.import_module(mod_candidate)
+            continue
+        except Exception:
+            pass
+        pip_exe = shutil.which('pip') or shutil.which('pip3')
+        if not pip_exe:
+            print(f"[plugin] cannot install dependency (pip missing) spec={spec}", flush=True)
+            continue
+        try:
+            print(f"[plugin] installing dependency spec={spec}", flush=True)
+            subprocess.check_call([pip_exe, 'install', spec])
+        except Exception as e:
+            print(f"[plugin] failed to install dependency spec={spec} err={e}", flush=True)
+
 def initialize_plugins():
     if not PLUGIN_DIR.exists():
         return
@@ -188,6 +216,11 @@ def initialize_plugins():
                     continue
                 try:
                     _apply_migrations(mf, meta)
+                    # Ensure pip dependencies if declared
+                    try:
+                        _ensure_pip_dependencies(mf.pip_dependencies)
+                    except Exception as e:
+                        print(f"[plugin] dependency install attempt failed name={name}: {e}", flush=True)
                     raw = manifest_data_map.get(name, {})
                     settings_defs = []
                     cfg = raw.get('settings') or raw.get('ui_settings') or raw.get('config') or []

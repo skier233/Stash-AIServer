@@ -23,7 +23,8 @@ def upgrade() -> None:  # noqa: D401
     op.create_table(
         'plugin_meta',
         sa.Column('id', sa.Integer, primary_key=True),
-        sa.Column('name', sa.String(length=100), nullable=False, unique=True, index=True),
+        # Remove explicit index=True; unique constraint already creates an index
+        sa.Column('name', sa.String(length=100), nullable=False, unique=True),
         sa.Column('version', sa.String(length=50), nullable=False),
         sa.Column('required_backend', sa.String(length=50), nullable=False),
         sa.Column('status', sa.String(length=30), nullable=False, server_default='active'),
@@ -34,7 +35,6 @@ def upgrade() -> None:  # noqa: D401
         sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.Column('updated_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
     )
-    op.create_index('ix_plugin_meta_name', 'plugin_meta', ['name'])
 
     # plugin_sources (remote registries) / plugin_catalog (available plugins) / plugin_settings (persisted config)
     op.create_table(
@@ -48,7 +48,6 @@ def upgrade() -> None:  # noqa: D401
         sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.Column('updated_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
     )
-    op.create_index('ix_plugin_sources_name', 'plugin_sources', ['name'])
 
     op.create_table(
         'plugin_catalog',
@@ -86,7 +85,8 @@ def upgrade() -> None:  # noqa: D401
     op.create_table(
         'task_history',
         sa.Column('id', sa.Integer, primary_key=True),
-        sa.Column('task_id', sa.String(length=64), nullable=False, unique=True, index=True),
+        # unique already implies an index; remove extra index=True
+        sa.Column('task_id', sa.String(length=64), nullable=False, unique=True),
         sa.Column('action_id', sa.String(length=200), nullable=False),
         sa.Column('service', sa.String(length=100), nullable=False),
         sa.Column('status', sa.String(length=50), nullable=False),
@@ -99,7 +99,6 @@ def upgrade() -> None:  # noqa: D401
         sa.Column('error', sa.Text, nullable=True),
         sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
     )
-    op.create_index('ix_task_history_task_id', 'task_history', ['task_id'])
     op.create_index('ix_task_history_created_at', 'task_history', ['created_at'])
     # High-value composite for filtered history queries (service/status + recency)
     op.create_index('ix_task_history_service_status_created', 'task_history', ['service', 'status', 'created_at'])
@@ -115,8 +114,8 @@ def upgrade() -> None:  # noqa: D401
         sa.Column('entity_id', sa.String(length=64), nullable=False),
         sa.Column('client_ts', sa.DateTime, nullable=False),
         sa.Column('metadata', sa.JSON, nullable=True),
+        sa.UniqueConstraint('client_event_id', name='uq_interaction_client_event_id')
     )
-    op.create_unique_constraint('uq_interaction_client_event_id', 'interaction_events', ['client_event_id'])
     op.create_index('ix_interaction_session_scene', 'interaction_events', ['session_id', 'entity_type', 'entity_id'])
     op.create_index('ix_interaction_client_ts', 'interaction_events', ['client_ts'])
     op.create_index('ix_interaction_events_event_type', 'interaction_events', ['event_type'])
@@ -141,8 +140,8 @@ def upgrade() -> None:  # noqa: D401
         sa.Column('updated_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.Column('client_fingerprint', sa.String(length=128), nullable=True),
         sa.Column('ended_at', sa.DateTime, nullable=True),
+        sa.UniqueConstraint('session_id', name='uq_interaction_session_id')
     )
-    op.create_unique_constraint('uq_interaction_session_id', 'interaction_sessions', ['session_id'])
     op.create_index('ix_interaction_sessions_session_id', 'interaction_sessions', ['session_id'])
     op.create_index('ix_interaction_sessions_ended_at', 'interaction_sessions', ['ended_at'])
     op.create_index('ix_interaction_sessions_client_fingerprint', 'interaction_sessions', ['client_fingerprint'])

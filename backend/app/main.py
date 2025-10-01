@@ -19,8 +19,9 @@ from app.plugin_runtime.loader import initialize_plugins
 from app.core.system_settings import seed_system_settings, get_value as sys_get
 from app.services import registry as services_registry  # registry remains for core non-plugin definitions (if any)
 
-# Ensure tables exist if migrations not yet run (development convenience)
-Base.metadata.create_all(bind=engine)
+# Development-only convenience: auto-create tables if migrations not applied yet.
+if os.getenv('AIO_DEVMODE'):
+    Base.metadata.create_all(bind=engine)
 
 
 @asynccontextmanager
