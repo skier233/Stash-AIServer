@@ -135,7 +135,10 @@ export class InteractionTracker {
 
   private buildConfig(partial: Partial<InteractionTrackerConfig>): Required<InteractionTrackerConfig> {
     const resolved = (partial.endpoint ?? _resolveBackendBase()).replace(/\/$/, '');
-    const base: Required<InteractionTrackerConfig> = {
+  // Determine persisted enabled flag from localStorage used by settings UI
+  let storedEnabled = true;
+  try { storedEnabled = localStorage.getItem('AI_INTERACTIONS_ENABLED') === '1'; } catch {}
+  const base: Required<InteractionTrackerConfig> = {
   endpoint: resolved,
       batchPath: '/api/v1/interactions/sync',
       sendIntervalMs: 5000,
@@ -148,7 +151,7 @@ export class InteractionTracker {
       autoDetect: true,
       integratePageContext: true,
       videoAutoInstrument: true,
-      enabled: true
+      enabled: storedEnabled
     };
     return { ...base, ...partial };
   }
@@ -633,6 +636,7 @@ export class InteractionTracker {
   // Runtime toggle for console debugging so integrators can verify events
   public enableDebug() { this.cfg.debug = true; this.log('debug enabled'); }
   public disableDebug() { this.log('debug disabled'); this.cfg.debug = false; }
+  public setEnabled(v: boolean) { this.cfg.enabled = v; this.log('enabled set to '+v); }
 
   // --------------------------- Internal Helpers ----------------------------
   private trackInternal(type: InteractionEventType, entityType: InteractionEvent['entity_type'], entityId: string, metadata?: any) {

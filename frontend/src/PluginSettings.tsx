@@ -52,6 +52,8 @@ const PluginSettings = () => {
   const [sources, setSources] = React.useState([] as any as Source[]);
   const [catalog, setCatalog] = React.useState({} as Record<string, CatalogEntry[]>);
   const [pluginSettings, setPluginSettings] = React.useState({} as Record<string, any[]>);
+  const [systemSettings, setSystemSettings] = React.useState([] as any[]);
+  const [systemOpen, setSystemOpen] = React.useState(false);
   const [openConfig, setOpenConfig] = React.useState(null as string | null);
   const [selectedSource, setSelectedSource] = React.useState(null as string | null);
   const [loading, setLoading] = React.useState({installed:false, sources:false, catalog:false} as {installed:boolean; sources:boolean; catalog:boolean; action?:string});
@@ -148,6 +150,23 @@ const PluginSettings = () => {
 
   // Initial loads
   React.useEffect(() => { loadInstalled(); loadSources(); }, [loadInstalled, loadSources]);
+  // After sources load first time, auto refresh each source once to populate catalog
+  const autoRefreshed = React.useRef(false);
+  React.useEffect(() => {
+    (async () => {
+      if (autoRefreshed.current) return; // only once
+      if (!sources.length) return;
+      // If any catalog already populated, skip bulk auto-refresh
+      const haveAny = Object.values(catalog).some(arr => Array.isArray(arr) && arr.length);
+      if (haveAny) { autoRefreshed.current = true; return; }
+      autoRefreshed.current = true;
+      for (const s of sources) {
+        try { await refreshSource(s.name); } catch(e:any){ /* ignore individual errors */ }
+      }
+    })();
+  }, [sources, catalog, refreshSource]);
+  // System settings initial load
+  React.useEffect(() => { (async ()=> { try { const data = await jfetch(`${backendBase}/api/v1/plugins/system/settings`); setSystemSettings(Array.isArray(data)?data:[]); } catch(e:any){ /* ignore until user opens */ } })(); }, [backendBase]);
 
   // If selected source changes and we don't have catalog, load it
   React.useEffect(() => { if (selectedSource && !catalog[selectedSource]) loadCatalogFor(selectedSource); }, [selectedSource, catalog, loadCatalogFor]);
@@ -161,7 +180,16 @@ const PluginSettings = () => {
   }, [sources, selectedSource]);
 
   // Interaction toggle persistence
-  React.useEffect(() => { if (interactionsEnabled) localStorage.setItem(LS_INTERACTIONS,'1'); else localStorage.removeItem(LS_INTERACTIONS); }, [interactionsEnabled]);
+  React.useEffect(() => { 
+    if (interactionsEnabled) localStorage.setItem(LS_INTERACTIONS,'1'); else localStorage.removeItem(LS_INTERACTIONS);
+    // Propagate to tracker runtime if already loaded
+    try {
+      const tracker = (window as any).stashAIInteractionTracker;
+      if (tracker) {
+        if (typeof tracker.setEnabled === 'function') tracker.setEnabled(!!interactionsEnabled); else if (typeof tracker.configure === 'function') tracker.configure({ enabled: !!interactionsEnabled });
+      }
+    } catch {}
+  }, [interactionsEnabled]);
 
   function saveBackendBase() {
     const clean = backendDraft.trim().replace(/\/$/, '');
@@ -261,6 +289,26 @@ const PluginSettings = () => {
     </label>{resetBtn}</div>;
   }
 
+  function SystemFieldRenderer({f}:{f:any}) {
+    const t = f.type || 'string';
+    const label = f.label || f.key;
+    const val = f.value === undefined ? f.default : f.value;
+    const changed = val !== undefined && val !== null && f.default !== undefined && val !== f.default;
+    const inputStyle: React.CSSProperties = { padding:6, background:'#111', color:'#eee', border:'1px solid #333', minWidth:140 };
+    const wrap: React.CSSProperties = { position:'relative', padding:'4px 4px 6px', border:'1px solid #2a2a2a', borderRadius:4, background:'#101010' };
+    const resetBtn = (changed ? <button style={{position:'absolute', top:2, right:4, fontSize:9, padding:'1px 4px', cursor:'pointer'}} onClick={()=>saveSystemSetting(f.key, null)}>Reset</button> : null);
+    const labelEl = <span>{label} {changed && <span style={{color:'#ffa657', fontSize:10}}>•</span>}</span>;
+    if (t === 'boolean') return <div style={wrap}><label style={{fontSize:12, display:'flex', alignItems:'center', gap:8}}><input type="checkbox" checked={!!val} onChange={e=>saveSystemSetting(f.key, (e.target as any).checked)} /> {labelEl}</label>{resetBtn}</div>;
+    if (t === 'number') return <div style={wrap}><label style={{fontSize:12}}>{labelEl}<br/><input style={inputStyle} type="number" value={val ?? ''} onChange={e=>saveSystemSetting(f.key, Number((e.target as any).value))} /></label>{resetBtn}</div>;
+    if (t === 'select' || (f.options && Array.isArray(f.options))) return <div style={wrap}><label style={{fontSize:12}}>{labelEl}<br/><select style={inputStyle} value={val ?? ''} onChange={e=>saveSystemSetting(f.key, (e.target as any).value)}><option value="">(unset)</option>{(f.options||[]).map((o:any,i:number)=><option key={i} value={o}>{typeof o === 'object' ? (o.value ?? o.key ?? JSON.stringify(o)) : String(o)}</option>)}</select></label>{resetBtn}</div>;
+    return <div style={wrap}><label style={{fontSize:12}}>{labelEl}<br/><input style={inputStyle} value={val ?? ''} onChange={e=>saveSystemSetting(f.key, (e.target as any).value)} /></label>{resetBtn}</div>;
+  }
+
+  const saveSystemSetting = React.useCallback(async (key: string, value: any) => {
+    try { await jfetch(`${backendBase}/api/v1/plugins/system/settings/${encodeURIComponent(key)}`, { method:'PUT', body: JSON.stringify({ value }) }); setSystemSettings((cur:any[]) => cur.map(f=> f.key===key ? ({...f, value}) : f)); }
+    catch(e:any){ setError(e.message); }
+  }, [backendBase]);
+
   function renderSources() {
     return (
       <div>
@@ -344,6 +392,15 @@ const PluginSettings = () => {
           <div style={{fontSize:10, opacity:0.7}}>Task dashboard: <a href="plugins/ai-tasks" style={{color:'#9cf'}}>Open</a></div>
           <div style={{fontSize:10, opacity:0.5}}>Restart backend button not yet implemented (needs backend endpoint).</div>
         </div>
+      </div>
+      <div style={sectionStyle}>
+        <h3 style={headingStyle}>Backend System Settings</h3>
+        <div style={{margin:'4px 0 12px'}}>
+          <button style={smallBtn} onClick={()=>{ if (!systemSettings.length) { jfetch(`${backendBase}/api/v1/plugins/system/settings`).then(d=> setSystemSettings(Array.isArray(d)?d:[])).catch(e=>setError(e.message)); } setSystemOpen((o:boolean)=>!o); }}>{systemOpen ? 'Hide':'Show'} Values</button>
+        </div>
+        {systemOpen && <div style={{display:'flex', flexWrap:'wrap', gap:12}}>
+          {systemSettings.map((f:any)=><div key={f.key} style={{minWidth:220}}><SystemFieldRenderer f={f} /></div>)}
+        </div>}
       </div>
       <div style={sectionStyle}>
         <h3 style={headingStyle}>Installed Plugins {loading.installed && <span style={{fontSize:11, opacity:0.7}}>loading…</span>}</h3>

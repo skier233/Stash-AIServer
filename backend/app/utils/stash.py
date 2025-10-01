@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import List, Dict, Any, Optional
 import os, traceback
+from app.core.system_settings import get_value as sys_get
 from urllib.parse import urlparse
 
 _IMPORT_ERR: Optional[str] = None
@@ -16,10 +17,16 @@ except Exception as e:  # pragma: no cover
 # Hardcoded defaults (can be made configurable later). Allow override inside container where 'localhost' would refer to the container itself.
 # Priority: STASH_INTERNAL_URL (docker-compose override) > STASH_URL env > default.
 _default_url = 'http://localhost:3000'
-STASH_URL = os.getenv('STASH_INTERNAL_URL') or os.getenv('STASH_URL', _default_url)
-STASH_URL = STASH_URL.rstrip('/')
-STASH_API_KEY = os.getenv('STASH_API_KEY', 'REPLACE_WITH_API_KEY')
-STASH_PUBLIC_BASE = os.getenv('STASH_PUBLIC_BASE') or os.getenv('STASH_PUBLIC_URL') or ''  # optional public/base override for asset URLs
+def _resolve_setting(key: str, fallback: Any) -> Any:
+    # Always prefer explicit system setting value; if None, fallback to env; then fallback default.
+    val = sys_get(key, None)
+    if val is None or val == '':
+        return os.getenv(key, fallback)
+    return val
+
+STASH_URL = (os.getenv('STASH_INTERNAL_URL') or str(_resolve_setting('STASH_URL', _default_url))).rstrip('/')
+STASH_API_KEY = str(_resolve_setting('STASH_API_KEY', os.getenv('STASH_API_KEY', 'REPLACE_WITH_API_KEY')))
+STASH_PUBLIC_BASE = str(_resolve_setting('STASH_PUBLIC_BASE', os.getenv('STASH_PUBLIC_BASE') or os.getenv('STASH_PUBLIC_URL') or ''))
 
 _SCENE_FRAGMENT = (
     # Minimal but includes studio for UI badge and preview/screenshot URLs
@@ -94,13 +101,23 @@ def _build_connection_dict() -> Dict[str, Any]:
     scheme = parsed.scheme or 'http'
     # Extract hostname and port separately so stashapi doesn't append default port again
     hostname = parsed.hostname or 'localhost'
-    # Env override first, then explicit URL port, else default 9999
-    env_port = os.getenv('STASH_PORT')
-    try:
-        port = int(env_port) if env_port else (parsed.port if parsed.port else 9999)
-    except ValueError:
-        print(f"[stash] invalid STASH_PORT='{env_port}', falling back to parsed/default", flush=True)
-        port = parsed.port if parsed.port else 9999
+    # Determine explicit override precedence: env STASH_PORT > system setting STASH_PORT.
+    override_port_raw = os.getenv('STASH_PORT')
+    if override_port_raw is None:
+        sp = sys_get('STASH_PORT', None)
+        # Filter empty / None / 0 sentinel
+        if sp not in (None, '', 0):
+            override_port_raw = str(sp)
+    port: int
+    if override_port_raw:
+        try:
+            port = int(override_port_raw)
+        except ValueError:
+            print(f"[stash] invalid STASH_PORT override '{override_port_raw}', ignoring", flush=True)
+            override_port_raw = None
+    if not override_port_raw:
+        # Use port from URL if present else default Stash 3000
+        port = parsed.port if parsed.port else 3000
     conn = {
         'ApiKey': STASH_API_KEY,
         'Scheme': scheme,

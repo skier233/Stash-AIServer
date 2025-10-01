@@ -8,7 +8,8 @@ from sqlalchemy import select, delete
 import httpx, traceback  # json unused
 from app.db.session import SessionLocal
 from app.models.plugin import PluginMeta, PluginSource, PluginCatalog, PluginSetting
-from app.plugins import loader as plugin_loader
+from app.plugin_runtime import loader as plugin_loader
+from app.core.system_settings import SYSTEM_PLUGIN_NAME, get_value as sys_get_value, invalidate_cache as sys_invalidate_cache
 
 router = APIRouter(prefix='/plugins', tags=['plugins'])
 
@@ -160,6 +161,45 @@ async def upsert_setting(plugin_name: str, key: str, payload: SettingUpsert, db:
     # Null means reset to default
     row.value = v
     db.commit()
+    return {'status': 'ok'}
+
+# ---------------- System (global) settings endpoints -----------------
+
+@router.get('/system/settings', response_model=List[PluginSettingModel])
+async def list_system_settings(db: Session = Depends(get_db)):
+    rows = db.execute(select(PluginSetting).where(PluginSetting.plugin_name == SYSTEM_PLUGIN_NAME)).scalars().all()
+    return [PluginSettingModel(
+        key=r.key,
+        label=r.label or r.key,
+        type=r.type or 'string',
+        default=r.default_value,
+        options=r.options,
+        description=r.description,
+        value=(r.value if r.value is not None else r.default_value)
+    ) for r in rows]
+
+@router.put('/system/settings/{key}')
+async def upsert_system_setting(key: str, payload: SettingUpsert, db: Session = Depends(get_db)):
+    row = db.execute(select(PluginSetting).where(PluginSetting.plugin_name == SYSTEM_PLUGIN_NAME, PluginSetting.key == key)).scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail='NOT_FOUND')
+    v = payload.value
+    if v is not None:
+        if row.type == 'number':
+            try: v = float(v)
+            except Exception: raise HTTPException(status_code=400, detail='INVALID_NUMBER')
+        elif row.type == 'boolean':
+            if not isinstance(v, bool):
+                if isinstance(v, (int,float)): v = bool(v)
+                elif isinstance(v, str) and v.lower() in ('true','false'): v = v.lower() == 'true'
+                else: raise HTTPException(status_code=400, detail='INVALID_BOOLEAN')
+        elif row.type == 'select' and row.options:
+            opts = row.options if isinstance(row.options, list) else []
+            if v not in opts:
+                raise HTTPException(status_code=400, detail='INVALID_OPTION')
+    row.value = v
+    db.commit()
+    sys_invalidate_cache()
     return {'status': 'ok'}
 
 

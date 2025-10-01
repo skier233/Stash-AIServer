@@ -5,6 +5,7 @@ from sqlalchemy import select, delete, update
 from datetime import datetime, timezone, timedelta
 import traceback
 import os
+from app.core.system_settings import get_value as sys_get
 from collections import defaultdict
 
 from app.models.interaction import (
@@ -192,7 +193,7 @@ def _finalize_stale_sessions_for_fingerprint(db: Session, client_fingerprint: st
 
     # Qualification threshold (reuse existing config)
     try:
-        min_session_minutes = int(os.getenv('INTERACTION_MIN_SESSION_MINUTES', '10'))
+        min_session_minutes = int(sys_get('INTERACTION_MIN_SESSION_MINUTES', 10))
     except Exception:
         min_session_minutes = 10
     min_session_seconds = min_session_minutes * 60
@@ -280,7 +281,7 @@ def _find_or_create_session_id(db: Session, incoming_session_id: str, client_fin
         return incoming_session_id
 
     now = datetime.now(timezone.utc)
-    merge_ttl_seconds = int(os.getenv('INTERACTION_MERGE_TTL_SECONDS', '120'))
+    merge_ttl_seconds = int(sys_get('INTERACTION_MERGE_TTL_SECONDS', 120))
     time_threshold = now - timedelta(seconds=merge_ttl_seconds)
 
     # 2) Alias mapping exists -> return canonical pointed id
@@ -515,7 +516,7 @@ def _bulk_update_scene_derived(db: Session, scene_ev_list: list, scene_ids: set[
     if not scene_ids:
         return
     try:
-        min_session_minutes = int(os.getenv('INTERACTION_MIN_SESSION_MINUTES', '10'))
+        min_session_minutes = int(sys_get('INTERACTION_MIN_SESSION_MINUTES', 10))
     except Exception:
         min_session_minutes = 10
     min_session_seconds = min_session_minutes * 60
@@ -682,9 +683,8 @@ def _process_scene_summaries(db: Session, ev_list: list, errors: list[str]):
 
     # 4 & 5. Segments & derived updates (windowed replay + pointer)
     # configuration
-    TIME_MARGIN_SECONDS = float(os.getenv('INTERACTION_SEGMENT_TIME_MARGIN_SECONDS', '2'))
-    # Unified merge gap precedence: SEGMENT_MERGE_GAP_SECONDS > INTERACTION_SEGMENT_POS_MARGIN_SECONDS > 0.5
-    MERGE_GAP_SECONDS = float(os.getenv('SEGMENT_MERGE_GAP_SECONDS', os.getenv('INTERACTION_SEGMENT_POS_MARGIN_SECONDS', '0.5')))
+    TIME_MARGIN_SECONDS = float(sys_get('INTERACTION_SEGMENT_TIME_MARGIN_SECONDS', 2) or 2)
+    MERGE_GAP_SECONDS = float(sys_get('SEGMENT_MERGE_GAP_SECONDS', sys_get('INTERACTION_SEGMENT_POS_MARGIN_SECONDS', 0.5)))
 
     for (sid, scene_id), sc_events in scene_events_by_pair.items():
         watch = watch_map.get((sid, scene_id))
