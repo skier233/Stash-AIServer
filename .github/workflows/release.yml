@@ -66,15 +66,7 @@ jobs:
           VERSION: ${{ needs.determine.outputs.version }}
         run: |
           echo "Setting backend/pyproject.toml version to $VERSION"
-          python - <<'PY'
-import os,re
-p='backend/pyproject.toml'
-v=os.environ['VERSION']
-s=open(p,'r',encoding='utf8').read()
-s2=re.sub(r'(?m)^version\s*=\s*"[^"]+"', f'version = "{v}"', s)
-open(p,'w',encoding='utf8').write(s2)
-print('ok')
-PY
+          sed -E -i "s/^version\s*=\s*\".*\"/version = \"${VERSION}\"/" backend/pyproject.toml
 
       - name: Install cibuildwheel
         run: |
@@ -111,15 +103,7 @@ PY
           VERSION: ${{ needs.determine.outputs.version }}
         run: |
           echo "Setting backend/pyproject.toml version to $VERSION"
-          python - <<'PY'
-import os,re
-p='backend/pyproject.toml'
-v=os.environ['VERSION']
-s=open(p,'r',encoding='utf8').read()
-s2=re.sub(r'(?m)^version\s*=\s*"[^"]+"', f'version = "{v}"', s)
-open(p,'w',encoding='utf8').write(s2)
-print('ok')
-PY
+          sed -E -i "s/^version\s*=\s*\".*\"/version = \"${VERSION}\"/" backend/pyproject.toml
 
       - name: Install cibuildwheel
         run: |
@@ -158,15 +142,7 @@ PY
           VERSION: ${{ needs.determine.outputs.version }}
         run: |
           Write-Host "Setting backend/pyproject.toml version to $env:VERSION"
-          python - <<'PY'
-import os,re
-p='backend/pyproject.toml'
-v=os.environ['VERSION']
-s=open(p,'r',encoding='utf8').read()
-s2=re.sub(r'(?m)^version\s*=\s*"[^"]+"', f'version = "{v}"', s)
-open(p,'w',encoding='utf8').write(s2)
-print('ok')
-PY
+          (Get-Content backend/pyproject.toml) -replace 'version\s*=\s*".*"', "version = \"$env:VERSION\"" | Set-Content backend/pyproject.toml
 
       - name: Install cibuildwheel
         shell: pwsh
@@ -212,36 +188,35 @@ PY
 
       - name: Show wheel files
         run: ls -la wheelhouse || true
-
       - name: Validate wheel versions match tag
         env:
           VERSION: ${{ needs.determine.outputs.version }}
         run: |
           python - <<'PY'
-import zipfile,sys,os
-v=os.environ['VERSION']
-errs=0
-for w in os.listdir('wheelhouse'):
-    if not w.endswith('.whl'): continue
-    with zipfile.ZipFile(os.path.join('wheelhouse',w)) as z:
-        md=''
-        for n in z.namelist():
-            if n.endswith('METADATA'):
-                md=z.read(n).decode()
-                break
-        for line in md.splitlines():
-            if line.startswith('Version:'):
-                got=line.split(':',1)[1].strip()
-                if got!=v:
-                    print('Wheel',w,'version mismatch:',got,'!=',v)
-                    errs+=1
-                else:
-                    print('Wheel',w,'version OK',got)
-                break
-        else:
-            print('No METADATA found in',w); errs+=1
-sys.exit(errs)
-PY
+          import zipfile,sys,os
+          v=os.environ['VERSION']
+          errs=0
+          for w in os.listdir('wheelhouse'):
+              if not w.endswith('.whl'): continue
+              with zipfile.ZipFile(os.path.join('wheelhouse',w)) as z:
+                  md=''
+                  for n in z.namelist():
+                      if n.endswith('METADATA'):
+                          md=z.read(n).decode()
+                          break
+                  for line in md.splitlines():
+                      if line.startswith('Version:'):
+                          got=line.split(':',1)[1].strip()
+                          if got!=v:
+                              print('Wheel',w,'version mismatch:',got,'!=',v)
+                              errs+=1
+                          else:
+                              print('Wheel',w,'version OK',got)
+                          break
+                  else:
+                      print('No METADATA found in',w); errs+=1
+          sys.exit(errs)
+          PY
       - name: Install twine
         run: python -m pip install --upgrade pip twine
 
