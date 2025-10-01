@@ -36,7 +36,7 @@ Key requirements:
 
 ### Folder Structure
 ```
-backend/app/recommendations/
+backend/stash_ai_server/recommendations/
   __init__.py
   registry.py           # decorator + registry for recommenders
   models.py / types.py  # RecContext, RecommenderConfigField, RecommenderDefinition, RecommendationRequest
@@ -61,7 +61,7 @@ Rationale: isolates core registry from individual recommender logic; each recomm
 ### Recommender Decorator & Models
 
 ```python
-# backend/app/recommendations/registry.py
+# backend/stash_ai_server/recommendations/registry.py
 from __future__ import annotations
 from typing import Callable, Any, Dict, List, Awaitable
 from enum import Enum
@@ -120,7 +120,7 @@ def recommender(*, id: str, label: str, contexts: List[RecContext], description:
 #### Example Recommender (Tag Overlap Similarity)
 
 ```python
-# backend/app/recommendations/recommenders/tag_overlap/tag_overlap.py
+# backend/stash_ai_server/recommendations/recommenders/tag_overlap/tag_overlap.py
 from ..registry import recommender, RecContext, RecommenderConfigField, RecommendationRequest
 from typing import List, Dict
 
@@ -347,7 +347,7 @@ Key requirements:
 Mirrors existing action/service registry patterns.
 
 ```python
-# backend/app/recommendations/registry.py
+# backend/stash_ai_server/recommendations/registry.py
 from __future__ import annotations
 from typing import Callable, Any, Dict, List, Awaitable
 from enum import Enum
@@ -408,7 +408,7 @@ def provider(*, id: str, label: str, contexts: List[RecContext], description: st
 Illustrates config fields, multi-seed handling, and async logic.
 
 ```python
-# backend/app/recommendations/providers/tag_overlap.py
+# backend/stash_ai_server/recommendations/providers/tag_overlap.py
 from .registry import provider, RecContext, ProviderConfigField, RecommendationRequest
 from typing import List, Dict
 

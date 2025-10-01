@@ -1,4 +1,4 @@
 include alembic.ini
 recursive-include alembic *
-recursive-include app *.py
-recursive-include app/plugin_runtime *
+recursive-include stash_ai_server *.py
+recursive-include stash_ai_server/plugin_runtime *

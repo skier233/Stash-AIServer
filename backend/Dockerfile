@@ -16,8 +16,8 @@ RUN pip install --no-cache-dir -r requirements.txt || true
 #############################
 FROM base AS dev
 ENV AIO_DEVMODE=1
-# In docker-compose dev we will bind mount ./backend/app over /app/app for live edits.
-CMD ["python", "-m", "app.dev_entrypoint"]
+# In docker-compose dev we will bind mount ./backend/stash_ai_server over /app/app for live edits.
+CMD ["python", "-m", "stash_ai_server.dev_entrypoint"]
 
 #############################
 # Runtime stage (uses PyPI package)
@@ -36,4 +36,4 @@ COPY alembic /app/alembic
 RUN mkdir -p /app/data
 
 EXPOSE 8000
-CMD ["python", "-m", "app.entrypoint"]
+CMD ["python", "-m", "stash_ai_server.entrypoint"]

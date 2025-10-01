@@ -2,5 +2,5 @@
 */__pycache__/*
 *.pyc
 */dist/*
-/backend/app/plugins/*
+/backend/stash_ai_server/plugins/*
 /backend/plugins/*

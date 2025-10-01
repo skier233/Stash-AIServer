@@ -12,7 +12,7 @@ Minimal FastAPI backend with SQLite + Alembic migrations.
 ## Directory Layout
 ```
 backend/
-  app/
+  stash_ai_server/
     api/          # Routers
     core/         # Config
     db/           # Session + base
@@ -31,14 +31,14 @@ docker compose up --build
 ```
 Then visit http://localhost:8000/docs for the Swagger UI.
 
-During development, source changes under `backend/app` auto-reload thanks to `--reload` and bind mount.
+During development, source changes under `backend/stash_ai_server` auto-reload thanks to `--reload` and bind mount.
 
 ## Manual Local Run (Without Docker)
 ```
 python -m venv .venv
 . .venv/Scripts/activate  # Windows PowerShell: .venv\Scripts\Activate.ps1
 pip install -r backend/requirements.txt
-uvicorn backend.app.main:app --reload
+uvicorn backend.stash_ai_server.main:app --reload
 ```
 
 ## Apply Migrations

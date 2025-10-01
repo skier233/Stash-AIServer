@@ -11,16 +11,16 @@ BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.main import app
+from stash_ai_server.main import app
 
 # Register the slow test service only for tests. Prefer the plugin implementation
 # if the plugin is present, otherwise fall back to the local shim at
-# app.services.slow.service.
+# stash_ai_server.services.slow.service.
 try:
-    from app.plugins.slow_service_plugin.service import register as register_slow_service
+    from stash_ai_server.plugins.slow_service_plugin.service import register as register_slow_service
 except Exception:
-    from app.services.slow.service import register as register_slow_service
-from app.tasks.manager import manager
+    from stash_ai_server.services.slow.service import register as register_slow_service
+from stash_ai_server.tasks.manager import manager
 
 try:
     register_slow_service()

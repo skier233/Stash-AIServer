@@ -7,7 +7,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./backend/app:/app/app:rw
+      - ./backend/stash_ai_server:/app/app:rw
       - ./backend/alembic:/app/alembic:rw
       - ./backend/alembic.ini:/app/alembic.ini:ro
       - ./backend/data:/app/data
@@ -16,7 +16,7 @@ services:
       - AIO_DEVMODE=1
       - STASH_API_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOiJza2kyMyIsImlhdCI6MTY2OTA2MjU4NCwic3ViIjoiQVBJS2V5In0.0QWitnVF0c0n8vjKDXN3c1Of7ZDreOyWg3iUcjlVzYw
       - STASH_INTERNAL_URL=http://host.docker.internal:3000
-    command: python -m app.dev_entrypoint
+    command: python -m stash_ai_server.dev_entrypoint
 
   # If you prefer to run the dev container from the published image (no live reload),
   # replace `build:` above with:

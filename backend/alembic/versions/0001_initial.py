@@ -1,7 +1,7 @@
 """Initial consolidated schema (authoritative baseline)
 
 This replaces the earlier incremental chain (legacy files 0001-0006). It is
-aligned with the current ORM models in `app.models.interaction`.
+aligned with the current ORM models in `stash_ai_server.models.interaction`.
 
 
 If you have an existing dev DB that previously ran old migrations, either

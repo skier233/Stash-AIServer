@@ -4,8 +4,8 @@ import tempfile
 import time
 from pathlib import Path
 from fastapi.testclient import TestClient
-from app.main import app
-from app.db.session import SessionLocal
+from stash_ai_server.main import app
+from stash_ai_server.db.session import SessionLocal
 
 client = TestClient(app)
 
@@ -49,9 +49,9 @@ def test_end_to_end_plugin_catalog_lifecycle():
         assert resp.status_code == 200
         j = resp.json()
         print('INSTALL RESP JSON:', j)
-        # Show filesystem state under backend/app/plugins
+        # Show filesystem state under backend/stash_ai_server/plugins
         backend_root = Path(__file__).resolve().parents[1]
-        plugins_dir = backend_root / 'app' / 'plugins'
+        plugins_dir = backend_root / 'stash_ai_server' / 'plugins'
         print('PLUGINS DIR:', plugins_dir)
         try:
             contents = [p.name for p in plugins_dir.iterdir()]

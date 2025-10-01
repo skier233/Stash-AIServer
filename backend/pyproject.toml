@@ -27,4 +27,4 @@ dependencies = [
 Homepage = "https://github.com/skier233/Stash-AIServer"
 
 [project.scripts]
-stash-ai-server = "app.entrypoint:main"
+stash-ai-server = "stash_ai_server.entrypoint:main"
