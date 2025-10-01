@@ -66,23 +66,31 @@ jobs:
           VERSION: ${{ needs.determine.outputs.version }}
         run: |
           echo "Setting backend/pyproject.toml version to $VERSION"
-          sed -E -i "s/^version\s*=\s*\".*\"/version = \"${VERSION}\"/" backend/pyproject.toml
+          python - <<'PY'
+          import pathlib, os, re
+          p=pathlib.Path('backend/pyproject.toml')
+          s=p.read_text(encoding='utf8')
+          v=os.environ['VERSION']
+          s=re.sub(r'(?m)^version\s*=\s*"[^"]+"', f'version = "{v}"', s)
+          p.write_text(s, encoding='utf8')
+          print('ok')
+          PY
 
-      - name: Install cibuildwheel
+      - name: Install build tooling
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install cibuildwheel
+          python -m pip install --upgrade pip build
 
-      - name: Build wheels (linux)
+      - name: Build wheel (linux)
         working-directory: backend
         run: |
-          python -m cibuildwheel --output-dir dist/wheelhouse
+          rm -rf dist || true
+          python -m build --wheel --no-isolation
 
-      - name: Upload wheels (linux)
+      - name: Upload wheel (linux)
         uses: actions/upload-artifact@v4
         with:
           name: wheels-linux
-          path: backend/dist/wheelhouse/*.whl
+          path: backend/dist/*.whl
   build-wheels-macos:
     name: Build wheels (macos)
     runs-on: macos-latest
@@ -103,23 +111,31 @@ jobs:
           VERSION: ${{ needs.determine.outputs.version }}
         run: |
           echo "Setting backend/pyproject.toml version to $VERSION"
-          sed -E -i "s/^version\s*=\s*\".*\"/version = \"${VERSION}\"/" backend/pyproject.toml
+          python - <<'PY'
+          import pathlib, os, re
+          p=pathlib.Path('backend/pyproject.toml')
+          s=p.read_text(encoding='utf8')
+          v=os.environ['VERSION']
+          s=re.sub(r'(?m)^version\s*=\s*"[^"]+"', f'version = "{v}"', s)
+          p.write_text(s, encoding='utf8')
+          print('ok')
+          PY
 
-      - name: Install cibuildwheel
+      - name: Install build tooling
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install cibuildwheel
+          python -m pip install --upgrade pip build
 
-      - name: Build wheels (macos)
+      - name: Build wheel (macos)
         working-directory: backend
         run: |
-          python -m cibuildwheel --output-dir dist/wheelhouse
+          rm -rf dist || true
+          python -m build --wheel --no-isolation
 
-      - name: Upload wheels (macos)
+      - name: Upload wheel (macos)
         uses: actions/upload-artifact@v4
         with:
           name: wheels-macos
-          path: backend/dist/wheelhouse/*.whl
+          path: backend/dist/*.whl
 
   build-wheels-windows:
     name: Build wheels (windows)
@@ -142,25 +158,33 @@ jobs:
           VERSION: ${{ needs.determine.outputs.version }}
         run: |
           Write-Host "Setting backend/pyproject.toml version to $env:VERSION"
-          (Get-Content backend/pyproject.toml) -replace 'version\s*=\s*".*"', "version = \"$env:VERSION\"" | Set-Content backend/pyproject.toml
+          python - <<'PY'
+          import pathlib, os, re
+          p=pathlib.Path('backend/pyproject.toml')
+          s=p.read_text(encoding='utf8')
+          v=os.environ['VERSION']
+          s=re.sub(r'(?m)^version\s*=\s*"[^"]+"', f'version = "{v}"', s)
+          p.write_text(s, encoding='utf8')
+          print('ok')
+          PY
 
-      - name: Install cibuildwheel
+      - name: Install build tooling (windows)
         shell: pwsh
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install cibuildwheel
+          python -m pip install --upgrade pip build
 
-      - name: Build wheels (windows)
+      - name: Build wheel (windows)
         shell: pwsh
         working-directory: backend
         run: |
-          python -m cibuildwheel --output-dir dist/wheelhouse
+          Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue
+          python -m build --wheel
 
-      - name: Upload wheels (windows)
+      - name: Upload wheel (windows)
         uses: actions/upload-artifact@v4
         with:
           name: wheels-windows
-          path: backend/dist/wheelhouse/*.whl
+          path: backend/dist/*.whl
 
   publish-wheels:
     name: Publish wheels to PyPI
