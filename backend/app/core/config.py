@@ -17,27 +17,45 @@ Env vars:
   AI_SERVER_VERSION   - override reported version
 """
 
-DEFAULT_DATA_DIRS = [
-    os.getenv('AI_SERVER_DATA_DIR'),
-    '/app/data',  # container runtime working directory
-    str(Path.cwd() / 'data'),
-]
+_diagnostics: list[str] = []
+
+env_data_dir = os.getenv('AI_SERVER_DATA_DIR')
+
+# Build ordered candidate list (dedup while preserving order)
+_candidates = []
+for c in [env_data_dir, '/app/data', str(Path.cwd() / 'data')]:
+    if c and c not in _candidates:
+        _candidates.append(c)
 
 data_dir = None
-for cand in DEFAULT_DATA_DIRS:
-    if not cand:
-        continue
+for cand in _candidates:
     p = Path(cand)
     try:
         p.mkdir(parents=True, exist_ok=True)
         data_dir = p
+        _diagnostics.append(f"selected_data_dir={p} (candidate)")
         break
-    except Exception:  # pragma: no cover - fallback logic
+    except Exception as e:  # pragma: no cover
+        _diagnostics.append(f"candidate_failed path={p} err={e}")
         continue
 
-if data_dir is None:  # final fallback near this file
+if data_dir is None:
     data_dir = Path(__file__).resolve().parent.parent.parent / 'data'
-    data_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        _diagnostics.append(f"fallback_site_packages_dir={data_dir}")
+    except Exception as e:  # pragma: no cover
+        _diagnostics.append(f"fatal_failed_create_fallback path={data_dir} err={e}")
+
+# If an env override was explicitly provided but we somehow fell back to a site-packages path, prefer the env path lazily.
+if env_data_dir and data_dir and 'site-packages' in str(data_dir) and Path(env_data_dir).exists():
+    env_p = Path(env_data_dir)
+    try:
+        env_p.mkdir(parents=True, exist_ok=True)
+        _diagnostics.append(f"override_env_data_dir_applied={env_p}")
+        data_dir = env_p
+    except Exception as e:  # pragma: no cover
+        _diagnostics.append(f"override_env_data_dir_failed path={env_p} err={e}")
 
 db_path = os.getenv('AI_SERVER_DB_PATH')
 if db_path:
@@ -52,6 +70,7 @@ class Settings(BaseModel):
     version: str = os.getenv('AI_SERVER_VERSION', __version__)
     data_dir: Path = data_dir
     db_file: Path = db_path
+    diagnostics: list[str] | None = _diagnostics
 
 settings = Settings()
 

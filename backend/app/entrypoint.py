@@ -13,6 +13,13 @@ def _maybe_run_migrations():
 
 def main():
     print(f"[entrypoint] starting (prod) version={settings.version} db={settings.database_url}", flush=True)
+    try:
+        print(f"[entrypoint] data_dir={settings.data_dir} db_file={settings.db_file}", flush=True)
+        if getattr(settings, 'diagnostics', None):
+            for line in settings.diagnostics:
+                print(f"[entrypoint][config] {line}", flush=True)
+    except Exception:
+        pass
     # Only attempt migrations in production image (dev uses create_all convenience)
     _maybe_run_migrations()
     print('[entrypoint] migrations complete', flush=True)
