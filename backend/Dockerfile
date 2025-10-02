@@ -24,11 +24,26 @@ CMD ["python", "-m", "stash_ai_server.dev_entrypoint"]
 #############################
 FROM base AS runtime
 ARG VERSION=latest
-RUN if [ "$VERSION" = "latest" ]; then \
-			pip install --no-cache-dir stash-ai-server; \
-		else \
-			pip install --no-cache-dir stash-ai-server==${VERSION}; \
-		fi
+RUN set -eux; \
+	INSTALL_CMD=""; \
+	if [ "$VERSION" = "latest" ]; then \
+		INSTALL_CMD="pip install --no-cache-dir stash-ai-server"; \
+	else \
+		INSTALL_CMD="pip install --no-cache-dir stash-ai-server==${VERSION}"; \
+	fi; \
+	echo "Will run: $INSTALL_CMD"; \
+	n=0; \
+	until [ $n -ge 5 ]; do \
+		if sh -c "$INSTALL_CMD"; then \
+			echo "install succeeded"; break; \
+		fi; \
+		n=$((n+1)); \
+		echo "install attempt $n failed; retrying in 20s"; \
+		sleep 20; \
+	done; \
+	if [ $n -ge 5 ]; then \
+		echo "install failed after 5 attempts"; exit 1; \
+	fi
 
 RUN mkdir -p /app/data
 

@@ -161,6 +161,34 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Wait for PyPI to index published wheel
+        env:
+          VERSION: ${{ needs.determine.outputs.version }}
+        run: |
+          python - <<'PY'
+          import os, time, sys, urllib.request, json
+          v=os.environ['VERSION']
+          url='https://pypi.org/pypi/stash-ai-server/json'
+          attempts=0
+          found=False
+          max_attempts=5
+          while attempts < max_attempts:
+              try:
+                  with urllib.request.urlopen(url, timeout=15) as r:
+                      data=json.load(r)
+                      if v in data.get('releases', {}):
+                          print('PyPI has version', v)
+                          found=True
+                          break
+              except Exception as e:
+                  print('check failed', e)
+              attempts += 1
+              print(f'retry {attempts}/{max_attempts} sleeping 20s')
+              time.sleep(20)
+          if not found:
+              print('Version not found on PyPI after retries; aborting')
+              sys.exit(1)
+          PY
       - name: Build & push
         uses: docker/build-push-action@v5
         with:

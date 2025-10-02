@@ -7,9 +7,23 @@ from stash_ai_server import __version__
 # project includes `backend/config.sample.env` — copy it to `backend/config.env`.
 try:
     from dotenv import load_dotenv
-    _dotenv_path = Path(__file__).resolve().parent.parent.parent / 'config.env'
-    if _dotenv_path.exists():
-        load_dotenv(str(_dotenv_path))
+    # Allow explicit override of config file path
+    cfg_override = os.getenv('AI_SERVER_CONFIG_FILE')
+    candidates = []
+    if cfg_override:
+        candidates.append(Path(cfg_override))
+
+    # Prefer the working directory (where docker-compose or the user runs the process)
+    candidates.append(Path.cwd() / 'config.env')
+    candidates.append(Path.cwd() / 'backend' / 'config.env')
+
+    for p in candidates:
+        try:
+            if p and p.exists():
+                load_dotenv(str(p))
+                break
+        except Exception:
+            continue
 except Exception:
     # If python-dotenv isn't available or load fails, fall back to env vars
     pass
