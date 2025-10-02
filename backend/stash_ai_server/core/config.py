@@ -2,6 +2,17 @@ from pathlib import Path
 from pydantic import BaseModel
 import os
 from stash_ai_server import __version__
+# Optionally load a repo-level config.env file for local/conda development so
+# users can keep secrets out of docker-compose and environment dumps. The
+# project includes `backend/config.sample.env` — copy it to `backend/config.env`.
+try:
+    from dotenv import load_dotenv
+    _dotenv_path = Path(__file__).resolve().parent.parent.parent / 'config.env'
+    if _dotenv_path.exists():
+        load_dotenv(str(_dotenv_path))
+except Exception:
+    # If python-dotenv isn't available or load fails, fall back to env vars
+    pass
 
 """Central configuration.
 
@@ -23,7 +34,7 @@ env_data_dir = os.getenv('AI_SERVER_DATA_DIR')
 
 # Build ordered candidate list (dedup while preserving order)
 _candidates = []
-for c in [env_data_dir, '/app/data', str(Path.cwd() / 'data')]:
+for c in [env_data_dir, str(Path.cwd() / 'data'), '/app/data']:
     if c and c not in _candidates:
         _candidates.append(c)
 

@@ -30,9 +30,6 @@ RUN if [ "$VERSION" = "latest" ]; then \
 			pip install --no-cache-dir stash-ai-server==${VERSION}; \
 		fi
 
-# Ensure alembic files are present for runtime migrations (optional)
-COPY alembic.ini /app/alembic.ini
-COPY alembic /app/alembic
 RUN mkdir -p /app/data
 
 EXPOSE 8000

@@ -41,6 +41,22 @@ pip install -r backend/requirements.txt
 uvicorn backend.stash_ai_server.main:app --reload
 ```
 
+## Configuration file
+
+For secrets and a few runtime overrides (data dir, plugin dir, stash API key), copy `config.sample.env` to `backend/config.env` and edit values. This file is gitignored so your secrets won't be checked in.
+
+Example:
+```
+cp backend/config.sample.env backend/config.env
+# edit backend/config.env and then start the server
+```
+
+When running in Docker Compose the image expects `/app/data` and the compose file or secrets file should mount the appropriate host paths.
+
+## Conda / pip install users
+
+If you install the package from PyPI (or from the built wheel), the `alembic` folder and `alembic.ini` are included in the package so you can run migrations after creating `backend/config.env`. For local editable installs (`pip install -e .`) ensure you run from the repo root so `alembic` is present in the working tree.
+
 ## Apply Migrations
 The container runs with `Base.metadata.create_all()` for convenience right now. To use Alembic migration fully:
 ```

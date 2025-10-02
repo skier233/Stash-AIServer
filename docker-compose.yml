@@ -11,11 +11,8 @@ services:
       - ./backend/alembic:/app/alembic:rw
       - ./backend/alembic.ini:/app/alembic.ini:ro
       - ./backend/data:/app/data
-    environment:
-      - PYTHONPATH=/app
-      - AIO_DEVMODE=1
-      - STASH_API_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOiJza2kyMyIsImlhdCI6MTY2OTA2MjU4NCwic3ViIjoiQVBJS2V5In0.0QWitnVF0c0n8vjKDXN3c1Of7ZDreOyWg3iUcjlVzYw
-      - STASH_INTERNAL_URL=http://host.docker.internal:3000
+    env_file:
+      - ./backend/config.env
     command: python -m stash_ai_server.dev_entrypoint
 
   # If you prefer to run the dev container from the published image (no live reload),
@@ -27,13 +24,8 @@ services:
     container_name: ai-overhaul-backend-prod
     ports:
       - "8000:8000"
-    environment:
-      - STASH_API_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOiJza2kyMyIsImlhdCI6MTY2OTA2MjU4NCwic3ViIjoiQVBJS2V5In0.0QWitnVF0c0n8vjKDXN3c1Of7ZDreOyWg3iUcjlVzYw
-      - STASH_INTERNAL_URL=http://host.docker.internal:3000
-      - AI_SERVER_HOST=0.0.0.0
-      - AI_SERVER_PORT=8000
-      - AI_SERVER_PLUGINS_DIR=/app/plugins
-      - AI_SERVER_DATA_DIR=/app/data
+    env_file:
+      - ./backend/config.env
     volumes:
       - ./backend/data:/app/data:rw
       - ./backend/plugins:/app/plugins:rw

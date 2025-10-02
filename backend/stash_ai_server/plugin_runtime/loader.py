@@ -346,15 +346,99 @@ def install_plugin_from_catalog(db: Session, source_row, catalog_row, overwrite:
     manifest = _parse_manifest(manifest_file)
     if not manifest: raise RuntimeError('invalid manifest after extraction')
     meta = _load_or_create_meta(db, manifest)
-    _import_files(manifest)
-    meta.version = manifest.version; meta.human_name = manifest.human_name; meta.server_link = manifest.server_link
-    if meta.status != 'error': meta.status = 'active'
-    db.commit(); return meta
+
+    # Validate declared plugin dependencies exist on disk before activating.
+    missing = [d for d in manifest.depends_on if not (PLUGIN_DIR / d / 'plugin.yml').exists()]
+    if missing:
+        meta.status = 'dependency_missing'
+        meta.last_error = f"missing deps: {missing}"
+        db.commit()
+        print(f"[plugin] install deferred name={manifest.name} missing_deps={missing}", flush=True)
+        return meta
+
+    # Apply migrations and ensure pip deps, then import files to activate plugin.
+    try:
+        _apply_migrations(manifest, meta)
+        try:
+            _ensure_pip_dependencies(manifest.pip_dependencies)
+        except Exception as e:
+            print(f"[plugin] dependency install attempt failed name={manifest.name}: {e}", flush=True)
+        _import_files(manifest)
+        meta.version = manifest.version; meta.human_name = manifest.human_name; meta.server_link = manifest.server_link
+        if meta.status != 'error': meta.status = 'active'
+        db.commit(); return meta
+    except Exception as e:
+        meta.status = 'error'; meta.last_error = str(e)
+        db.commit()
+        raise
 
 def remove_plugin(plugin_name: str, db: Session):
+    # Attempt to gracefully unload plugin from the running process first
+    try:
+        _unload_plugin(plugin_name)
+    except Exception as e:
+        print(f"[plugin] unload failed name={plugin_name} err={e}", flush=True)
+
     target_dir = PLUGIN_DIR / plugin_name
     if target_dir.exists(): shutil.rmtree(target_dir)
+
+    # Remove plugin settings rows
+    try:
+        existing_settings = db.execute(select(PluginSetting).where(PluginSetting.plugin_name == plugin_name)).scalars().all()
+        for r in existing_settings:
+            try: db.delete(r)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Mark meta removed
     row = db.execute(select(PluginMeta).where(PluginMeta.name == plugin_name)).scalar_one_or_none()
     if row:
         row.status = 'removed'; db.commit()
+
+    # Cascade: mark any plugins depending on this plugin as missing and unload them too
+    try:
+        for manifest_path in PLUGIN_DIR.glob('*/plugin.yml'):
+            mf = _parse_manifest(manifest_path)
+            if not mf: continue
+            if plugin_name in mf.depends_on:
+                other_meta = db.execute(select(PluginMeta).where(PluginMeta.name == mf.name)).scalar_one_or_none()
+                if other_meta:
+                    other_meta.status = 'dependency_missing'
+                    other_meta.last_error = f"missing deps: ['{plugin_name}']"
+                    db.commit()
+                try:
+                    _unload_plugin(mf.name)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     return True
+
+
+def _unload_plugin(plugin_name: str):
+    """Attempt to call unregister() for loaded plugin modules and remove them from sys.modules.
+    This allows removals to take effect immediately without a server restart."""
+    prefix = f"stash_ai_server.plugins.{plugin_name}"
+    # Collect keys first to avoid mutating while iterating
+    keys = [k for k in list(sys.modules.keys()) if k == prefix or k.startswith(prefix + '.')]
+    for k in keys:
+        mod = sys.modules.get(k)
+        if not mod:
+            continue
+        try:
+            un = getattr(mod, 'unregister', None)
+            if callable(un):
+                try:
+                    un()
+                    print(f"[plugin] name={plugin_name} called unregister in {k}", flush=True)
+                except Exception as e:
+                    print(f"[plugin] name={plugin_name} unregister() failed in {k}: {e}", flush=True)
+        except Exception:
+            pass
+        try:
+            del sys.modules[k]
+        except Exception:
+            pass

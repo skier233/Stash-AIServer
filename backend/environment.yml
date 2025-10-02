@@ -5,4 +5,4 @@ dependencies:
   - python=3.12
   - pip
   - pip:
-      - stash-ai-server
+      - stash-ai-server==0.1.1a3

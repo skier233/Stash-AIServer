@@ -20,11 +20,16 @@ def run_migrations():
         print(f"[migrations] prerequisites missing (alembic/sqlalchemy): {e}", flush=True)
         raise
 
-    # Resolve alembic.ini path
+    # Resolve alembic.ini path. Prefer package-embedded file (works for pip
+    # installed wheels), then allow override via AI_SERVER_ALEMBIC_INI, then
+    # check repo-level or current working directory locations.
     env_ini = os.getenv('AI_SERVER_ALEMBIC_INI')
     candidates = []
+    # package-embedded alembic.ini (inside installed package)
+    candidates.append(pathlib.Path(__file__).resolve().parent.parent / 'alembic.ini')
     if env_ini:
         candidates.append(pathlib.Path(env_ini))
+    # repo root / working dir fallbacks
     candidates.append(pathlib.Path(__file__).resolve().parent.parent.parent / 'alembic.ini')
     candidates.append(pathlib.Path.cwd() / 'alembic.ini')
     cfg_path = next((p for p in candidates if p.exists() and p.is_file()), None)
