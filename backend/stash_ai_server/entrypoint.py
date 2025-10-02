@@ -29,7 +29,7 @@ def main():
         print(f"[entrypoint] seed_system_settings failed: {e}", flush=True)
     import uvicorn
     host = os.getenv('AI_SERVER_HOST', '0.0.0.0')
-    port = int(os.getenv('AI_SERVER_PORT', '8000'))
+    port = int(os.getenv('AI_SERVER_PORT', '4153'))
     uvicorn.run('stash_ai_server.main:app', host=host, port=port, reload=False)
 
 if __name__ == '__main__':  # pragma: no cover

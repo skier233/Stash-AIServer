@@ -29,7 +29,7 @@ backend/
 ```
 docker compose up --build
 ```
-Then visit http://localhost:8000/docs for the Swagger UI.
+Then visit http://localhost:4153/docs for the Swagger UI.
 
 During development, source changes under `backend/stash_ai_server` auto-reload thanks to `--reload` and bind mount.
 

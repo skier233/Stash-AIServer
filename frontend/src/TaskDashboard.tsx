@@ -12,8 +12,8 @@ function defaultBackendBase() {
   const explicit = (window as any).AI_BACKEND_URL as string | undefined;
   if (explicit) return explicit.replace(/\/$/, '');
   const loc = (location && location.origin) || '';
-  try { const u = new URL(loc); if (u.port === '3000') { u.port = '8000'; return u.toString().replace(/\/$/, ''); } } catch {}
-  return (loc || 'http://localhost:8000').replace(/\/$/, '');
+  try { const u = new URL(loc); if (u.port === '3000') { u.port = '4153'; return u.toString().replace(/\/$/, ''); } } catch {}
+  return (loc || 'http://localhost:4153').replace(/\/$/, '');
 }
 const debug = () => !!(window as any).AIDebug;
 const dlog = (...a:any[]) => { if (debug()) console.debug('[TaskDashboard]', ...a); };

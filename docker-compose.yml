@@ -5,7 +5,7 @@ services:
       target: dev
     container_name: ai-overhaul-backend-dev
     ports:
-      - "8000:8000"
+      - "4153:4153"
     volumes:
       - ./backend/stash_ai_server:/app/stash_ai_server:rw
       - ./backend/alembic:/app/alembic:rw
@@ -24,7 +24,7 @@ services:
     image: ghcr.io/skier233/stash-ai-server:latest
     container_name: ai-overhaul-backend-prod
     ports:
-      - "8000:8000"
+      - "4153:4153"
     env_file:
       - ./backend/config.env
     volumes:

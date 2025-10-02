@@ -52,7 +52,7 @@ def _stub_scene(i: int) -> Dict[str, Any]:
     }
 
 def _have_valid_api_key() -> bool:
-    return bool(STASH_API_KEY and STASH_API_KEY != 'REPLACE_WITH_API_KEY')
+    return bool(STASH_API_KEY and STASH_API_KEY != 'REPLACE_WITH_API_KEY' and STASH_API_KEY.strip() != '')
 
 _stash_client: Any | None = None
 _stash_version: Any | None = None
@@ -118,12 +118,21 @@ def _build_connection_dict() -> Dict[str, Any]:
     if not override_port_raw:
         # Use port from URL if present else default Stash 3000
         port = parsed.port if parsed.port else 3000
-    conn = {
-        'ApiKey': STASH_API_KEY,
+    conn: Dict[str, Any] = {
         'Scheme': scheme,
         'Host': hostname,
         'Port': port,
     }
+    # Only include ApiKey when user provided a non-placeholder key. Some Stash
+    # instances have no auth enabled; in that case omit ApiKey to allow authless
+    # connections.
+    try:
+        if _have_valid_api_key():
+            print(f"api key: {STASH_API_KEY}")
+            conn['ApiKey'] = STASH_API_KEY
+    except Exception:
+        # conservative: don't include API key if check fails
+        pass
     print(f"[stash] build connection host={hostname} port={port} scheme={scheme} raw_url={STASH_URL}", flush=True)
     return conn
 
@@ -136,8 +145,8 @@ def get_stash() -> Any | None:
             print(f"[stash] StashInterface unavailable: {_IMPORT_ERR}", flush=True)
         return None
     if not _have_valid_api_key():
-        print('[stash] API key missing / placeholder; cannot init StashInterface', flush=True)
-        return None
+        # Log but continue: some Stash deployments don't require an API key.
+        print('[stash] API key missing or placeholder; attempting connection without ApiKey (authless)', flush=True)
     try:
         conn = _build_connection_dict()
         _stash_client = StashInterface(conn)  # type: ignore

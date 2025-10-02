@@ -18,7 +18,7 @@ def main():  # pragma: no cover
         print(f"[dev-entrypoint] seed failure: {e}", flush=True)
     import uvicorn
     host = os.getenv('AI_SERVER_HOST', '0.0.0.0')
-    port = int(os.getenv('AI_SERVER_PORT', '8000'))
+    port = int(os.getenv('AI_SERVER_PORT', '4153'))
     uvicorn.run('stash_ai_server.main:app', host=host, port=port, reload=True)
 
 

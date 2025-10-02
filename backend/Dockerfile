@@ -47,5 +47,5 @@ RUN set -eux; \
 
 RUN mkdir -p /app/data
 
-EXPOSE 8000
+EXPOSE 4153
 CMD ["python", "-m", "stash_ai_server.entrypoint"]

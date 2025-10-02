@@ -20,7 +20,7 @@ ui:
     - src/css/SimilarScenes.css
   csp:
     connect-src:
-      - http://localhost:8000
-      - ws://localhost:8000
-      - https://localhost:8000
+      - http://localhost:4153
+      - ws://localhost:4153
+      - https://localhost:4153
 interface: raw
