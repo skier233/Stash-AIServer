@@ -117,18 +117,55 @@ const PluginSettings = () => {
     try { await jfetch(`${backendBase}/api/v1/plugins/sources/${name}`, { method:'DELETE' }); setCatalog((c:any) => { const n = {...c}; delete n[name]; return n; }); if (selectedSource === name) setSelectedSource(null); await loadSources(); } catch(e:any){ setError(e.message); }
   }, [backendBase, selectedSource, loadSources]);
 
-  const installPlugin = React.useCallback(async (source: string, plugin: string, overwrite=false) => {
-    try { await jfetch(`${backendBase}/api/v1/plugins/install`, { method:'POST', body: JSON.stringify({ source, plugin, overwrite }) }); await loadInstalled(); } catch(e:any){ setError(e.message); }
+  const installPlugin = React.useCallback(async (source: string, plugin: string, overwrite=false, installDependencies=false) => {
+    try {
+      await jfetch(`${backendBase}/api/v1/plugins/install`, { method:'POST', body: JSON.stringify({ source, plugin, overwrite, install_dependencies: installDependencies }) });
+      await loadInstalled();
+    } catch(e:any){ setError(e.message); }
   }, [backendBase, loadInstalled]);
+
+  const startInstall = React.useCallback(async (source: string, plugin: string, overwrite=false) => {
+    try {
+      const plan = await jfetch(`${backendBase}/api/v1/plugins/install/plan`, { method:'POST', body: JSON.stringify({ source, plugin }) });
+      const missing = (plan?.missing || []) as string[];
+      if (missing.length) {
+        alert(`Cannot install ${plan?.human_names?.[plugin] || plugin}. Missing dependencies: ${missing.join(', ')}`);
+        return;
+      }
+      const deps = (plan?.dependencies || []) as string[];
+      const already = new Set(plan?.already_installed || []);
+      const needed = deps.filter(d => !already.has(d));
+      let installDeps = false;
+      if (needed.length) {
+        const friendly = needed.map(name => plan?.human_names?.[name] || name).join(', ');
+        if (!confirm(`Installing ${plan?.human_names?.[plugin] || plugin} will also install: ${friendly}. Continue?`)) return;
+        installDeps = true;
+      }
+      await installPlugin(source, plugin, overwrite, installDeps);
+    } catch(e:any){ setError(e.message); }
+  }, [backendBase, installPlugin]);
 
   const updatePlugin = React.useCallback(async (source: string, plugin: string) => {
     try { await jfetch(`${backendBase}/api/v1/plugins/update`, { method:'POST', body: JSON.stringify({ source, plugin }) }); await loadInstalled(); } catch(e:any){ setError(e.message); }
   }, [backendBase, loadInstalled]);
 
   const removePlugin = React.useCallback(async (plugin: string) => {
-    if (!confirm(`Remove plugin ${plugin}?`)) return;
-    try { await jfetch(`${backendBase}/api/v1/plugins/remove`, { method:'POST', body: JSON.stringify({ plugin }) }); await loadInstalled(); } catch(e:any){ setError(e.message); }
-  }, [backendBase, loadInstalled]);
+    try {
+      const plan = await jfetch(`${backendBase}/api/v1/plugins/remove/plan`, { method:'POST', body: JSON.stringify({ plugin }) });
+      const human = (plan?.human_names?.[plugin] || installed.find((p: InstalledPlugin) => p.name === plugin)?.human_name || plugin) as string;
+      const dependents = ((plan?.dependents || []) as string[]).filter(name => name !== plugin);
+      let cascade = false;
+      if (dependents.length) {
+        const friendly = dependents.map(name => plan?.human_names?.[name] || installed.find((p: InstalledPlugin) => p.name === name)?.human_name || name).join(', ');
+        if (!confirm(`Removing ${human} will also remove: ${friendly}. Continue?`)) return;
+        cascade = true;
+      } else {
+        if (!confirm(`Remove plugin ${human}?`)) return;
+      }
+      await jfetch(`${backendBase}/api/v1/plugins/remove`, { method:'POST', body: JSON.stringify({ plugin, cascade }) });
+      await loadInstalled();
+    } catch(e:any){ setError(e.message); }
+  }, [backendBase, loadInstalled, installed]);
 
   const loadPluginSettings = React.useCallback(async (pluginName: string) => {
     try {
@@ -240,7 +277,7 @@ const PluginSettings = () => {
                     }
                     if (found) break;
                   }
-                  if (found) installPlugin(found.source, p.name, true); else alert('No catalog entry found to reinstall');
+                  if (found) startInstall(found.source, p.name, true); else alert('No catalog entry found to reinstall');
                 }}>{p.status==='removed' ? 'Reinstall' : 'Retry'}</button>}{' '}
                 <button style={smallBtn} onClick={()=>removePlugin(p.name)}>Remove</button>
                 {' '}
@@ -359,7 +396,7 @@ const PluginSettings = () => {
               {(!serverLink && !docsLink) && <span style={{fontSize:10, opacity:0.4}}>—</span>}
             </td>
             <td style={thtd}>
-              {!inst && <button style={smallBtn} onClick={()=>installPlugin(selectedSource, e.plugin_name)}>Install</button>}
+              {!inst && <button style={smallBtn} onClick={()=> { if (selectedSource) startInstall(selectedSource, e.plugin_name); }} disabled={!selectedSource}>Install</button>}
               {inst && newer && <button style={smallBtn} onClick={()=>updatePlugin(selectedSource, e.plugin_name)}>Update</button>}
               {inst && !newer && <span style={{fontSize:10, opacity:0.7}}>Installed</span>}
             </td>

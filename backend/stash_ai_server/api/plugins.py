@@ -1,7 +1,7 @@
 from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Body
 from pydantic import BaseModel
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import select, delete
@@ -61,6 +61,22 @@ class RefreshResult(BaseModel):
     source: str
     fetched: int
     errors: List[str] = []
+
+
+class InstallPlanResponse(BaseModel):
+    plugin: str
+    install_order: List[str]
+    dependencies: List[str]
+    already_installed: List[str]
+    missing: List[str]
+    human_names: Dict[str, Optional[str]] = {}
+
+
+class RemovePlanResponse(BaseModel):
+    plugin: str
+    remove_order: List[str]
+    dependents: List[str]
+    human_names: Dict[str, Optional[str]] = {}
 
 @router.get('/installed', response_model=List[PluginMetaModel])
 async def list_installed(active_only: bool = False, include_removed: bool = False, db: Session = Depends(get_db)):
@@ -279,21 +295,53 @@ async def list_catalog(source_name: str, db: Session = Depends(get_db)):
     return [dict(plugin_name=r.plugin_name, version=r.version, description=r.description, manifest=r.manifest_json) for r in rows]
 
 
+@router.post('/install/plan', response_model=InstallPlanResponse)
+async def install_plan(body: dict = Body(...), db: Session = Depends(get_db)):
+    plugin_name = body.get('plugin')
+    source_name = body.get('source')
+    if not plugin_name:
+        raise HTTPException(status_code=400, detail='PLUGIN_REQUIRED')
+    preferred_source_id = None
+    if source_name:
+        src = db.execute(select(PluginSource).where(PluginSource.name == source_name)).scalar_one_or_none()
+        if not src:
+            raise HTTPException(status_code=404, detail='SOURCE_NOT_FOUND')
+        preferred_source_id = src.id
+    plan = plugin_loader.plan_install(db, plugin_name, preferred_source_id=preferred_source_id)
+    if plugin_name not in plan.catalog_rows:
+        raise HTTPException(status_code=404, detail='PLUGIN_NOT_FOUND')
+    return InstallPlanResponse(
+        plugin=plugin_name,
+        install_order=plan.order,
+        dependencies=plan.dependencies,
+        already_installed=plan.already_active,
+        missing=plan.missing,
+        human_names=plan.human_names,
+    )
+
+
 @router.post('/install')
 async def install_plugin(body: dict = Body(...), db: Session = Depends(get_db)):
     # payload: { source: <name>, plugin: <plugin_name>, overwrite: bool }
     source_name = body.get('source')
     plugin_name = body.get('plugin')
     overwrite = bool(body.get('overwrite'))
+    install_dependencies = bool(body.get('install_dependencies'))
     src = db.execute(select(PluginSource).where(PluginSource.name == source_name)).scalar_one_or_none()
     if not src:
         raise HTTPException(status_code=404, detail='SOURCE_NOT_FOUND')
-    catalog_row = db.execute(select(PluginCatalog).where(PluginCatalog.source_id == src.id, PluginCatalog.plugin_name == plugin_name)).scalar_one_or_none()
-    if not catalog_row:
+    plan = plugin_loader.plan_install(db, plugin_name, preferred_source_id=src.id)
+    if plugin_name not in plan.catalog_rows:
         raise HTTPException(status_code=404, detail='PLUGIN_NOT_FOUND')
+    if plan.missing:
+        raise HTTPException(status_code=400, detail={'code': 'DEPENDENCY_MISSING', 'missing': plan.missing})
+    deps_to_install = [name for name in plan.dependencies if name not in plan.already_active]
+    if deps_to_install and not install_dependencies:
+        raise HTTPException(status_code=409, detail={'code': 'DEPENDENCIES_REQUIRED', 'dependencies': deps_to_install, 'human_names': {n: plan.human_names.get(n) for n in deps_to_install}})
     try:
-        meta = plugin_loader.install_plugin_from_catalog(db, src, catalog_row, overwrite=overwrite)
-        return {'status': 'installed', 'plugin': meta.name, 'version': meta.version}
+        installed = plugin_loader.execute_install_plan(db, plan, overwrite_target=overwrite, install_dependencies=install_dependencies or bool(deps_to_install))
+        primary_version = next((ver for name, ver in installed if name == plugin_name), None)
+        return {'status': 'installed', 'plugin': plugin_name, 'version': primary_version, 'installed': installed}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -305,22 +353,52 @@ async def update_plugin(body: dict = Body(...), db: Session = Depends(get_db)):
     src = db.execute(select(PluginSource).where(PluginSource.name == source_name)).scalar_one_or_none()
     if not src:
         raise HTTPException(status_code=404, detail='SOURCE_NOT_FOUND')
-    catalog_row = db.execute(select(PluginCatalog).where(PluginCatalog.source_id == src.id, PluginCatalog.plugin_name == plugin_name)).scalar_one_or_none()
-    if not catalog_row:
+    plan = plugin_loader.plan_install(db, plugin_name, preferred_source_id=src.id)
+    if plugin_name not in plan.catalog_rows:
         raise HTTPException(status_code=404, detail='PLUGIN_NOT_FOUND')
+    if plan.missing:
+        raise HTTPException(status_code=400, detail={'code': 'DEPENDENCY_MISSING', 'missing': plan.missing})
     try:
-        meta = plugin_loader.install_plugin_from_catalog(db, src, catalog_row, overwrite=True)
-        return {'status': 'updated', 'plugin': meta.name, 'version': meta.version}
+        installed = plugin_loader.execute_install_plan(db, plan, overwrite_target=True, install_dependencies=True)
+        primary_version = next((ver for name, ver in installed if name == plugin_name), None)
+        return {'status': 'updated', 'plugin': plugin_name, 'version': primary_version, 'installed': installed}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post('/remove/plan', response_model=RemovePlanResponse)
+async def remove_plan(body: dict = Body(...), db: Session = Depends(get_db)):
+    plugin_name = body.get('plugin')
+    if not plugin_name:
+        raise HTTPException(status_code=400, detail='PLUGIN_REQUIRED')
+    plan = plugin_loader.plan_remove(db, plugin_name)
+    if not plan.order:
+        raise HTTPException(status_code=404, detail='PLUGIN_NOT_FOUND')
+    return RemovePlanResponse(
+        plugin=plugin_name,
+        remove_order=plan.order,
+        dependents=plan.dependents,
+        human_names=plan.human_names,
+    )
 
 
 @router.post('/remove')
 async def remove_plugin_api(body: dict = Body(...), db: Session = Depends(get_db)):
     plugin_name = body.get('plugin')
+    cascade = bool(body.get('cascade'))
+    plan = plugin_loader.plan_remove(db, plugin_name)
+    if not plan.order:
+        raise HTTPException(status_code=404, detail='PLUGIN_NOT_FOUND')
+    dependents = [name for name in plan.dependents if name != plugin_name]
+    if dependents and not cascade:
+        raise HTTPException(status_code=409, detail={'code': 'DEPENDENT_PLUGINS', 'dependents': dependents, 'human_names': {n: plan.human_names.get(n) for n in dependents}})
+    removed: List[str] = []
+    names_to_remove = plan.order if cascade else [plugin_name]
     try:
-        plugin_loader.remove_plugin(plugin_name, db)
-        return {'status': 'removed', 'plugin': plugin_name}
+        for name in names_to_remove:
+            plugin_loader.remove_plugin(name, db)
+            removed.append(name)
+        return {'status': 'removed', 'plugin': plugin_name, 'removed': removed}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

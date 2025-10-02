@@ -9,14 +9,14 @@ Only path constant PLUGIN_DIR still points to the on-disk extensions folder
 (`stash_ai_server/plugins`). All previous functionality preserved.
 """
 import os, pathlib, yaml, importlib, sys, traceback, tempfile, zipfile, shutil, types
-from dataclasses import dataclass
-from typing import List, Dict, Set, Optional
+from dataclasses import dataclass, field
+from typing import List, Dict, Set, Optional, Tuple
 from packaging import version as _v
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from stash_ai_server.db.session import SessionLocal, engine
 from stash_ai_server.core.config import settings
-from stash_ai_server.models.plugin import PluginMeta, PluginSetting, PluginSource
+from stash_ai_server.models.plugin import PluginMeta, PluginSetting, PluginSource, PluginCatalog
 from stash_ai_server.plugin_runtime.settings_registry import register_settings
 import httpx
 from io import BytesIO
@@ -64,6 +64,25 @@ class PluginManifest:
     server_link: str | None = None
     pip_dependencies: List[str] | None = None
 
+
+@dataclass
+class InstallPlanResult:
+    plugin: str
+    order: List[str] = field(default_factory=list)
+    dependencies: List[str] = field(default_factory=list)
+    already_active: List[str] = field(default_factory=list)
+    missing: List[str] = field(default_factory=list)
+    catalog_rows: Dict[str, PluginCatalog] = field(default_factory=dict)
+    human_names: Dict[str, Optional[str]] = field(default_factory=dict)
+
+
+@dataclass
+class RemovePlanResult:
+    plugin: str
+    order: List[str] = field(default_factory=list)
+    dependents: List[str] = field(default_factory=list)
+    human_names: Dict[str, Optional[str]] = field(default_factory=dict)
+
 def _parse_manifest(path: pathlib.Path) -> PluginManifest | None:
     try:
         data = yaml.safe_load(path.read_text()) or {}
@@ -91,6 +110,35 @@ def _parse_manifest(path: pathlib.Path) -> PluginManifest | None:
     except Exception as e:  # noqa: BLE001
         print(f"[plugin] failed to parse {path}: {e}", flush=True)
         return None
+
+
+def _load_catalog_row_for_plugin(db: Session, plugin_name: str, preferred_source_id: Optional[int] = None) -> Optional[PluginCatalog]:
+    if preferred_source_id is not None:
+        row = db.execute(
+            select(PluginCatalog).where(PluginCatalog.plugin_name == plugin_name, PluginCatalog.source_id == preferred_source_id)
+        ).scalar_one_or_none()
+        if row:
+            return row
+    return db.execute(select(PluginCatalog).where(PluginCatalog.plugin_name == plugin_name)).scalar_one_or_none()
+
+
+def _catalog_dependencies(row: PluginCatalog) -> List[str]:
+    try:
+        deps_field = (row.dependencies_json or {}).get('plugins') if isinstance(row.dependencies_json, dict) else None
+        if isinstance(deps_field, list):
+            return [str(d) for d in deps_field]
+    except Exception:
+        pass
+    manifest = row.manifest_json or {}
+    raw = manifest.get('dependsOn') or manifest.get('depends_on') or []
+    if isinstance(raw, list):
+        return [str(d) for d in raw]
+    return []
+
+
+def _catalog_human_name(row: PluginCatalog) -> Optional[str]:
+    manifest = row.manifest_json or {}
+    return row.human_name or manifest.get('humanName') or manifest.get('human_name') or None
 
 def _backend_version_ok(required: str) -> bool:
     try:
@@ -199,6 +247,120 @@ def _ensure_pip_dependencies(deps: Optional[List[str]]):
             subprocess.check_call([pip_exe, 'install', spec])
         except Exception as e:
             print(f"[plugin] failed to install dependency spec={spec} err={e}", flush=True)
+
+
+def plan_install(db: Session, plugin_name: str, preferred_source_id: Optional[int] = None) -> InstallPlanResult:
+    metas = {m.name: m for m in db.execute(select(PluginMeta)).scalars().all()}
+    active_plugins = {name for name, meta in metas.items() if meta and meta.status == 'active'}
+
+    visited: Set[str] = set()
+    order: List[str] = []
+    missing: List[str] = []
+    catalog_rows: Dict[str, PluginCatalog] = {}
+    human_names: Dict[str, Optional[str]] = {}
+
+    def dfs(name: str, source_hint: Optional[int]) -> None:
+        if name in visited:
+            return
+        visited.add(name)
+        row = _load_catalog_row_for_plugin(db, name, source_hint)
+        if not row:
+            missing.append(name)
+            return
+        catalog_rows[name] = row
+        human_names[name] = _catalog_human_name(row)
+        deps = _catalog_dependencies(row)
+        for dep in deps:
+            dfs(dep, row.source_id)
+        order.append(name)
+
+    dfs(plugin_name, preferred_source_id)
+    order = [name for name in order if name in catalog_rows]
+    dependencies = [name for name in order if name != plugin_name]
+    already_active = sorted({name for name in order if name in active_plugins})
+    missing = sorted(set(missing))
+    return InstallPlanResult(
+        plugin=plugin_name,
+        order=order,
+        dependencies=dependencies,
+        already_active=already_active,
+        missing=missing,
+        catalog_rows=catalog_rows,
+        human_names=human_names,
+    )
+
+
+def execute_install_plan(
+    db: Session,
+    plan: InstallPlanResult,
+    overwrite_target: bool,
+    install_dependencies: bool,
+) -> List[Tuple[str, str]]:
+    installed: List[Tuple[str, str]] = []
+    source_cache: Dict[int, PluginSource] = {}
+    metas = {m.name: m for m in db.execute(select(PluginMeta)).scalars().all()}
+
+    for name in plan.order:
+        row = plan.catalog_rows.get(name)
+        if not row:
+            continue
+        meta = metas.get(name)
+        is_target = name == plan.plugin
+        if not is_target and meta and meta.status == 'active':
+            # Skip already active dependencies
+            continue
+        if not is_target and not install_dependencies:
+            # Safety guard; should have been prevented by caller
+            continue
+        src = source_cache.get(row.source_id)
+        if src is None:
+            src = db.execute(select(PluginSource).where(PluginSource.id == row.source_id)).scalar_one_or_none()
+            if not src:
+                raise RuntimeError(f'source missing for plugin {name}')
+            source_cache[row.source_id] = src
+        meta = install_plugin_from_catalog(
+            db,
+            src,
+            row,
+            overwrite=(overwrite_target if is_target else True),
+        )
+        installed.append((meta.name, meta.version))
+        metas[meta.name] = meta
+    return installed
+
+
+def plan_remove(db: Session, plugin_name: str) -> RemovePlanResult:
+    metas = {m.name: m for m in db.execute(select(PluginMeta)).scalars().all()}
+    if plugin_name not in metas:
+        return RemovePlanResult(plugin=plugin_name, order=[], dependents=[], human_names={})
+
+    graph: Dict[str, List[str]] = {}
+    for manifest_path in PLUGIN_DIR.glob('*/plugin.yml'):
+        mf = _parse_manifest(manifest_path)
+        if not mf:
+            continue
+        for dep in mf.depends_on:
+            graph.setdefault(dep, []).append(mf.name)
+
+    human_names = {name: (meta.human_name if meta else None) for name, meta in metas.items()}
+
+    dependents = [p for p in graph.get(plugin_name, []) if metas.get(p) and metas[p].status != 'removed']
+
+    visited: Set[str] = set()
+    order: List[str] = []
+
+    def dfs(name: str) -> None:
+        if name in visited:
+            return
+        visited.add(name)
+        for child in graph.get(name, []):
+            if metas.get(child) and metas[child].status != 'removed':
+                dfs(child)
+        order.append(name)
+
+    dfs(plugin_name)
+    order = [name for name in order if metas.get(name) and metas[name].status != 'removed']
+    return RemovePlanResult(plugin=plugin_name, order=order, dependents=dependents, human_names=human_names)
 
 def initialize_plugins():
     if not PLUGIN_DIR.exists():

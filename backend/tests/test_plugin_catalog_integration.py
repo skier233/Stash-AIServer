@@ -44,7 +44,7 @@ def test_end_to_end_plugin_catalog_lifecycle():
         print('CATALOG FIRST ENTRY:', entry)
 
         # Install first plugin
-        resp = client.post('/api/v1/plugins/install', json={'source': BUILTIN_SOURCE, 'plugin': plugin_name, 'overwrite': True})
+        resp = client.post('/api/v1/plugins/install', json={'source': BUILTIN_SOURCE, 'plugin': plugin_name, 'overwrite': True, 'install_dependencies': True})
         print('INSTALL RESP STATUS:', resp.status_code)
         assert resp.status_code == 200
         j = resp.json()
