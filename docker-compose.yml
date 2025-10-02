@@ -11,6 +11,7 @@ services:
       - ./backend/alembic:/app/alembic:rw
       - ./backend/alembic.ini:/app/alembic.ini:ro
       - ./backend/data:/app/data
+      - ./backend/plugins:/app/plugins:rw
     env_file:
       - ./backend/config.env
     command: python -m stash_ai_server.dev_entrypoint

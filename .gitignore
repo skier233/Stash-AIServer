@@ -8,3 +8,4 @@
 backend/config.env
 /backend/build/*
 *.egg-info
+/backend/data/app.db
