@@ -4,7 +4,8 @@ version: 0.4.0-core-min
 ui:
   javascript:
     - dist/BackendBase.js
-    - dist/pageContext.js
+    - dist/BackendHealth.js
+    - dist/PageContext.js
     - dist/RecommendationUtils.js
     - dist/AIButton.js
     - dist/TaskDashboard.js

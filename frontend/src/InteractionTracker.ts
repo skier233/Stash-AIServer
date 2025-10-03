@@ -403,7 +403,7 @@ export class InteractionTracker {
     const attach = () => {
       const api: any = (window as any).AIPageContext;
       if (!api || typeof api.subscribe !== 'function') {
-        this.log('pageContext not ready, retrying...');
+        this.log('PageContext not ready, retrying...');
         setTimeout(attach, 1000);
         return;
       }
@@ -424,7 +424,7 @@ export class InteractionTracker {
     this.lastDetailKey = key;
     switch (ctx.page) {
       case 'scenes':
-        this.trackSceneView(ctx.entityId, { from: 'pageContext' });
+        this.trackSceneView(ctx.entityId, { from: 'PageContext' });
         if (this.cfg.videoAutoInstrument) this.ensureVideoInstrumentation(ctx.entityId);
         break;
       case 'images':
@@ -449,7 +449,7 @@ export class InteractionTracker {
     this.waitingVideoObserver = new MutationObserver(() => {
       const v = document.querySelector('video') as HTMLVideoElement | null;
       if (v) {
-        this.log('late video instrumentation via pageContext');
+        this.log('late video instrumentation via PageContext');
         this.instrumentSceneVideo(sceneId, v);
         this.waitingVideoObserver?.disconnect();
         this.waitingVideoObserver = null;

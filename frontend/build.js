@@ -7,7 +7,7 @@ const { execSync } = require('child_process');
 const path = require('path');
 
 let files = [
-  'src/pageContext.ts',
+  'src/PageContext.ts',
   'src/InteractionTracker.ts',
   'src/RecommendationUtils.tsx',
   'src/RecommendedScenes.tsx',
@@ -17,7 +17,8 @@ let files = [
   'src/AIButtonIntegration.tsx',
   'src/TaskDashboard.tsx',
   'src/PluginSettings.tsx',
-  'src/BackendBase.ts'
+  'src/BackendBase.ts',
+  'src/BackendHealth.ts'
 ].sort();
 const verbose = !!process.env.BUILD_VERBOSE;
 

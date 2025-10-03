@@ -26,17 +26,50 @@ const defaultBackendBase = () => {
   return fn();
 };
 
+function extractBackendBaseFromUrl(url: string): string {
+  try {
+    if (!url) return '';
+    const base = new URL(url, (typeof location !== 'undefined' && location.origin) ? location.origin : 'http://localhost');
+    return base.origin.replace(/\/$/, '');
+  } catch (_) {
+    return '';
+  }
+}
+
 // Small fetch wrapper adding JSON handling + error capture
 async function jfetch(url: string, opts: any = {}): Promise<any> {
-  const res = await fetch(url, { headers: { 'content-type': 'application/json', ...(opts.headers||{}) }, ...opts });
-  const ct = (res.headers.get('content-type')||'').toLowerCase();
+  const health: any = (window as any).AIBackendHealth;
+  const baseHint = extractBackendBaseFromUrl(url);
+  let reportedError = false;
   let body: any = null;
-  if (ct.includes('application/json')) { try { body = await res.json(); } catch { body = null; } }
-  if (!res.ok) {
-    const detail = body?.detail || res.statusText;
-    throw new Error(detail || ('HTTP '+res.status));
+  try {
+    if (health && typeof health.reportChecking === 'function') {
+      try { health.reportChecking(baseHint); } catch (_) {}
+    }
+    const res = await fetch(url, { headers: { 'content-type': 'application/json', ...(opts.headers||{}) }, ...opts });
+    const ct = (res.headers.get('content-type')||'').toLowerCase();
+    if (ct.includes('application/json')) { try { body = await res.json(); } catch { body = null; } }
+    if (!res.ok) {
+      const detail = body?.detail || res.statusText;
+      if (health) {
+        if ((res.status >= 500 || res.status === 0) && typeof health.reportError === 'function') {
+          try { health.reportError(baseHint, detail || ('HTTP '+res.status)); reportedError = true; } catch (_) {}
+        } else if (typeof health.reportOk === 'function') {
+          try { health.reportOk(baseHint); } catch (_) {}
+        }
+      }
+      throw new Error(detail || ('HTTP '+res.status));
+    }
+    if (health && typeof health.reportOk === 'function') {
+      try { health.reportOk(baseHint); } catch (_) {}
+    }
+    return body;
+  } catch (err: any) {
+    if (!reportedError && health && typeof health.reportError === 'function') {
+      try { health.reportError(baseHint, err && err.message ? err.message : undefined, err); } catch (_) {}
+    }
+    throw err;
   }
-  return body;
 }
 
 const PluginSettings = () => {
@@ -61,6 +94,22 @@ const PluginSettings = () => {
   const [addSrcName, setAddSrcName] = React.useState('');
   const [addSrcUrl, setAddSrcUrl] = React.useState('');
   const [interactionsEnabled, setInteractionsEnabled] = React.useState(() => localStorage.getItem(LS_INTERACTIONS) === '1');
+
+  const backendHealthApi: any = (window as any).AIBackendHealth;
+  const backendHealthEvent = backendHealthApi?.EVENT_NAME || 'AIBackendHealthChange';
+  const [backendHealthTick, setBackendHealthTick] = React.useState(0);
+  React.useEffect(() => {
+    if (!backendHealthApi || !backendHealthEvent) return;
+    const handler = () => setBackendHealthTick((t: number) => t + 1);
+    try { window.addEventListener(backendHealthEvent, handler as any); } catch (_) {}
+    return () => { try { window.removeEventListener(backendHealthEvent, handler as any); } catch (_) {}; };
+  }, [backendHealthApi, backendHealthEvent]);
+  const backendHealthState = React.useMemo(() => {
+    if (backendHealthApi && typeof backendHealthApi.getState === 'function') {
+      return backendHealthApi.getState();
+    }
+    return null;
+  }, [backendHealthApi, backendHealthTick]);
 
   // Derived: update availability map plugin->latestVersionAcrossCatalogs
   const latestVersions = React.useMemo(() => {
@@ -184,6 +233,16 @@ const PluginSettings = () => {
       });
     } catch(e:any) { setError(e.message); }
   }, [backendBase]);
+
+  const retryBackendProbe = React.useCallback(() => {
+    loadInstalled();
+    loadSources();
+    if (selectedSource) {
+      loadCatalogFor(selectedSource);
+    } else if (sources && sources.length && sources[0]?.name) {
+      loadCatalogFor(sources[0].name);
+    }
+  }, [loadInstalled, loadSources, loadCatalogFor, selectedSource, sources]);
 
   // Initial loads
   React.useEffect(() => { loadInstalled(); loadSources(); }, [loadInstalled, loadSources]);
@@ -406,9 +465,14 @@ const PluginSettings = () => {
     );
   }
 
+  const backendNotice = backendHealthApi && typeof backendHealthApi.buildNotice === 'function'
+    ? backendHealthApi.buildNotice(backendHealthState, { onRetry: retryBackendProbe, retryLabel: 'Retry backend request' })
+    : null;
+
   return (
     <div style={{padding:16, color:'#ddd', fontFamily:'sans-serif'}}>
-      <h2 style={{marginTop:0}}>AI Plugin Settings</h2>
+      <h2 style={{marginTop:0}}>AI Overhaul Settings</h2>
+      {backendNotice}
       {error && <div style={{background:'#402', color:'#fbb', padding:8, marginBottom:12, border:'1px solid #600'}}>
         <strong>Error:</strong> {error} <button style={smallBtn} onClick={()=>setError(null)}>x</button>
       </div>}

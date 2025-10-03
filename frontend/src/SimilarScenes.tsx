@@ -140,18 +140,50 @@
       return globalFn();
     }, []);
 
+    const backendHealthApi: any = (w as any).AIBackendHealth;
+    const backendHealthEvent = backendHealthApi?.EVENT_NAME || 'AIBackendHealthChange';
+    const [backendHealthTick, setBackendHealthTick] = useState(0);
+    useEffect(() => {
+      if (!backendHealthApi || !backendHealthEvent) return;
+      const handler = () => setBackendHealthTick((t: number) => t + 1);
+      try { window.addEventListener(backendHealthEvent, handler as any); } catch (_) {}
+      return () => { try { window.removeEventListener(backendHealthEvent, handler as any); } catch (_) {}; };
+    }, [backendHealthApi, backendHealthEvent]);
+    const backendHealthState = useMemo(() => {
+      if (backendHealthApi && typeof backendHealthApi.getState === 'function') {
+        return backendHealthApi.getState();
+      }
+      return null;
+    }, [backendHealthApi, backendHealthTick]);
+
     // Discover available recommenders using the backend recommendations API
     const discoverRecommenders = useCallback(async () => {
+      let reportedError = false;
+      if (backendHealthApi && typeof backendHealthApi.reportChecking === 'function') {
+        try { backendHealthApi.reportChecking(backendBase); } catch (_) {}
+      }
       try {
         setLoading(true);
         const recContext = 'similar_scene';
         const url = `${backendBase}/api/v1/recommendations/recommenders?context=${encodeURIComponent(recContext)}`;
         const response = await fetch(url);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        if (!response.ok) {
+          if (backendHealthApi) {
+            if ((response.status >= 500 || response.status === 0) && typeof backendHealthApi.reportError === 'function') {
+              try { backendHealthApi.reportError(backendBase, `HTTP ${response.status}`); reportedError = true; } catch (_) {}
+            } else if (typeof backendHealthApi.reportOk === 'function') {
+              try { backendHealthApi.reportOk(backendBase); } catch (_) {}
+            }
+          }
+          throw new Error(`HTTP ${response.status}`);
+        }
         const contentType = response.headers && response.headers.get ? response.headers.get('content-type') || '' : '';
         if (!contentType.includes('application/json')) {
           const text = await response.text();
           warn('discoverRecommenders: non-JSON response body (truncated):', text && text.slice ? text.slice(0, 512) : text);
+          if (backendHealthApi && typeof backendHealthApi.reportError === 'function') {
+            try { backendHealthApi.reportError(backendBase, 'Server returned non-JSON response'); reportedError = true; } catch (_) {}
+          }
           setError('Failed to discover recommenders: server returned non-JSON response. See console for details.');
           setRecommenders(null);
           return;
@@ -164,22 +196,32 @@
             setRecommenderId(similarContextRec.id);
             log('Auto-selected recommender for similar_scene:', similarContextRec.id);
           }
+          if (backendHealthApi && typeof backendHealthApi.reportOk === 'function') {
+            try { backendHealthApi.reportOk(backendBase); } catch (_) {}
+          }
         } else {
           setRecommenders(null);
         }
       } catch (e: any) {
         warn('Failed to discover recommenders:', e && e.message ? e.message : e);
         setError('Failed to discover recommenders: ' + (e && e.message ? e.message : String(e)));
+        if (!reportedError && backendHealthApi && typeof backendHealthApi.reportError === 'function') {
+          try { backendHealthApi.reportError(backendBase, e && e.message ? e.message : undefined, e); } catch (_) {}
+        }
       } finally {
         setLoading(false);
       }
-    }, [backendBase]);
+    }, [backendBase, backendHealthApi]);
 
     // Fetch a page of similar scenes from the unified recommendations query endpoint
     const fetchPage = useCallback(async (pageOffset = 0, append = false) => {
       if (!recommenderId || !currentSceneId) return;
 
+      let reportedError = false;
       try {
+        if (backendHealthApi && typeof backendHealthApi.reportChecking === 'function') {
+          try { backendHealthApi.reportChecking(backendBase); } catch (_) {}
+        }
         setLoading(true);
         setError(null);
 
@@ -209,11 +251,23 @@
           body: JSON.stringify(payload)
         });
 
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        if (!response.ok) {
+          if (backendHealthApi) {
+            if ((response.status >= 500 || response.status === 0) && typeof backendHealthApi.reportError === 'function') {
+              try { backendHealthApi.reportError(backendBase, `HTTP ${response.status}`); reportedError = true; } catch (_) {}
+            } else if (typeof backendHealthApi.reportOk === 'function') {
+              try { backendHealthApi.reportOk(backendBase); } catch (_) {}
+            }
+          }
+          throw new Error(`HTTP ${response.status}`);
+        }
         const contentType = response.headers && response.headers.get ? response.headers.get('content-type') || '' : '';
         if (!contentType.includes('application/json')) {
           const text = await response.text();
           warn('fetchPage: non-JSON response body (truncated):', text && text.slice ? text.slice(0, 512) : text);
+          if (backendHealthApi && typeof backendHealthApi.reportError === 'function') {
+            try { backendHealthApi.reportError(backendBase, 'Server returned non-JSON response'); reportedError = true; } catch (_) {}
+          }
           throw new Error('Server returned non-JSON response');
         }
 
@@ -271,15 +325,21 @@
           setHasMore(false);
           setError('No similar scenes found or unexpected data format');
         }
+        if (backendHealthApi && typeof backendHealthApi.reportOk === 'function') {
+          try { backendHealthApi.reportOk(backendBase); } catch (_) {}
+        }
 
       } catch (e: any) {
         warn('Failed to fetch similar scenes:', e && e.message ? e.message : e);
         setError('Failed to load similar scenes: ' + (e && e.message ? e.message : String(e)));
         if (!append) setScenes([]);
+        if (!reportedError && backendHealthApi && typeof backendHealthApi.reportError === 'function') {
+          try { backendHealthApi.reportError(backendBase, e && e.message ? e.message : undefined, e); } catch (_) {}
+        }
       } finally {
         setLoading(false);
       }
-  }, [recommenderId, currentSceneId, backendBase, PAGE_SIZE]);
+  }, [recommenderId, currentSceneId, backendBase, PAGE_SIZE, backendHealthApi]);
 
     // Auto-discover recommenders on mount
     useEffect(() => {
@@ -422,11 +482,23 @@
 
     // Note: Zoom slider intentionally omitted for queue-style display
 
+    const retryBackendProbe = useCallback(() => {
+      discoverRecommenders();
+      if (recommenderId && currentSceneId) {
+        fetchPage(0, false);
+      }
+    }, [discoverRecommenders, fetchPage, recommenderId, currentSceneId]);
+
+    const backendNotice = backendHealthApi && typeof backendHealthApi.buildNotice === 'function'
+      ? backendHealthApi.buildNotice(backendHealthState, { onRetry: retryBackendProbe, dense: true })
+      : null;
+
     // Main render
     return React.createElement('div', { 
       className: 'container-fluid similar-scenes-tab',
       ref: componentRef
     }, [
+      backendNotice,
       // Algorithm selector (no surrounding background)
       React.createElement('div', { key: 'controls', className: 'd-flex align-items-center gap-3 mb-3 p-0' }, [
         renderRecommenderSelector()

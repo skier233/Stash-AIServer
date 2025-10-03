@@ -63,7 +63,7 @@
         return () => window.removeEventListener('AIPluginSettingsReady', handler);
       }, [Comp]);
       const C = Comp;
-      return C ? React.createElement(C, {}) : React.createElement('div', { style:{padding:16}}, 'Loading AI Plugin Settings...');
+      return C ? React.createElement(C, {}) : React.createElement('div', { style:{padding:16}}, 'Loading AI Overhaul Settings...');
     };
     PluginApi.register.route('/plugins/ai-settings', () => React.createElement(SettingsWrapper));
     dlog('Registered /plugins/ai-settings route (event)');
@@ -80,7 +80,7 @@
           Link ? <Link to="/plugins/ai-tasks"><Button>AI Tasks</Button></Link> : React.createElement(Button, { onClick:()=> (location.href = '/plugins/ai-tasks') }, 'AI Tasks')
         } />
         <Setting heading={
-          Link ? <Link to="/plugins/ai-settings"><Button>AI Plugin Settings</Button></Link> : React.createElement(Button, { onClick:()=> (location.href = '/plugins/ai-settings') }, 'AI Plugin Settings')
+          Link ? <Link to="/plugins/ai-settings"><Button>AI Overhaul Settings</Button></Link> : React.createElement(Button, { onClick:()=> (location.href = '/plugins/ai-settings') }, 'AI Overhaul Settings')
         } />
       </>)}];
     });

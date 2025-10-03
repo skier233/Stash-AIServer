@@ -185,7 +185,6 @@
     const cardWidth = useCardWidth(containerWidth, zoomIndex, zoomWidths);
   // fetch IDs (mock until new backend recommender query flow integrated)
   //
-  const [backendStatus, setBackendStatus] = useState('idle' as 'idle'|'loading'|'ok'|'error');
   const [discoveryAttempted, setDiscoveryAttempted] = useState(false);
   const pageAPI:any = (w as any).AIPageContext; // for contextual recommendation requests
 
@@ -1191,75 +1190,139 @@
       return globalFn();
     }, []);
 
-    // Attempt new recommender discovery first; fallback to legacy algorithms if unavailable
-    useEffect(()=>{ (async()=>{
-      if(recommenders!==null) return;
+    const backendHealthApi: any = (w as any).AIBackendHealth;
+    const backendHealthEvent = backendHealthApi?.EVENT_NAME || 'AIBackendHealthChange';
+    const [backendHealthTick, setBackendHealthTick] = useState(0);
+    useEffect(() => {
+      if (!backendHealthApi || !backendHealthEvent) return;
+      const handler = () => setBackendHealthTick((t:number) => t + 1);
+      try { window.addEventListener(backendHealthEvent, handler as any); } catch (_) {}
+      return () => { try { window.removeEventListener(backendHealthEvent, handler as any); } catch (_) {}; };
+    }, [backendHealthApi, backendHealthEvent]);
+    const backendHealthState = useMemo(() => {
+      if (backendHealthApi && typeof backendHealthApi.getState === 'function') {
+        return backendHealthApi.getState();
+      }
+      return null;
+    }, [backendHealthApi, backendHealthTick]);
+
+    const discoverRecommenders = React.useCallback(async (): Promise<{ success: boolean; recommenderId: string | null }> => {
       try {
+        if (backendHealthApi && typeof backendHealthApi.reportChecking === 'function') {
+          try { backendHealthApi.reportChecking(backendBase); } catch (_) {}
+        }
         const ctxPage = pageAPI?.get?.()?.page;
-        // map page to RecContext (minimal mapping for now)
         const recContext = 'global_feed';
         const url = `${backendBase}/api/v1/recommendations/recommenders?context=${encodeURIComponent(recContext)}`;
         const res = await fetch(url);
         if(!res.ok) throw new Error('status '+res.status);
         const j = await res.json();
         if(j && Array.isArray(j.recommenders)){
-          setRecommenders(j.recommenders as RecommenderDef[]);
-          const def = (j.defaultRecommenderId && (j.recommenders as any[]).find(r=>r.id===j.defaultRecommenderId)) || j.recommenders[0];
-          if(def) { if((w as any).AIDebug) console.log('[RecommendedScenes] default recommender', def.id); setRecommenderId(def.id); }
+          const defs = j.recommenders as RecommenderDef[];
+          setRecommenders(defs);
+          if(defs.length === 0){
+            throw new Error('No recommenders available');
+          }
+          const existingMatch = recommenderId && defs.find(r => r.id === recommenderId);
+          const defaultDef = (j.defaultRecommenderId && defs.find(r=>r.id===j.defaultRecommenderId)) || defs[0];
+          let nextId: string | null = null;
+          if(existingMatch){
+            nextId = existingMatch.id;
+          } else if(defaultDef){
+            if((w as any).AIDebug) console.log('[RecommendedScenes] default recommender', defaultDef.id);
+            nextId = defaultDef.id;
+            setRecommenderId(defaultDef.id);
+          }
+          if (backendHealthApi && typeof backendHealthApi.reportOk === 'function') {
+            try { backendHealthApi.reportOk(backendBase); } catch (_) {}
+          }
           setDiscoveryAttempted(true);
-          return; // skip marking empty
+          return { success: true, recommenderId: nextId || (defaultDef ? defaultDef.id : null) };
         }
-      } catch(_e){ /* swallow and allow legacy path */ }
-      setRecommenders([]); // mark attempted empty
-      setDiscoveryAttempted(true);
-    })(); }, [recommenders, backendBase, pageAPI]);
+        throw new Error('Unexpected discovery response');
+      } catch(e:any){
+        const message = e && e.message ? e.message : 'failed to discover recommenders';
+        if (backendHealthApi && typeof backendHealthApi.reportError === 'function') {
+          try { backendHealthApi.reportError(backendBase, message, e); } catch (_) {}
+        }
+        setRecommenders([]);
+        setDiscoveryAttempted(true);
+        return { success: false, recommenderId: null };
+      }
+    }, [backendBase, pageAPI, backendHealthApi, recommenderId]);
+
+    // Attempt new recommender discovery first; fallback to legacy algorithms if unavailable
+    useEffect(()=>{
+      if(discoveryAttempted) return;
+      discoverRecommenders();
+    }, [discoveryAttempted, discoverRecommenders]);
 
 
     // (legacy algorithm effects removed)
 
     // Unified function to request recommendations (first page)
     const latestRequestIdRef = React.useRef(0);
-    const fetchRecommendations = React.useCallback(async ()=>{
+    const fetchRecommendations = React.useCallback(async (overrideId?: string)=>{
       const myId = ++latestRequestIdRef.current;
-      setBackendStatus('loading');
       setLoading(true); setError(null);
       try {
-        if(!recommenderId){ setBackendStatus('idle'); setLoading(false); return; }
+        const activeRecommenderId = overrideId ?? recommenderId;
+        if(!activeRecommenderId){
+          return;
+        }
+        if (backendHealthApi && typeof backendHealthApi.reportChecking === 'function') {
+          try { backendHealthApi.reportChecking(backendBase); } catch (_) {}
+        }
         const ctx = pageAPI?.get ? pageAPI.get() : null; // reserved for future context mapping
         const offset = (page-1) * itemsPerPage;
-        const body:any = { context: 'global_feed', recommenderId, limit: itemsPerPage, offset, config: configValuesRef.current || {} };
+        const body:any = { context: 'global_feed', recommenderId: activeRecommenderId, limit: itemsPerPage, offset, config: configValuesRef.current || {} };
         if(ctx){ body.context = 'global_feed'; }
         const url = `${backendBase}/api/v1/recommendations/query`;
         if((w as any).AIDebug) console.log('[RecommendedScenes] query', body);
         const res = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
-        if(res.ok){
-          const j = await res.json();
-          if(myId !== latestRequestIdRef.current){
-            if((w as any).AIDebug) console.log('[RecommendedScenes] stale response ignored', {myId, current: latestRequestIdRef.current});
-            return;
+        if(!res.ok){
+          if(myId === latestRequestIdRef.current){
+            if (backendHealthApi && typeof backendHealthApi.reportError === 'function' && (res.status >= 500 || res.status === 0)) {
+              try { backendHealthApi.reportError(backendBase, `HTTP ${res.status}`); } catch (_) {}
+            } else if (backendHealthApi && typeof backendHealthApi.reportOk === 'function') {
+              try { backendHealthApi.reportOk(backendBase); } catch (_) {}
+            }
           }
-          if(Array.isArray(j.scenes)){
-            const norm = j.scenes.map((s:any)=> normalizeScene(s)).filter(Boolean) as BasicScene[];
-            setScenes(norm);
-            const serverTotal = (j.meta && typeof j.meta.total==='number') ? j.meta.total : norm.length;
-            const floorTotal = offset + norm.length;
-            const metaTotal = serverTotal < floorTotal ? floorTotal : serverTotal;
-            setTotal(metaTotal);
-            const hm = !!(j.meta && j.meta.hasMore);
-            setHasMore(hm);
-            if((w as any).AIDebug) console.log('[RecommendedScenes] meta', j.meta, {page, itemsPerPage, computedPages: Math.ceil(metaTotal / itemsPerPage), hasMore: hm});
-            setBackendStatus('ok');
-            setLoading(false);
-            return;
-          }
+          throw new Error('HTTP '+res.status);
         }
+        const j = await res.json();
+        if(myId !== latestRequestIdRef.current){
+          if((w as any).AIDebug) console.log('[RecommendedScenes] stale response ignored', {myId, current: latestRequestIdRef.current});
+          return;
+        }
+        if(!Array.isArray(j.scenes)){
+          throw new Error('Unexpected response format');
+        }
+        const norm = j.scenes.map((s:any)=> normalizeScene(s)).filter(Boolean) as BasicScene[];
+        setScenes(norm);
+        const serverTotal = (j.meta && typeof j.meta.total==='number') ? j.meta.total : norm.length;
+        const floorTotal = offset + norm.length;
+        const metaTotal = serverTotal < floorTotal ? floorTotal : serverTotal;
+        setTotal(metaTotal);
+        const hm = !!(j.meta && j.meta.hasMore);
+        setHasMore(hm);
+        if((w as any).AIDebug) console.log('[RecommendedScenes] meta', j.meta, {page, itemsPerPage, computedPages: Math.ceil(metaTotal / itemsPerPage), hasMore: hm});
+        if(myId === latestRequestIdRef.current && backendHealthApi && typeof backendHealthApi.reportOk === 'function'){
+          try { backendHealthApi.reportOk(backendBase); } catch (_) {}
+        }
+      } catch(e:any){
         if(myId !== latestRequestIdRef.current){ return; }
-        setBackendStatus('error');
-      } catch(_e){ setBackendStatus('error'); setError('Failed to load scenes'); }
-      if(myId === latestRequestIdRef.current){
-      setLoading(false);
+        const message = e && e.message ? e.message : 'unknown error';
+        if (backendHealthApi && typeof backendHealthApi.reportError === 'function') {
+          try { backendHealthApi.reportError(backendBase, message, e); } catch (_) {}
+        }
+        setError('Failed to load scenes: ' + message);
+      } finally {
+        if(myId === latestRequestIdRef.current){
+          setLoading(false);
+        }
       }
-  }, [recommenderId, backendBase, pageAPI, page, itemsPerPage]);
+  }, [recommenderId, backendBase, pageAPI, page, itemsPerPage, backendHealthApi]);
 
     // Fetch whenever recommender changes
   // When recommender changes, reset page then fetch (single sequence without double calling prior fetch)
@@ -1277,7 +1340,28 @@
   }, [recommenderId, discoveryAttempted, fetchRecommendations]);
 
     // Expose manual refresh
-    const manualRefresh = () => { if((w as any).AIDebug) console.log('[RecommendedScenes] manual refresh'); fetchRecommendations(); };
+    const manualRefresh = React.useCallback(() => {
+      if((w as any).AIDebug) console.log('[RecommendedScenes] manual refresh');
+      (async()=>{
+        const needDiscovery = !discoveryAttempted || !recommenderId || (Array.isArray(recommenders) && recommenders.length === 0);
+        if(needDiscovery){
+          const result = await discoverRecommenders();
+          if(!result.success){
+            return;
+          }
+          const idToUse = result.recommenderId || recommenderId;
+          if(idToUse){
+            await fetchRecommendations(idToUse);
+          }
+          return;
+        }
+        await fetchRecommendations();
+      })().catch((err:any)=>{ if((w as any).AIDebug) console.warn('[RecommendedScenes] refresh failed', err); });
+    }, [discoverRecommenders, fetchRecommendations, discoveryAttempted, recommenderId, recommenders]);
+
+    const backendNotice = backendHealthApi && typeof backendHealthApi.buildNotice === 'function'
+      ? backendHealthApi.buildNotice(backendHealthState, { onRetry: manualRefresh, dense: true })
+      : null;
 
   // Clamp page when per-page changes
   useEffect(()=>{
@@ -1359,14 +1443,8 @@
         React.createElement('div',{ key:'act', role:'group', className:'mb-2 btn-group'}, [
           React.createElement(Button,{ key:'refresh', className:'btn btn-secondary minimal', disabled:loading, title:'Refresh', onClick:manualRefresh }, '↻')
         ])
-        , backendStatus==='error' && React.createElement('div',{ key:'err', className:'mb-2 ml-2 small text-danger d-flex align-items-center' }, [
-          React.createElement('span',{ key:'lbl', className:'backend-status'}, 'Backend failed'),
-          React.createElement(Button,{ key:'retry', className:'btn btn-secondary minimal btn-sm', disabled:loading, onClick:()=> manualRefresh() }, 'Retry')
-        ])
       ])
     ]);
-
-  const backendBadge = backendStatus==='ok' ? '✅ backend' : backendStatus==='loading' ? '… backend' : backendStatus==='error' ? '⚠ backend fallback' : '';
 
     // While recommender discovery hasn't finished, suppress legacy UI to avoid flash
     if(!discoveryAttempted){
@@ -1374,7 +1452,7 @@
     }
 
     return React.createElement(React.Fragment,null,[
-  backendBadge? React.createElement('div',{key:'bstat', className:'text-center small text-muted mb-1'}, backendBadge): null,
+  backendNotice,
   toolbar,
       renderConfigPanel(),
       React.createElement(PaginationControl,{ key:'pgt', position:'top'}),

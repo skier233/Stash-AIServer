@@ -4,7 +4,7 @@ Lean core: a context-aware AI action button + standalone recommendations page. T
 
 ## ✅ Included Frontend Pieces
 
-- `pageContext.ts`: Lightweight context detector (page, entityId, selection) exposed via `window.AIPageContext`.
+- `PageContext.ts`: Lightweight context detector (page, entityId, selection) exposed via `window.AIPageContext`.
 - `AIButton.tsx`: Context-aware action launcher (actions list + execute + websocket task progress inference).
 - `AIButtonIntegration.tsx`: Injects button into nav + settings tools link.
 - `RecommendedScenes.tsx`: Independent recommendations page (backend ID fetch + GraphQL scene hydration + layout persistence).
@@ -84,7 +84,7 @@ delete window.AIDebug;
 
 ```
 src/
-  pageContext.ts
+  PageContext.ts
   AIButton.tsx
   AIButtonIntegration.tsx
   RecommendedScenes.tsx
@@ -158,7 +158,7 @@ Persistence & Reliability:
 
 Planned Enhancements / TODO:
 - Add performer_view, tag_view, recommendation_click
-- Auto-detect scene detail transitions (hook via `pageContext`)
+- Auto-detect scene detail transitions (hook via `PageContext`)
 - Adaptive throttling by video length
 - Retry backoff + poison message eviction
 - User opt-out toggle surfaced in settings (global `enabled` flag now available in code)
