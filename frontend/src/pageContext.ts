@@ -11,6 +11,8 @@ export interface PageContext {
   detailLabel: string;
   // IDs of currently user-selected entities on list views (non-detail)
   selectedIds?: string[];
+  // IDs currently rendered on the active list page (used for "whole page" actions)
+  visibleIds?: string[];
 }
 
 // Enable verbose debug logging by setting window.AIPageContextDebug = true in the console
@@ -35,6 +37,8 @@ const PAGE_DEFS: Array<{
   { key: 'studios', segment: '/studios', label: 'Studios', detailLabel: id => id ? `Studio #${id}` : 'Studio Library' },
   { key: 'tags', segment: '/tags', label: 'Tags', detailLabel: id => id ? `Tag #${id}` : 'Tag Library' }
 ];
+
+const ENTITY_PAGES = new Set(['scenes','performers','galleries','images','studios','tags','groups']);
 
 function extractId(path: string, segment: string): string | null {
   const regex = new RegExp(`${segment}/(\\d+)`);
@@ -67,11 +71,11 @@ function collectSelectedIds(page: PageContext['page']): string[] | undefined {
 
       // Prefer extracting from inner anchor href (stable route pattern)
       const link = card.querySelector(
-        'a[href*="/scenes/"], a[href*="/performers/"], a[href*="/galleries/"], a[href*="/images/"], a[href*="/studios/"], a[href*="/tags/"]'
+        'a[href*="/scenes/"], a[href*="/performers/"], a[href*="/galleries/"], a[href*="/images/"], a[href*="/studios/"], a[href*="/tags/"], a[href*="/groups/"]'
       ) as HTMLAnchorElement | null;
       if (link) {
         const href = link.getAttribute('href') || link.href;
-        const m = href.match(/\/(scenes|performers|galleries|images|studios|tags)\/(\d+)/);
+  const m = href.match(/\/(scenes|performers|galleries|images|studios|tags|groups)\/(\d+)/);
         if (m) ids.add(m[2]);
       }
 
@@ -108,6 +112,54 @@ function collectSelectedIds(page: PageContext['page']): string[] | undefined {
   }
 }
 
+function resolveElementId(card: Element, expectedPage?: PageContext['page']): string | null {
+  if (!(card instanceof HTMLElement)) return null;
+  // Prefer anchor href patterns (stable across layouts)
+  const link = card.querySelector(
+    'a[href*="/scenes/"], a[href*="/performers/"], a[href*="/galleries/"], a[href*="/images/"], a[href*="/studios/"], a[href*="/tags/"], a[href*="/groups/"]'
+  ) as HTMLAnchorElement | null;
+  if (link) {
+    const href = link.getAttribute('href') || link.href;
+  const match = href.match(/\/(scenes|performers|galleries|images|studios|tags|groups)\/(\d+)/);
+    if (match) {
+      if (!expectedPage || expectedPage === 'markers' || !ENTITY_PAGES.has(expectedPage) || match[1] === expectedPage) {
+        return match[2];
+      }
+    }
+  }
+  const dataId = card.getAttribute('data-id');
+  if (dataId && /^\d+$/.test(dataId)) return dataId;
+  return null;
+}
+
+function collectVisibleIds(page: PageContext['page']): string[] | undefined {
+  try {
+    const ids = new Set<string>();
+    const cardSelectors = '.grid-card, .scene-card, .performer-card, .gallery-card, .image-card';
+    document.querySelectorAll(cardSelectors).forEach(card => {
+      const id = resolveElementId(card, page);
+      if (id) ids.add(id);
+    });
+
+    // Fallback for anchors directly under list/table views
+    if (ids.size === 0) {
+      document.querySelectorAll('a[href*="/scenes/"], a[href*="/performers/"], a[href*="/galleries/"], a[href*="/images/"], a[href*="/studios/"], a[href*="/tags/"]').forEach(link => {
+        const href = link.getAttribute('href') || (link as HTMLAnchorElement).href;
+  const match = href.match(/\/(scenes|performers|galleries|images|studios|tags|groups)\/(\d+)/);
+        if (match) {
+          if (!page || page === 'markers' || !ENTITY_PAGES.has(page) || match[1] === page) ids.add(match[2]);
+        }
+      });
+    }
+
+    const finalIds = ids.size ? Array.from(ids) : undefined;
+    debugLog('collectVisibleIds', { page, count: finalIds?.length || 0, ids: finalIds });
+    return finalIds;
+  } catch {
+    return undefined;
+  }
+}
+
 // (Removed legacy detectMultiSelectContext in favor of unified collectSelectedIds)
 
 export function detectPageContext(): PageContext {
@@ -123,7 +175,8 @@ export function detectPageContext(): PageContext {
       isDetailView: false,
       contextLabel: 'Home',
       detailLabel: 'Dashboard',
-      selectedIds: collectSelectedIds('home')
+  selectedIds: collectSelectedIds('home'),
+  visibleIds: collectVisibleIds('home')
     };
     debugLog('detectPageContext -> home', ctx);
     return ctx;
@@ -156,7 +209,8 @@ export function detectPageContext(): PageContext {
       isDetailView: false,
       contextLabel: 'Markers',
       detailLabel: 'Markers Browser',
-      selectedIds: collectSelectedIds('markers')
+  selectedIds: collectSelectedIds('markers'),
+  visibleIds: collectVisibleIds('markers')
     };
     debugLog('detectPageContext -> markers special', ctx, { segments });
     return ctx;
@@ -177,7 +231,8 @@ export function detectPageContext(): PageContext {
       isDetailView: isDetail,
       contextLabel: def.label,
       detailLabel: def.detailLabel(id),
-      selectedIds: !isDetail ? collectSelectedIds(def.key) : undefined
+  selectedIds: !isDetail ? collectSelectedIds(def.key) : undefined,
+  visibleIds: !isDetail ? collectVisibleIds(def.key) : undefined
     };
     debugLog('detectPageContext -> match', ctx, { segments });
     return ctx;
@@ -189,7 +244,8 @@ export function detectPageContext(): PageContext {
     isDetailView: false,
     contextLabel: 'Unknown Page',
     detailLabel: 'Unknown Location',
-    selectedIds: undefined
+    selectedIds: undefined,
+    visibleIds: undefined
   };
   debugLog('detectPageContext -> unknown', unknown, { segments });
   return unknown;
@@ -205,7 +261,7 @@ function notify() {
   });
 }
 
-function hashSelected(ids?: string[]) {
+function hashIds(ids?: string[]) {
   return ids && ids.length ? ids.slice().sort().join(',') : '';
 }
 
@@ -215,7 +271,8 @@ function refreshContext() {
     next.page !== currentContext.page ||
     next.entityId !== currentContext.entityId ||
     next.isDetailView !== currentContext.isDetailView ||
-    hashSelected(next.selectedIds) !== hashSelected(currentContext.selectedIds)
+    hashIds(next.selectedIds) !== hashIds(currentContext.selectedIds) ||
+    hashIds(next.visibleIds) !== hashIds(currentContext.visibleIds)
   );
   if (changed) {
     debugLog('Context changed', { from: currentContext, to: next });

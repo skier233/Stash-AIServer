@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 # Action & Context Models
 # -----------------------------------------------------------------------------
 
-SelectionMode = Literal['single', 'multi', 'both']
+SelectionMode = Literal['single', 'multi', 'both', 'none', 'page', 'all']
 
 
 class ContextInput(BaseModel):
@@ -14,6 +14,7 @@ class ContextInput(BaseModel):
     entity_id: Optional[str] = Field(None, alias='entityId')
     is_detail_view: bool = Field(False, alias='isDetailView')
     selected_ids: Optional[List[str]] = Field(None, alias='selectedIds')
+    visible_ids: Optional[List[str]] = Field(None, alias='visibleIds')
 
     model_config = {
         'populate_by_name': True,
@@ -35,10 +36,22 @@ class ContextRule(BaseModel):
     def matches(self, ctx: ContextInput) -> bool:
         if self.pages and ctx.page not in self.pages:
             return False
+        selected = ctx.selected_ids or []
+        selected_count = len(selected)
         if self.selection == 'single':
             return ctx.is_detail_view
-        # multi or both => library (non-detail) view
-        return not ctx.is_detail_view
+        if ctx.is_detail_view:
+            return False
+        if self.selection == 'multi':
+            return selected_count > 0
+        if self.selection == 'none':
+            return selected_count == 0
+        if self.selection == 'page':
+            return selected_count == 0 and bool(ctx.visible_ids)
+        if self.selection == 'all':
+            return selected_count == 0
+        # 'both' (legacy) -> any library view regardless of selection state
+        return True
 
 
 class ActionDefinition(BaseModel):
