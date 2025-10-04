@@ -27,6 +27,11 @@ def task_handler(*, id: str, service: str, controller: bool = False):
     return decorator
 
 
+def _make_child_context(chunk: Sequence[str], parent_context: ContextInput) -> ContextInput:
+    if len(chunk) == 1:
+        return ContextInput(page=parent_context.page, entity_id=chunk[0], is_detail_view=parent_context.is_detail_view, selected_ids=[])
+    return ContextInput(page=parent_context.page, entity_id=None, is_detail_view=parent_context.is_detail_view, selected_ids=list(chunk))
+
 def _chunk_items(items: Sequence[T], chunk_size: int) -> Iterable[list[T]]:
     size = max(1, int(chunk_size))
     for idx in range(0, len(items), size):
@@ -38,15 +43,15 @@ def _chunk_items(items: Sequence[T], chunk_size: int) -> Iterable[list[T]]:
 async def spawn_chunked_tasks(
     *,
     parent_task: TaskRecord,
+    parent_context: ContextInput,
     handler: Callable[[ContextInput, dict, TaskRecord | None], Any],
     items: Sequence[T],
     chunk_size: int,
-    context_factory: Callable[[Sequence[T]], ContextInput],
     params: dict | None = None,
     priority: TaskPriority = TaskPriority.high,
     hold_children: bool = True,
-    min_hold_seconds: float = 0.0,
     task_spec: TaskSpec | None = None,
+    context_factory: Callable[[Sequence[T], ContextInput], ContextInput] | None = None
 ) -> dict:
     """Submit child tasks for the provided items in evenly sized chunks.
 
@@ -56,19 +61,19 @@ async def spawn_chunked_tasks(
         handler: Async callable for each chunk (must accept (ctx, params, task_record?) signature).
         items: Sequence of items to process.
         chunk_size: Maximum number of items per chunk.
-        context_factory: Builds a ContextInput for each chunk.
         params: Optional parameters forwarded to each child task.
         priority: Priority for child tasks (defaults to high).
         hold_children: If True, wait until all children finish (or parent cancelled).
         min_hold_seconds: Minimum time before releasing parent even if children done.
         task_spec: Optional TaskSpec template; inferred from handler when omitted.
+        context_factory: Builds a ContextInput for each chunk.
 
     Returns:
         Dict with spawned task ids and control metadata for the caller.
     """
 
     if not items:
-        return {"spawned": [], "count": 0, "held": bool(hold_children), "min_hold": min_hold_seconds or None}
+        return {"spawned": [], "count": 0, "held": bool(hold_children)}
 
     params = dict(params or {})
     spec_template = task_spec or getattr(handler, "_task_spec", None)
@@ -77,7 +82,9 @@ async def spawn_chunked_tasks(
 
     spawned: list[str] = []
     for chunk in _chunk_items(items, chunk_size):
-        chunk_ctx = context_factory(chunk)
+        if context_factory is None:
+            context_factory = _make_child_context
+        chunk_ctx = context_factory(chunk, parent_context)
         child = task_manager.submit(
             spec_template,
             handler,
@@ -92,17 +99,13 @@ async def spawn_chunked_tasks(
     if not hold_children:
         return {"spawned": spawned, "count": len(spawned), "held": False, "min_hold": None}
 
-    loop = asyncio.get_running_loop()
-    start_time = loop.time()
-
     while True:
         children = [t for t in task_manager.tasks.values() if t.group_id == parent_task.id]
         pending = [c for c in children if c.status not in (TaskStatus.completed, TaskStatus.failed, TaskStatus.cancelled)]
         completed = len(children) - len(pending)
         if children:
             task_manager.emit_progress(parent_task, {"completed": completed, "total": len(children), "pending": len(pending)})
-        elapsed = loop.time() - start_time
-        if not pending and elapsed >= min_hold_seconds:
+        if not pending:
             break
         if getattr(parent_task, "cancel_requested", False):
             break
@@ -112,5 +115,4 @@ async def spawn_chunked_tasks(
         "spawned": spawned,
         "count": len(spawned),
         "held": True,
-        "min_hold": min_hold_seconds or None,
     }

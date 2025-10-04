@@ -126,20 +126,6 @@ async def tag_scenes(scope: Scope, ctx: ContextInput, params: dict) -> dict:
         "summary": _summary("scene", scope, len(targets)),
     }
 
-
-def _format_preview(ids: Sequence[str]) -> str:
-    if not ids:
-        return ""
-    if len(ids) <= 3:
-        return ", ".join(ids)
-    return f"{', '.join(ids[:3])} +{len(ids) - 3}"
-
-
-def _make_scene_context(chunk: Sequence[str]) -> ContextInput:
-    if len(chunk) == 1:
-        return ContextInput(page="scenes", entity_id=chunk[0], is_detail_view=True, selected_ids=[])
-    return ContextInput(page="scenes", entity_id=None, is_detail_view=False, selected_ids=list(chunk))
-
 def _sanitize_chunk_size(raw_value: object) -> int:
     try:
         value = int(raw_value)
@@ -185,22 +171,15 @@ async def spawn_scene_batch(
     else:
         hold = bool(hold_value)
 
-    min_hold_raw = params.get("hold_parent_seconds", params.get("holdParentSeconds", 0))
-    try:
-        min_hold = float(min_hold_raw or 0)
-    except (TypeError, ValueError):
-        min_hold = 0.0
-
     result = await spawn_chunked_tasks(
         parent_task=task_record,
+        parent_context=ctx,
         handler=_run_scene_chunk,
         items=selected,
         chunk_size=chunk_size,
-        context_factory=_make_scene_context,
         params=child_params,
         priority=child_priority,
         hold_children=hold,
-        min_hold_seconds=min_hold,
     )
 
     return result
