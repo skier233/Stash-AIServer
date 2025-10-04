@@ -3,9 +3,9 @@
 *.pyc
 */dist/*
 /backend/stash_ai_server/plugins/*
-/backend/plugins/*
 /backend/config.env
 backend/config.env
 /backend/build/*
 *.egg-info
 /backend/data/app.db
+.vscode/launch.json

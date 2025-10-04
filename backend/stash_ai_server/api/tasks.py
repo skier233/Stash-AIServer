@@ -68,7 +68,6 @@ class TaskResponse(BaseModel):
     service: str
     priority: str
     status: str
-    result_kind: str
     error: str | None
     result: Any | None
     group_id: str | None
@@ -87,12 +86,11 @@ async def get_task(task_id: str):
         service=task.service,
         priority=task.priority.name,
         status=task.status.value,
-        result_kind=task.result_kind,
         error=task.error,
         result=task.result,
         group_id=task.group_id,
         started_at=task.started_at,
-        finished_at=task.finished_at,
+        finished_at=task.finished_at
     )
 
 @router.post('/{task_id}/cancel')
@@ -122,12 +120,11 @@ async def list_tasks(service: str | None = None, status: str | None = None):
         service=t.service,
         priority=t.priority.name,
         status=t.status.value,
-        result_kind=t.result_kind,
         error=t.error,
         result=t.result,
         group_id=t.group_id,
         started_at=t.started_at,
-        finished_at=t.finished_at,
+        finished_at=t.finished_at
     ) for t in tasks])
 
 ## Removed temporary '/tasks/history' alias after route ordering fix; canonical path is '/api/v1/tasks/history'.

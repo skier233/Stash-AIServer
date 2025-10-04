@@ -2,6 +2,7 @@ from __future__ import annotations
 import enum
 import time
 import uuid
+from dataclasses import dataclass
 from typing import Any, Optional, List, Dict
 from pydantic import BaseModel
 from stash_ai_server.actions.models import ContextInput
@@ -25,7 +26,6 @@ class TaskRecord(BaseModel):
     service: str
     priority: TaskPriority
     status: TaskStatus
-    result_kind: str
     submitted_at: float
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
@@ -48,7 +48,6 @@ class TaskRecord(BaseModel):
             'service': self.service,
             'priority': self.priority.name,
             'status': self.status.value,
-            'result_kind': self.result_kind,
             'submitted_at': self.submitted_at,
             'started_at': self.started_at,
             'finished_at': self.finished_at,
@@ -67,15 +66,21 @@ class CancelToken:
         return self._cancelled
 
 
-def new_task(action_id: str, service: str, priority: TaskPriority, result_kind: str, ctx: ContextInput, params: dict) -> TaskRecord:
+def new_task(action_id: str, service: str, priority: TaskPriority, ctx: ContextInput, params: dict) -> TaskRecord:
     return TaskRecord(
         id=str(uuid.uuid4()),
         action_id=action_id,
         service=service,
         priority=priority,
         status=TaskStatus.queued,
-        result_kind=result_kind,
         submitted_at=time.time(),
         context=ctx,
         params=params,
     )
+
+
+@dataclass
+class TaskSpec:
+    id: str
+    service: str
+    controller: bool = False

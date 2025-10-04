@@ -2,11 +2,11 @@ from __future__ import annotations
 import asyncio
 import heapq
 import inspect
-from typing import Dict, List, Tuple, Optional, Any, Callable
+from typing import Dict, List, Tuple, Optional, Any, Callable, Union
 import os
 from stash_ai_server.core.system_settings import get_value as sys_get
 import logging
-from stash_ai_server.tasks.models import TaskRecord, TaskStatus, TaskPriority, CancelToken
+from stash_ai_server.tasks.models import TaskRecord, TaskStatus, TaskPriority, CancelToken, TaskSpec
 from stash_ai_server.actions.registry import registry as action_registry
 from stash_ai_server.actions.models import ContextInput
 from stash_ai_server.db.session import SessionLocal
@@ -48,6 +48,8 @@ class TaskManager:
         self.running_counts: Dict[str, int] = {}
         self._service_locks: Dict[str, asyncio.Lock] = {}
         self._listeners: List[Callable[[str, TaskRecord, dict | None], None]] = []
+        self._task_specs: Dict[str, TaskSpec] = {}
+        self._handlers: Dict[str, Callable[..., Any]] = {}
         self._runner_started = False
         # Values may be overridden at startup (main.py) after seeding system settings
         try:
@@ -135,26 +137,38 @@ class TaskManager:
             except Exception:
                 pass
 
+    def _coerce_spec(self, definition: Union[TaskSpec, Any]) -> TaskSpec:
+        if isinstance(definition, TaskSpec):
+            return definition
+        return TaskSpec(
+            id=getattr(definition, 'id'),
+            service=getattr(definition, 'service'),
+            controller=bool(getattr(definition, 'controller', False))
+        )
+
     def submit(self, definition, handler, ctx: ContextInput, params: dict, priority: TaskPriority, *, group_id: str | None = None) -> TaskRecord:
-        service = definition.service
+        spec = self._coerce_spec(definition)
+        service = spec.service
         task = TaskRecord(
             id=__import__('uuid').uuid4().hex,
-            action_id=definition.id,
+            action_id=spec.id,
             service=service,
             priority=priority,
             status=TaskStatus.queued,
-            result_kind=definition.result_kind,
             submitted_at=__import__('time').time(),
             context=ctx,
             params=params,
             group_id=group_id,
-            skip_concurrency=getattr(definition, 'controller', False),
+            skip_concurrency=spec.controller
         )
         self.tasks[task.id] = task
         self.cancel_tokens[task.id] = CancelToken()
         self.queues.setdefault(service, _PriorityQueue()).push(priority, task.id)
         self.running_counts.setdefault(service, 0)
         self._service_locks.setdefault(service, asyncio.Lock())
+        if handler is not None:
+            self._handlers[task.id] = handler
+        self._task_specs[task.id] = spec
         self._emit('queued', task, None)
         if self._debug:
             self._log.debug(f"SUBMIT service={service} id={task.id} priority={priority.name} skip_concurrency={task.skip_concurrency} group={group_id}")
@@ -201,13 +215,20 @@ class TaskManager:
         try:
             # Removed external connectivity HEAD check to simplify initial testing and avoid httpx dependency.
             # Resolve handler again (action could have changed though unlikely)
-            resolved = action_registry.resolve(task.action_id, task.context)
-            if not resolved:
-                task.status = TaskStatus.failed
-                task.error = 'Action no longer available'
-                self._emit('failed', task, None)
-                return
-            definition, handler = resolved
+            spec = self._task_specs.get(task.id)
+            handler = self._handlers.get(task.id)
+            if handler is None:
+                resolved = action_registry.resolve(task.action_id, task.context)
+                if not resolved:
+                    task.status = TaskStatus.failed
+                    task.error = 'Action no longer available'
+                    task.finished_at = __import__('time').time()
+                    self._emit('failed', task, None)
+                    return
+                definition, handler = resolved
+                spec = self._coerce_spec(definition)
+                self._task_specs[task.id] = spec
+                self._handlers[task.id] = handler
             token = self.cancel_tokens.get(task.id)
             sig = inspect.signature(handler)
             if len(sig.parameters) >= 3:
@@ -237,11 +258,17 @@ class TaskManager:
         finally:
             if not task.skip_concurrency:
                 self.running_counts[service] = max(0, self.running_counts.get(service, 1) - 1)
+            self._handlers.pop(task.id, None)
+            self._task_specs.pop(task.id, None)
             if self._debug:
                 self._log.debug(f"RELEASE service={service} running={self.running_counts.get(service)}")
 
     def get(self, task_id: str) -> Optional[TaskRecord]:
         return self.tasks.get(task_id)
+
+    def emit_progress(self, task: TaskRecord, payload: dict):
+        """Emit a custom progress event for the provided task."""
+        self._emit('progress', task, payload)
 
     def list(self, service: str | None = None, status: TaskStatus | None = None) -> List[TaskRecord]:
         vals = list(self.tasks.values())
@@ -266,6 +293,8 @@ class TaskManager:
             task.finished_at = __import__('time').time()
             task.cancel_requested = True
             self._emit('cancelled', task, None)
+            self._handlers.pop(task_id, None)
+            self._task_specs.pop(task_id, None)
             if self._debug:
                 self._log.debug(f"CANCEL immediate task={task.id}")
             for c in children:

@@ -1,0 +1,116 @@
+from __future__ import annotations
+
+import asyncio
+from dataclasses import replace
+from typing import Any, Callable, Iterable, Sequence, TypeVar
+
+from stash_ai_server.actions.models import ContextInput
+from stash_ai_server.tasks.models import TaskPriority, TaskSpec, TaskStatus, TaskRecord
+from stash_ai_server.tasks.manager import manager as task_manager
+
+T = TypeVar("T")
+
+
+def task_handler(*, id: str, service: str, controller: bool = False):
+    """Decorator that attaches a TaskSpec template to a coroutine handler.
+
+    The decorated function can then be passed directly to TaskManager.submit
+    (or helper functions in this module) without manually creating a TaskSpec
+    for each invocation.
+    """
+
+    def decorator(fn: Callable[..., Any]):
+        spec = TaskSpec(id=id, service=service, controller=controller)
+        setattr(fn, "_task_spec", spec)
+        return fn
+
+    return decorator
+
+
+def _chunk_items(items: Sequence[T], chunk_size: int) -> Iterable[list[T]]:
+    size = max(1, int(chunk_size))
+    for idx in range(0, len(items), size):
+        chunk = list(items[idx : idx + size])
+        if chunk:
+            yield chunk
+
+
+async def spawn_chunked_tasks(
+    *,
+    parent_task: TaskRecord,
+    handler: Callable[[ContextInput, dict, TaskRecord | None], Any],
+    items: Sequence[T],
+    chunk_size: int,
+    context_factory: Callable[[Sequence[T]], ContextInput],
+    params: dict | None = None,
+    priority: TaskPriority = TaskPriority.high,
+    hold_children: bool = True,
+    min_hold_seconds: float = 0.0,
+    task_spec: TaskSpec | None = None,
+) -> dict:
+    """Submit child tasks for the provided items in evenly sized chunks.
+
+    Args:
+        parent_task: The controller/parent TaskRecord.
+        manager: TaskManager instance used to submit child tasks.
+        handler: Async callable for each chunk (must accept (ctx, params, task_record?) signature).
+        items: Sequence of items to process.
+        chunk_size: Maximum number of items per chunk.
+        context_factory: Builds a ContextInput for each chunk.
+        params: Optional parameters forwarded to each child task.
+        priority: Priority for child tasks (defaults to high).
+        hold_children: If True, wait until all children finish (or parent cancelled).
+        min_hold_seconds: Minimum time before releasing parent even if children done.
+        task_spec: Optional TaskSpec template; inferred from handler when omitted.
+
+    Returns:
+        Dict with spawned task ids and control metadata for the caller.
+    """
+
+    if not items:
+        return {"spawned": [], "count": 0, "held": bool(hold_children), "min_hold": min_hold_seconds or None}
+
+    params = dict(params or {})
+    spec_template = task_spec or getattr(handler, "_task_spec", None)
+    if spec_template is None:
+        raise ValueError("Handler is missing task metadata. Decorate with @task_handler or pass task_spec explicitly.")
+
+    spawned: list[str] = []
+    for chunk in _chunk_items(items, chunk_size):
+        chunk_ctx = context_factory(chunk)
+        child = task_manager.submit(
+            spec_template,
+            handler,
+            chunk_ctx,
+            params,
+            priority,
+            group_id=parent_task.id,
+        )
+        spawned.append(child.id)
+        task_manager.emit_progress(parent_task, {"queued": len(spawned), "total": len(spawned)})
+
+    if not hold_children:
+        return {"spawned": spawned, "count": len(spawned), "held": False, "min_hold": None}
+
+    loop = asyncio.get_running_loop()
+    start_time = loop.time()
+
+    while True:
+        children = [t for t in task_manager.tasks.values() if t.group_id == parent_task.id]
+        pending = [c for c in children if c.status not in (TaskStatus.completed, TaskStatus.failed, TaskStatus.cancelled)]
+        completed = len(children) - len(pending)
+        if children:
+            task_manager.emit_progress(parent_task, {"completed": completed, "total": len(children), "pending": len(pending)})
+        elapsed = loop.time() - start_time
+        if not pending and elapsed >= min_hold_seconds:
+            break
+        if getattr(parent_task, "cancel_requested", False):
+            break
+        await asyncio.sleep(0.1)
+
+    return {
+        "spawned": spawned,
+        "count": len(spawned),
+        "held": True,
+        "min_hold": min_hold_seconds or None,
+    }
