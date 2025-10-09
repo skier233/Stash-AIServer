@@ -83,6 +83,32 @@ class TaskManager:
         if event in ('completed', 'failed', 'cancelled'):
             self._persist_history(task)
 
+    async def _service_ready(self, service_name: str) -> bool:
+        try:
+            from stash_ai_server.services.registry import services
+        except Exception:
+            return True
+        service = services.get(service_name)
+        if service is None:
+            return True
+        guard = getattr(service, 'ensure_remote_ready', None)
+        if guard is None:
+            return True
+        try:
+            result = guard()
+            ready = await result if inspect.isawaitable(result) else bool(result)
+        except Exception as exc:  # pragma: no cover - defensive
+            if self._debug:
+                self._log.debug(f"READY-ERROR service={service_name} error={exc}")
+            return False
+        if not ready and self._debug:
+            detail_fn = getattr(service, 'connectivity', None)
+            detail = detail_fn() if callable(detail_fn) else 'not ready'
+            queue = self.queues.get(service_name)
+            queued = len(queue) if queue is not None else 0
+            self._log.debug(f"PAUSE service={service_name} {detail} queued={queued}")
+        return ready
+
     # --- persistence -------------------------------------------------
     def _persist_history(self, task: TaskRecord):
         """Store terminal state for top-level tasks (best-effort, swallow errors)."""
@@ -186,12 +212,16 @@ class TaskManager:
         while True:
             await asyncio.sleep(self._loop_interval)
             for service, queue in self.queues.items():
+                if not len(queue):
+                    continue
                 cfg = SERVICE_CONFIG.get(service, {})
                 limit = cfg.get('max_concurrent', 1)
                 # Only block if next queued task would consume concurrency (skip_concurrency tasks bypass)
                 if self.running_counts.get(service, 0) >= limit:
                     if self._debug and len(queue):
                         self._log.debug(f"SKIP service={service} busy running={self.running_counts.get(service)} limit={limit} queued={len(queue)}")
+                    continue
+                if not await self._service_ready(service):
                     continue
                 task_id = queue.pop()
                 if not task_id:

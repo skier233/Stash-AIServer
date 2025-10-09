@@ -8,7 +8,7 @@ mounted in Docker) while core loader logic ships with the backend image.
 Only path constant PLUGIN_DIR still points to the on-disk extensions folder
 (`stash_ai_server/plugins`). All previous functionality preserved.
 """
-import os, pathlib, yaml, importlib, sys, traceback, tempfile, zipfile, shutil, types
+import os, pathlib, yaml, importlib, sys, traceback, tempfile, zipfile, shutil, types, logging
 from dataclasses import dataclass, field
 from typing import List, Dict, Set, Optional, Tuple
 from packaging import version as _v
@@ -20,6 +20,8 @@ from stash_ai_server.models.plugin import PluginMeta, PluginSetting, PluginSourc
 from stash_ai_server.plugin_runtime.settings_registry import register_settings
 import httpx
 from io import BytesIO
+
+_log = logging.getLogger("stash_ai_server.plugins.loader")
 
 # NOTE: We still load plugin python packages from stash_ai_server.plugins.<plugin_name> so
 # that individual plugin code remains in that namespace. The loader itself is
@@ -219,9 +221,24 @@ def _import_files(manifest: PluginManifest):
                 try:
                     reg_fn(); print(f"[plugin] name={manifest.name} invoked register() in {full}", flush=True)
                 except Exception as e:  # noqa: BLE001
-                    print(f"[plugin] name={manifest.name} register() failed in {full}: {e}", flush=True)
+                    # Surface to stdout and backend logger with stack trace
+                    try:
+                        print(f"[plugin] name={manifest.name} register() failed in {full}: {e}", flush=True)
+                    except Exception:
+                        pass
+                    try:
+                        _log.error("Plugin register() failed plugin=%s module=%s", manifest.name, full, exc_info=True)
+                    except Exception:
+                        pass
         except Exception as e:  # noqa: BLE001
-            print(f"[plugin] ERROR import {full}: {e}", flush=True)
+            try:
+                print(f"[plugin] ERROR import {full}: {e}", flush=True)
+            except Exception:
+                pass
+            try:
+                _log.error("Plugin import failed plugin=%s module=%s", manifest.name, full, exc_info=True)
+            except Exception:
+                pass
             raise
 
 def _ensure_pip_dependencies(deps: Optional[List[str]]):
@@ -430,7 +447,22 @@ def initialize_plugins():
                     db.commit(); active.add(name); remaining.remove(name); progressed = True
                     print(f"[plugin] name={name} status={meta.status}", flush=True)
                 except Exception:
-                    meta.status = 'error'; meta.last_error = traceback.format_exc()[-4000:]; db.commit(); remaining.remove(name); progressed = True
+                    # Capture traceback into DB and also surface to backend logs/terminal
+                    tb = traceback.format_exc()[-4000:]
+                    meta.status = 'error'
+                    meta.last_error = tb
+                    db.commit()
+                    # Print to stdout for immediate visibility and log with traceback
+                    try:
+                        print(f"[plugin] ERROR loading name={name}: {tb}", flush=True)
+                    except Exception:
+                        pass
+                    try:
+                        _log.error("Plugin load failed name=%s", name, exc_info=True)
+                    except Exception:
+                        pass
+                    remaining.remove(name)
+                    progressed = True
         if remaining:
             for name in remaining:
                 mf = manifests[name]; meta = metas[name]

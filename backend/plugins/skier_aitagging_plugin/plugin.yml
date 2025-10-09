@@ -6,6 +6,10 @@ required_backend: '>=0.0.0'
 files:
   - service
 depends_on: []
-pip_dependencies:
-  - "numpy==2.3.3"
-
+pip_dependencies: []
+settings:
+  - key: server_url
+    label: Remote Service URL
+    type: string
+    default: ""
+    description: Base URL for the Skier tagging backend (e.g. https://example.com)

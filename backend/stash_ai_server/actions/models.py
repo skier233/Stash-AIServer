@@ -60,6 +60,7 @@ class ActionDefinition(BaseModel):
     description: str = ''
     service: str
     result_kind: Literal['none', 'dialog', 'notification', 'stream'] = 'none'
+    dialog_type: Optional[str] = None
     contexts: List[ContextRule] = Field(default_factory=list)
     input_schema: Optional[dict] = None
     controller: bool = False  # if true, task is lightweight and should not count against concurrency

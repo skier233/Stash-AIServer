@@ -1,7 +1,11 @@
 from __future__ import annotations
 
-from typing import Dict, List
+import logging
+from typing import Any, Dict, List
 from stash_ai_server.actions.registry import registry as action_registry, collect_actions
+
+from backend.stash_ai_server.db.session import SessionLocal
+from backend.stash_ai_server.models.plugin import PluginSetting
 
 # Optional task manager: not required in minimal setups
 try:
@@ -9,6 +13,8 @@ try:
 except Exception:
     task_manager = None
 
+
+_log = logging.getLogger(__name__)
 
 class ServiceBase:
     name: str = 'unnamed'
@@ -21,6 +27,34 @@ class ServiceBase:
 
     def connectivity(self) -> str:
         return 'unknown'
+    
+    def _load_settings(self) -> dict[str, Any]:
+        try:
+            db = SessionLocal()
+        except Exception as exc:  # pragma: no cover - database unavailable
+            _log.error("Unable to open session for settings: %s", exc)
+            return {}
+        try:
+            rows = (
+                db.query(PluginSetting)
+                .filter(PluginSetting.plugin_name == self.name)
+                .all()
+            )
+            settings: dict[str, Any] = {}
+            for row in rows:
+                value = row.value if row.value is not None else row.default_value
+                if value is None:
+                    continue
+                settings[row.key] = value
+            return settings
+        except Exception as exc:  # pragma: no cover - defensive
+            _log.error("Failed loading plugin settings: %s", exc)
+            return {}
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
 
 
 class ServiceRegistry:
