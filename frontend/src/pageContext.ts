@@ -4,7 +4,7 @@
 // =============================================================================
 
 export interface PageContext {
-  page: 'scenes' | 'galleries' | 'images' | 'groups' | 'performers' | 'studios' | 'tags' | 'markers' | 'home' | 'unknown';
+  page: 'scenes' | 'galleries' | 'images' | 'groups' | 'performers' | 'studios' | 'tags' | 'markers' | 'home' | 'settings' | 'unknown';
   entityId: string | null;
   isDetailView: boolean;
   contextLabel: string;
@@ -175,10 +175,18 @@ export function detectPageContext(): PageContext {
       isDetailView: false,
       contextLabel: 'Home',
       detailLabel: 'Dashboard',
-  selectedIds: collectSelectedIds('home'),
-  visibleIds: collectVisibleIds('home')
     };
-    debugLog('detectPageContext -> home', ctx);
+    return ctx;
+  }
+
+  if (segments[0] === 'settings') {
+    const ctx: PageContext = {
+      page: 'settings',
+      entityId: null,
+      isDetailView: false,
+      contextLabel: 'Settings',
+      detailLabel: 'Settings',
+    };
     return ctx;
   }
 

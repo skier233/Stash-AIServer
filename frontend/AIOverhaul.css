@@ -264,6 +264,7 @@
   --ai-color-tags: #6366f1;
   --ai-color-markers: #f472b6;
   --ai-color-home: #6b7280;
+  --ai-color-settings: #c5662f;
   --ai-color-detail: #10b981;
 }
 .minimal-ai-button { position: relative; display: inline-block; font-family: inherit; }
@@ -283,6 +284,7 @@
 .ai-btn--tags { border-color:var(--ai-color-tags); color:var(--ai-color-tags); }
 .ai-btn--markers { border-color:var(--ai-color-markers); color:var(--ai-color-markers); }
 .ai-btn--home { border-color:var(--ai-color-home); color:var(--ai-color-home); }
+.ai-btn--settings { border-color:var(--ai-color-settings); color:var(--ai-color-settings); }
 .ai-btn--detail { border-color:var(--ai-color-detail); color:var(--ai-color-detail); }
 .ai-btn:hover { transform:scale(1.05); box-shadow:0 2px 8px rgba(0,0,0,0.15); background-color:currentColor; color:#fff; }
 .ai-btn:active { transform:scale(0.94); }
