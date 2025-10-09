@@ -4,8 +4,8 @@ import logging
 from typing import Any, Dict, List
 from stash_ai_server.actions.registry import registry as action_registry, collect_actions
 
-from backend.stash_ai_server.db.session import SessionLocal
-from backend.stash_ai_server.models.plugin import PluginSetting
+from stash_ai_server.db.session import SessionLocal
+from stash_ai_server.models.plugin import PluginSetting
 
 # Optional task manager: not required in minimal setups
 try:

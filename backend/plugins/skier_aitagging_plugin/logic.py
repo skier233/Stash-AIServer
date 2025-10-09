@@ -7,7 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict
 
 from stash_ai_server.actions.models import ContextInput
-from backend.stash_ai_server.services.base import RemoteServiceBase
+from stash_ai_server.services.base import RemoteServiceBase
 from stash_ai_server.tasks.helpers import spawn_chunked_tasks, task_handler
 from stash_ai_server.tasks.models import TaskPriority
 
