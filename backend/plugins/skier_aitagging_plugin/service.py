@@ -15,7 +15,7 @@ _log = logging.getLogger(__name__)
 
 
 class SkierAITaggingService(RemoteServiceBase):
-    name = "skier.ai_tagging"
+    name = "skier_aitagging_plugin"
     description = "AI tagging and analysis service"
     max_concurrency = 10
     ready_endpoint = "/ready"

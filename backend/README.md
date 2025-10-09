@@ -38,7 +38,7 @@ During development, source changes under `backend/stash_ai_server` auto-reload t
 python -m venv .venv
 . .venv/Scripts/activate  # Windows PowerShell: .venv\Scripts\Activate.ps1
 pip install -r backend/requirements.txt
-uvicorn backend.stash_ai_server.main:app --reload
+uvicorn stash_ai_server.main:app --reload
 ```
 
 ## Configuration file
