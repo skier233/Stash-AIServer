@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict
 
 from stash_ai_server.actions.models import ContextInput
+from .api_models import ImageResult
 from stash_ai_server.services.base import RemoteServiceBase
 from stash_ai_server.tasks.helpers import spawn_chunked_tasks, task_handler
 from stash_ai_server.tasks.models import TaskPriority
@@ -14,8 +15,10 @@ from stash_ai_server.tasks.models import TaskPriority
 _log = logging.getLogger(__name__)
 
 # Remote API endpoints
-IMAGES_ENDPOINT = "/images"  # Batch endpoint - accepts multiple image paths
+IMAGES_ENDPOINT = "/process_images/"  # Batch endpoint - accepts multiple image paths
 SCENE_ENDPOINT = "/scene"    # Single scene endpoint - processes one scene at a time
+
+AI_Base_Tag_Name = "AI"
 
 Scope = Literal["detail", "selected", "page", "all"]
 
@@ -100,13 +103,14 @@ async def _call_images_api(service: Any, image_paths: list[str], params: dict) -
     
     try:
         payload = {
-            "image_paths": image_paths,
-            "params": params or {},
+            "paths": image_paths,
+            "threshold": 0.5,
+            "return_confidence": True
         }
         return await service.http.post(
             IMAGES_ENDPOINT,
             json=payload,
-            response_model=ImageTaggingResponse,
+            response_model=ImageResult,
         )
     except asyncio.CancelledError:  # pragma: no cover
         raise
@@ -153,6 +157,7 @@ async def tag_images(service: Any, scope: Scope, ctx: ContextInput, params: dict
     
     # Try remote API first
     remote = await _call_images_api(service, targets, params)
+    _log.info("Remote API response: %s", remote)
     if remote:
         data = remote.model_dump(exclude_none=True)
         data["targets"] = targets
