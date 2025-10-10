@@ -1,7 +1,7 @@
 import asyncio
 import logging
-from .api_models import ImageResult
-from backend.stash_ai_server.services.base import RemoteServiceBase
+from .models import ImageResult
+from stash_ai_server.services.base import RemoteServiceBase
 
 IMAGES_ENDPOINT = "/process_images/"  # Batch endpoint - accepts multiple image paths
 SCENE_ENDPOINT = "/scene"    # Single scene endpoint - processes one scene at a time

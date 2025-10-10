@@ -58,7 +58,10 @@ class ActionDefinition(BaseModel):
     id: str
     label: str
     description: str = ''
-    service: str
+    service: str = Field(
+        default='',
+        description="Logical service group identifier; populated from the owning ServiceBase if omitted.",
+    )
     result_kind: Literal['none', 'dialog', 'notification', 'stream'] = 'none'
     dialog_type: Optional[str] = None
     contexts: List[ContextRule] = Field(default_factory=list)

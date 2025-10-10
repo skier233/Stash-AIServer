@@ -15,7 +15,7 @@ _log = logging.getLogger(__name__)
 
 
 class SkierAITaggingService(RemoteServiceBase):
-    name = "skier_aitagging_plugin"
+    name = "AI_Tagging"
     description = "AI tagging and analysis service"
     max_concurrency = 10
     ready_endpoint = "/ready"
@@ -44,7 +44,6 @@ class SkierAITaggingService(RemoteServiceBase):
         id="skier.ai_tag.image",
         label="AI Tag Image",
         description="Generate tag suggestions for an image",
-        service="ai",
         result_kind="dialog",
         contexts=[ContextRule(pages=["images"], selection="single")],
     )
@@ -55,7 +54,6 @@ class SkierAITaggingService(RemoteServiceBase):
         id="skier.ai_tag.image.selected",
         label="Tag Selected Images",
         description="Generate tag suggestions for selected images",
-        service="ai",
         result_kind="dialog",
         contexts=[ContextRule(pages=["images"], selection="multi")],
     )
@@ -66,7 +64,6 @@ class SkierAITaggingService(RemoteServiceBase):
         id="skier.ai_tag.image.page",
         label="Tag Page Images",
         description="Generate tag suggestions for all images on the current page",
-        service="ai",
         result_kind="dialog",
         contexts=[ContextRule(pages=["images"], selection="page")],
     )
@@ -77,7 +74,6 @@ class SkierAITaggingService(RemoteServiceBase):
         id="skier.ai_tag.image.all",
         label="Tag All Images",
         description="Analyze every image in the library",
-        service="ai",
         result_kind="dialog",
         contexts=[ContextRule(pages=["images"], selection="none")],
     )
@@ -92,7 +88,6 @@ class SkierAITaggingService(RemoteServiceBase):
         id="skier.ai_tag.scene",
         label="AI Tag Scene",
         description="Analyze a scene for tag segments",
-        service="ai",
         result_kind="dialog",
         contexts=[ContextRule(pages=["scenes"], selection="single")],
     )
@@ -103,7 +98,6 @@ class SkierAITaggingService(RemoteServiceBase):
         id="skier.ai_tag.scene.selected",
         label="Tag Selected Scenes",
         description="Analyze selected scenes for tag segments",
-        service="ai",
         result_kind="dialog",
         contexts=[ContextRule(pages=["scenes"], selection="multi")],
         controller=True,
@@ -115,7 +109,6 @@ class SkierAITaggingService(RemoteServiceBase):
         id="skier.ai_tag.scene.page",
         label="Tag Page Scenes",
         description="Analyze every scene visible in the current list view",
-        service="ai",
         result_kind="dialog",
         contexts=[ContextRule(pages=["scenes"], selection="page")],
         controller=True,
@@ -127,7 +120,6 @@ class SkierAITaggingService(RemoteServiceBase):
         id="skier.ai_tag.scene.all",
         label="Tag All Scenes",
         description="Analyze every scene in the library",
-        service="ai",
         result_kind="dialog",
         contexts=[ContextRule(pages=["scenes"], selection="none")],
     )
@@ -143,7 +135,6 @@ class SkierAITaggingService(RemoteServiceBase):
         id="skier.ai_tag.batch.spawn.scenes",
         label="AI Batch Spawn Scenes",
         description="Spawn individual tagging subtasks for each selected scene",
-        service="ai",
         result_kind="dialog",
         contexts=[ContextRule(pages=["scenes"], selection="multi")],
         controller=True,

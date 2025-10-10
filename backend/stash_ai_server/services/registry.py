@@ -24,10 +24,30 @@ class ServiceBase:
     # Optional default priorities
     default_single_priority: str = 'high'
     default_bulk_priority: str = 'low'
+    plugin_name: str | None = None
+
+    def __init__(self) -> None:
+        self.plugin_name = self._resolve_plugin_name()
+
+    def _resolve_plugin_name(self) -> str:
+        explicit = getattr(self, 'plugin_name', None)
+        if explicit:
+            return explicit
+        module = self.__class__.__module__ or ''
+        parts = module.split('.')
+        try:
+            idx = parts.index('plugins')
+            if idx + 1 < len(parts):
+                candidate = parts[idx + 1]
+                if candidate:
+                    return candidate
+        except ValueError:
+            pass
+        return self.name
 
     def connectivity(self) -> str:
         return 'unknown'
-    
+
     def _load_settings(self) -> dict[str, Any]:
         try:
             db = SessionLocal()
@@ -37,7 +57,7 @@ class ServiceBase:
         try:
             rows = (
                 db.query(PluginSetting)
-                .filter(PluginSetting.plugin_name == self.name)
+                .filter(PluginSetting.plugin_name == self.plugin_name)
                 .all()
             )
             settings: dict[str, Any] = {}
@@ -67,9 +87,7 @@ class ServiceRegistry:
         self._services[service.name] = service
         # Collect actions via decorator metadata
         for definition, handler in collect_actions(service):
-            # patch service field if not provided
-            if not definition.service:
-                definition.service = service.name
+            definition.service = service.name
             action_registry.register(definition, handler)
         # Configure task manager dynamically if available
         try:

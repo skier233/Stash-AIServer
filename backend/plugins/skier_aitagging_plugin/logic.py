@@ -11,7 +11,7 @@ from .stash_handler import add_error_tag_to_images, get_ai_tag_ids_from_names, r
 from .http_handler import call_images_api
 
 from .utils import extract_tags_from_response, get_selected_items
-from .api_models import ImageResult
+from .models import Scope
 from stash_ai_server.services.base import RemoteServiceBase
 from stash_ai_server.tasks.helpers import spawn_chunked_tasks, task_handler
 from stash_ai_server.tasks.models import TaskPriority
@@ -20,8 +20,6 @@ from stash_ai_server.utils.stash_api_real import stash_api
 _log = logging.getLogger(__name__)
 
 
-
-Scope = Literal["detail", "selected", "page", "all"] 
 
 _EXCLUDED_CHILD_PARAM_KEYS = {
     "hold",

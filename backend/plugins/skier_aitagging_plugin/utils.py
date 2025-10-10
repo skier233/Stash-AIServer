@@ -1,6 +1,7 @@
 
-from backend.stash_ai_server.actions.models import ContextInput
-from .logic import Scope
+from stash_ai_server.actions.models import ContextInput
+
+from .models import Scope
 
 
 def extract_tags_from_response(response: dict) -> list[str]:
