@@ -128,7 +128,6 @@ def _build_connection_dict() -> Dict[str, Any]:
     # connections.
     try:
         if _have_valid_api_key():
-            print(f"api key: {STASH_API_KEY}")
             conn['ApiKey'] = STASH_API_KEY
     except Exception:
         # conservative: don't include API key if check fails

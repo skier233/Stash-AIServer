@@ -7,6 +7,7 @@ from typing import Any, Optional, List, Dict
 from pydantic import BaseModel
 from stash_ai_server.actions.models import ContextInput
 
+#TODO: Add more priority options
 class TaskPriority(enum.IntEnum):
     high = 0
     normal = 10

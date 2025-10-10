@@ -12,6 +12,8 @@ from stash_ai_server.actions.models import ContextInput
 from stash_ai_server.db.session import SessionLocal
 from stash_ai_server.tasks.history import TaskHistory
 
+_log = logging.getLogger(__name__)
+
 SERVICE_CONFIG: dict[str, dict] = {}
 
 class _PriorityQueue:
@@ -174,7 +176,15 @@ class TaskManager:
 
     def submit(self, definition, handler, ctx: ContextInput, params: dict, priority: TaskPriority, *, group_id: str | None = None) -> TaskRecord:
         spec = self._coerce_spec(definition)
-        service = spec.service
+        service = None
+        if handler is not None:
+            inst = getattr(handler, '__self__', None)
+            if inst is not None:
+                svc_name = getattr(inst, 'name', None)
+                if isinstance(svc_name, str) and svc_name:
+                    service = svc_name
+        if not service:
+            raise ValueError("Cannot determine service name for task")
         task = TaskRecord(
             id=__import__('uuid').uuid4().hex,
             action_id=spec.id,
