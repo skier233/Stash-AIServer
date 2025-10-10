@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from stash_ai_server.actions.models import ContextInput
 
+from stash_ai_server.tasks.models import TaskRecord
+
 from .stash_handler import add_error_tag_to_images, get_ai_tag_ids_from_names, remove_ai_tags_from_images
 
 from .http_handler import call_images_api
@@ -16,6 +18,7 @@ from stash_ai_server.services.base import RemoteServiceBase
 from stash_ai_server.tasks.helpers import spawn_chunked_tasks, task_handler
 from stash_ai_server.tasks.models import TaskPriority
 from stash_ai_server.utils.stash_api_real import stash_api
+from stash_ai_server.services.registry import services
 
 _log = logging.getLogger(__name__)
 
@@ -128,45 +131,22 @@ async def tag_scene_all(service: Any, ctx: ContextInput, params: dict) -> dict:
     }
 
 
-# ==============================================================================
-# Child task handler for scene batches
-# ==============================================================================
-
-def _get_service() -> Any:
-    """Retrieve the skier AI tagging service from registry."""
-    from stash_ai_server.services.registry import services
-
-    service = services.get("skier.ai_tagging")
-    if service is None:
-        raise RuntimeError("Skier AI tagging service is not registered")
-    return service
-
-
 @task_handler(id="skier.ai_tag.scene.chunk", service="ai")
-async def _run_scene_chunk(ctx: ContextInput, params: dict, task_record=None):
+async def _run_scene_chunk(ctx: ContextInput, params: dict, task_record: TaskRecord = None):
     """
     Process a single scene as a child task.
     The /scene endpoint only handles one scene at a time.
     """
-    service = _get_service()
+    service = services.get(task_record.service)
     return await tag_scene_single(service, ctx, params)
-
-
-# ==============================================================================
-# Batch orchestration for multiple scenes
-# ==============================================================================
-
-def _sanitize_chunk_size(raw_value: object) -> int:
-    try:
-        value = int(raw_value)
-    except (TypeError, ValueError):
-        return 1
-    return max(1, value)
 
 
 def _child_params(params: dict) -> dict:
     return {k: v for k, v in params.items() if k not in _EXCLUDED_CHILD_PARAM_KEYS}
 
+
+async def tag_scenes(service: RemoteServiceBase, scope: Scope, ctx: ContextInput, params: dict):
+    pass
 
 async def spawn_scene_batch(
     service: Any,
@@ -194,7 +174,7 @@ async def spawn_scene_batch(
     if not targets:
         return {"message": "No scenes to process"}
 
-    chunk_size = _sanitize_chunk_size(params.get("chunk_size") or params.get("chunkSize") or 1)
+    chunk_size = 1
     child_priority = TaskPriority.from_str(params.get("child_priority") or params.get("priority"))
     child_params = _child_params(params)
     

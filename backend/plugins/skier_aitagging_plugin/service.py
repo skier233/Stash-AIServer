@@ -127,21 +127,5 @@ class SkierAITaggingService(RemoteServiceBase):
         # For "all" scope, just acknowledge the request
         return await logic.tag_scene_all(self, ctx, params)
 
-    # ------------------------------------------------------------------
-    # Batch orchestration
-    # ------------------------------------------------------------------
-
-    @action(
-        id="skier.ai_tag.batch.spawn.scenes",
-        label="AI Batch Spawn Scenes",
-        description="Spawn individual tagging subtasks for each selected scene",
-        result_kind="dialog",
-        contexts=[ContextRule(pages=["scenes"], selection="multi")],
-        controller=True,
-    )
-    async def batch_spawn_scenes(self, ctx: ContextInput, params: dict, task_record):
-        return await logic.spawn_scene_batch(self, ctx, params, task_record)
-
-
 def register():
     services.register(SkierAITaggingService())
