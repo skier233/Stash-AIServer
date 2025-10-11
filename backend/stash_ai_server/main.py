@@ -18,6 +18,8 @@ from contextlib import asynccontextmanager
 from stash_ai_server.plugin_runtime.loader import initialize_plugins
 from stash_ai_server.core.system_settings import seed_system_settings, get_value as sys_get
 from stash_ai_server.services import registry as services_registry  # registry remains for core non-plugin definitions (if any)
+import logging
+from stash_ai_server.core.config import settings as config_settings
 
 
 
@@ -31,6 +33,12 @@ async def lifespan(app: FastAPI):
     system.
     """
     # Setup / startup
+    # Configure root logging level early so modules use the desired level
+    try:
+        lvl = getattr(logging, (config_settings.log_level or 'INFO').upper(), logging.INFO)
+    except Exception:
+        lvl = logging.INFO
+    logging.basicConfig(level=lvl, format='[%(levelname)s] %(name)s: %(message)s')
 
     if os.getenv('AIO_DEVMODE'):
         try:

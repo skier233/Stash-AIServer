@@ -6,7 +6,7 @@ from stash_ai_server.core.config import settings
 
 
 def main():  # pragma: no cover
-    print(f"[dev-entrypoint] starting dev server version={settings.version} db={settings.database_url}", flush=True)
+    print(f"[dev-entrypoint] starting dev server version={settings.version} db={settings.database_url} log_level={settings.log_level}", flush=True)
     try:
         run_migrations()
     except Exception as e:
@@ -19,7 +19,7 @@ def main():  # pragma: no cover
     import uvicorn
     host = os.getenv('AI_SERVER_HOST', '0.0.0.0')
     port = int(os.getenv('AI_SERVER_PORT', '4153'))
-    uvicorn.run('stash_ai_server.main:app', host=host, port=port, reload=True)
+    uvicorn.run('stash_ai_server.main:app', host=host, port=port, reload=True, log_level=settings.log_level.lower())
 
 
 if __name__ == '__main__':

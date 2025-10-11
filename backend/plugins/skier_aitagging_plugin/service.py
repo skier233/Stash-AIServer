@@ -9,6 +9,8 @@ from stash_ai_server.services.registry import services
 from stash_ai_server.actions.registry import action
 from stash_ai_server.actions.models import ContextRule, ContextInput
 
+from stash_ai_server.tasks.models import TaskRecord
+
 from . import logic
 
 _log = logging.getLogger(__name__)
@@ -47,8 +49,8 @@ class SkierAITaggingService(RemoteServiceBase):
         result_kind="dialog",
         contexts=[ContextRule(pages=["images"], selection="single")],
     )
-    async def tag_image_single(self, ctx: ContextInput, params: dict):
-        return await logic.tag_images(self, "detail", ctx, params)
+    async def tag_image_single(self, ctx: ContextInput, params: dict, task_record: TaskRecord):
+        return await logic.tag_images(self, ctx, params, task_record)
 
     @action(
         id="skier.ai_tag.image.selected",
@@ -57,8 +59,8 @@ class SkierAITaggingService(RemoteServiceBase):
         result_kind="dialog",
         contexts=[ContextRule(pages=["images"], selection="multi")],
     )
-    async def tag_image_selected(self, ctx: ContextInput, params: dict):
-        return await logic.tag_images(self, "selected", ctx, params)
+    async def tag_image_selected(self, ctx: ContextInput, params: dict, task_record: TaskRecord):
+        return await logic.tag_images(self, ctx, params, task_record)
 
     @action(
         id="skier.ai_tag.image.page",
@@ -67,8 +69,8 @@ class SkierAITaggingService(RemoteServiceBase):
         result_kind="dialog",
         contexts=[ContextRule(pages=["images"], selection="page")],
     )
-    async def tag_image_page(self, ctx: ContextInput, params: dict):
-        return await logic.tag_images(self, "page", ctx, params)
+    async def tag_image_page(self, ctx: ContextInput, params: dict, task_record: TaskRecord):
+        return await logic.tag_images(self, ctx, params, task_record)
 
     @action(
         id="skier.ai_tag.image.all",
@@ -77,8 +79,8 @@ class SkierAITaggingService(RemoteServiceBase):
         result_kind="dialog",
         contexts=[ContextRule(pages=["images"], selection="none")],
     )
-    async def tag_image_all(self, ctx: ContextInput, params: dict):
-        return await logic.tag_images(self, "all", ctx, params)
+    async def tag_image_all(self, ctx: ContextInput, params: dict, task_record: TaskRecord):
+        return await logic.tag_images(self, ctx, params, task_record)
 
     # ------------------------------------------------------------------
     # Scene actions - use controller pattern to spawn child tasks
@@ -91,8 +93,8 @@ class SkierAITaggingService(RemoteServiceBase):
         result_kind="dialog",
         contexts=[ContextRule(pages=["scenes"], selection="single")],
     )
-    async def tag_scene_single(self, ctx: ContextInput, params: dict):
-        return await logic.tag_scenes(self, ctx, params)
+    async def tag_scene_single(self, ctx: ContextInput, params: dict, task_record: TaskRecord):
+        return await logic.tag_scenes(self, ctx, params, task_record)
 
     @action(
         id="skier.ai_tag.scene.selected",
@@ -101,7 +103,7 @@ class SkierAITaggingService(RemoteServiceBase):
         result_kind="dialog",
         contexts=[ContextRule(pages=["scenes"], selection="multi")],
     )
-    async def tag_scene_selected(self, ctx: ContextInput, params: dict, task_record):
+    async def tag_scene_selected(self, ctx: ContextInput, params: dict, task_record: TaskRecord):
         return await logic.tag_scenes(self, ctx, params, task_record)
 
     @action(
@@ -111,7 +113,7 @@ class SkierAITaggingService(RemoteServiceBase):
         result_kind="dialog",
         contexts=[ContextRule(pages=["scenes"], selection="page")],
     )
-    async def tag_scene_page(self, ctx: ContextInput, params: dict, task_record):
+    async def tag_scene_page(self, ctx: ContextInput, params: dict, task_record: TaskRecord):
         return await logic.tag_scenes(self, ctx, params, task_record)
 
     @action(
@@ -121,9 +123,9 @@ class SkierAITaggingService(RemoteServiceBase):
         result_kind="dialog",
         contexts=[ContextRule(pages=["scenes"], selection="none")],
     )
-    async def tag_scene_all(self, ctx: ContextInput, params: dict):
+    async def tag_scene_all(self, ctx: ContextInput, params: dict, task_record: TaskRecord):
         # For "all" scope, just acknowledge the request
-        return await logic.tag_scenes(self, ctx, params)
+        return await logic.tag_scenes(self, ctx, params, task_record)
 
 def register():
     services.register(SkierAITaggingService())

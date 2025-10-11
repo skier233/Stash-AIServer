@@ -59,7 +59,6 @@ class StashAPI:
         if not self.stash_interface:
             _log.warning("Stash interface not configured; returning empty image path map")
             return out
-        _log.warning("getting image paths")
         try:
             images = self.stash_interface.find_images(image_ids=images_ids, fragment="id files {path}")
             _log.warning(f"Images: {images}")

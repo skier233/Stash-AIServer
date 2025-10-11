@@ -29,9 +29,9 @@ def get_selected_items(ctx: ContextInput) -> list[str]:
     if ctx.is_detail_view:
         return [ctx.entity_id]
     elif ctx.selected_ids:
-        return [ctx.selected_ids]
+        return ctx.selected_ids
     elif ctx.visible_ids:
-        return [ctx.visible_ids]
+        return ctx.visible_ids
     else:
         # TODO
         return []

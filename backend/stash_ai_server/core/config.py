@@ -95,6 +95,9 @@ class Settings(BaseModel):
     version: str = os.getenv('AI_SERVER_VERSION', __version__)
     data_dir: Path = data_dir
     db_file: Path = db_path
+    # Logging level for the backend (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    # Can be set via the environment variable AI_SERVER_LOG_LEVEL
+    log_level: str = os.getenv('AI_SERVER_LOG_LEVEL', 'DEBUG')
     diagnostics: list[str] | None = _diagnostics
 
 settings = Settings()

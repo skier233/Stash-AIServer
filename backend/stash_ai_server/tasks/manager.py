@@ -59,7 +59,9 @@ class TaskManager:
         except Exception:
             self._loop_interval = 0.05
         try:
-            dbg = sys_get('TASK_DEBUG', False)
+            dbg = sys_get('TASK_DEBUG', True)
+
+            #TODO: remove this and just use loglevel
             self._debug = bool(dbg)
         except Exception:
             self._debug = False
@@ -310,8 +312,7 @@ class TaskManager:
             task.error = f'{e.__class__.__name__}: {e}'
             task.finished_at = __import__('time').time()
             self._emit('failed', task, None)
-            if self._debug:
-                self._log.debug(f"FAILED task={task.id} error={task.error}")
+            self._log.debug(f"FAILED task={task.id} error={task.error}")
         finally:
             if not task.skip_concurrency:
                 self.running_counts[service] = max(0, self.running_counts.get(service, 1) - 1)

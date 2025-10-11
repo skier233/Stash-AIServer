@@ -12,7 +12,7 @@ def _maybe_run_migrations():
         raise
 
 def main():
-    print(f"[entrypoint] starting (prod) version={settings.version} db={settings.database_url}", flush=True)
+    print(f"[entrypoint] starting (prod) version={settings.version} db={settings.database_url} log_level={settings.log_level}", flush=True)
     try:
         print(f"[entrypoint] data_dir={settings.data_dir} db_file={settings.db_file}", flush=True)
         if getattr(settings, 'diagnostics', None):
@@ -30,7 +30,7 @@ def main():
     import uvicorn
     host = os.getenv('AI_SERVER_HOST', '0.0.0.0')
     port = int(os.getenv('AI_SERVER_PORT', '4153'))
-    uvicorn.run('stash_ai_server.main:app', host=host, port=port, reload=False)
+    uvicorn.run('stash_ai_server.main:app', host=host, port=port, reload=False, log_level=settings.log_level.lower())
 
 if __name__ == '__main__':  # pragma: no cover
     main()

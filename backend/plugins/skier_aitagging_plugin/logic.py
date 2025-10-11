@@ -21,8 +21,7 @@ from stash_ai_server.services.registry import services
 
 _log = logging.getLogger(__name__)
 
-#288
-MAX_IMAGES_PER_REQUEST = 48
+MAX_IMAGES_PER_REQUEST = 288
 
 # ==============================================================================
 # Image tagging - batch endpoint that accepts multiple image paths
@@ -50,6 +49,9 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
         for tid, _ in images_without_paths:
             image_paths.pop(tid, None)
             # TODO: do something with these images
+
+    if not image_paths:
+        return {"message": "No valid images to process"}
 
     result = None
     try:
@@ -179,7 +181,7 @@ async def tag_images(service: RemoteServiceBase, ctx: ContextInput, params: dict
         # TODO: standardize empty responses
         return {"message": "No images to process"}
     if len(selected_items) <= MAX_IMAGES_PER_REQUEST:
-        await tag_images_task(ctx, params, task_record)
+        await tag_images_task(ctx, params)
         # TODO: Standardize output
         return {"message": "Single scene processed directly"}
 
