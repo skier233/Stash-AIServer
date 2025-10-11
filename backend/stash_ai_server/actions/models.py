@@ -66,7 +66,6 @@ class ActionDefinition(BaseModel):
     dialog_type: Optional[str] = None
     contexts: List[ContextRule] = Field(default_factory=list)
     input_schema: Optional[dict] = None
-    controller: bool = False  # if true, task is lightweight and should not count against concurrency
     # internal: handler callable stored out-of-band in registry
 
     def is_applicable(self, ctx: ContextInput) -> bool:

@@ -100,7 +100,6 @@ class SkierAITaggingService(RemoteServiceBase):
         description="Analyze selected scenes for tag segments",
         result_kind="dialog",
         contexts=[ContextRule(pages=["scenes"], selection="multi")],
-        controller=True,
     )
     async def tag_scene_selected(self, ctx: ContextInput, params: dict, task_record):
         return await logic.tag_scenes(self, ctx, params, task_record)
@@ -111,7 +110,6 @@ class SkierAITaggingService(RemoteServiceBase):
         description="Analyze every scene visible in the current list view",
         result_kind="dialog",
         contexts=[ContextRule(pages=["scenes"], selection="page")],
-        controller=True,
     )
     async def tag_scene_page(self, ctx: ContextInput, params: dict, task_record):
         return await logic.tag_scenes(self, ctx, params, task_record)

@@ -11,7 +11,7 @@ from stash_ai_server.tasks.manager import manager as task_manager
 T = TypeVar("T")
 
 
-def task_handler(*, id: str, service: str | None = None, controller: bool = False):
+def task_handler(*, id: str, service: str | None = None):
     """Decorator that attaches a TaskSpec template to a coroutine handler.
 
     The decorated function can then be passed directly to TaskManager.submit
@@ -20,7 +20,7 @@ def task_handler(*, id: str, service: str | None = None, controller: bool = Fals
     """
 
     def decorator(fn: Callable[..., Any]):
-        spec = TaskSpec(id=id, service=service or '', controller=controller)
+        spec = TaskSpec(id=id, service=service or '')
         setattr(fn, "_task_spec", spec)
         return fn
 
@@ -51,22 +51,23 @@ async def spawn_chunked_tasks(
     priority: TaskPriority = TaskPriority.high,
     hold_children: bool = True,
     task_spec: TaskSpec | None = None,
-    context_factory: Callable[[Sequence[T], ContextInput], ContextInput] | None = None
+    context_factory: Callable[[Sequence[T], ContextInput], ContextInput] | None = None,
+    mark_parent_controller: bool = True,
 ) -> dict:
     """Submit child tasks for the provided items in evenly sized chunks.
 
     Args:
         parent_task: The controller/parent TaskRecord.
-        manager: TaskManager instance used to submit child tasks.
         handler: Async callable for each chunk (must accept (ctx, params, task_record?) signature).
         items: Sequence of items to process.
         chunk_size: Maximum number of items per chunk.
         params: Optional parameters forwarded to each child task.
         priority: Priority for child tasks (defaults to high).
         hold_children: If True, wait until all children finish (or parent cancelled).
-        min_hold_seconds: Minimum time before releasing parent even if children done.
         task_spec: Optional TaskSpec template; inferred from handler when omitted.
         context_factory: Builds a ContextInput for each chunk.
+        mark_parent_controller: When True (default), mark parent_task as a controller so it no longer
+            counts against service concurrency once child work begins.
 
     Returns:
         Dict with spawned task ids and control metadata for the caller.
@@ -81,7 +82,10 @@ async def spawn_chunked_tasks(
         raise ValueError("Handler is missing task metadata. Decorate with @task_handler or pass task_spec explicitly.")
 
     if not spec_template.service:
-        spec_template.service = parent_task.service
+        spec_template = replace(spec_template, service=parent_task.service)
+
+    if mark_parent_controller and not parent_task.skip_concurrency:
+        task_manager.mark_controller(parent_task)
 
     spawned: list[str] = []
     for chunk in _chunk_items(items, chunk_size):

@@ -84,4 +84,3 @@ def new_task(action_id: str, service: str, priority: TaskPriority, ctx: ContextI
 class TaskSpec:
     id: str
     service: str = ''
-    controller: bool = False

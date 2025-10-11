@@ -21,7 +21,8 @@ from stash_ai_server.services.registry import services
 
 _log = logging.getLogger(__name__)
 
-MAX_IMAGES_PER_REQUEST = 288
+#288
+MAX_IMAGES_PER_REQUEST = 48
 
 # ==============================================================================
 # Image tagging - batch endpoint that accepts multiple image paths
@@ -29,7 +30,7 @@ MAX_IMAGES_PER_REQUEST = 288
 
 
 @task_handler(id="skier.ai_tag.image.task")
-async def tag_images_task(ctx: ContextInput, params: dict, taskRecord: TaskRecord) -> dict:
+async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
     """
     Tag images using batch /images endpoint.
     """
@@ -61,14 +62,19 @@ async def tag_images_task(ctx: ContextInput, params: dict, taskRecord: TaskRecor
 
             remove_ai_tags_from_images(list(image_paths.keys()))
 
+            saw_success = False
             for image, id in zip(result, image_paths.keys()):
                 if 'error' in image:
                     return_status = "Partial Success"
                     add_error_tag_to_images([id])
                     continue
+                saw_success = True
                 tags_list = extract_tags_from_response(image)
                 tag_ids = get_ai_tag_ids_from_names(tags_list)
                 stash_api.add_tags_to_images([id], tag_ids)
+
+            if not saw_success:
+                return_status = "Failed"
     
     except Exception:
         return_status = "Failed"

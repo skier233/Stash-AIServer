@@ -171,7 +171,6 @@ class TaskManager:
         return TaskSpec(
             id=getattr(definition, 'id'),
             service=getattr(definition, 'service'),
-            controller=bool(getattr(definition, 'controller', False))
         )
 
     def submit(self, definition, handler, ctx: ContextInput, params: dict, priority: TaskPriority, *, group_id: str | None = None) -> TaskRecord:
@@ -197,7 +196,7 @@ class TaskManager:
             context=ctx,
             params=params,
             group_id=group_id,
-            skip_concurrency=spec.controller
+            skip_concurrency=False
         )
         self.tasks[task.id] = task
         self.cancel_tokens[task.id] = CancelToken()
@@ -211,6 +210,22 @@ class TaskManager:
         if self._debug:
             self._log.debug(f"SUBMIT service={service} id={task.id} priority={priority.name} skip_concurrency={task.skip_concurrency} group={group_id}")
         return task
+
+    def mark_controller(self, task: TaskRecord) -> None:
+        """Convert a running task into a controller so it stops consuming concurrency."""
+        if task.skip_concurrency:
+            return
+        # Only release a concurrency slot if this task is actually running.
+        # It's possible (though unlikely) for callers to attempt to mark a queued
+        # task as a controller; in that case we must not decrement the running
+        # counter. This prevents out-of-sync negative counters.
+        was_running = task.status == TaskStatus.running
+        task.skip_concurrency = True
+        service = task.service
+        if was_running:
+            current = self.running_counts.get(service, 0)
+            if current > 0:
+                self.running_counts[service] = current - 1
 
     async def start(self):
         if self._runner_started:
