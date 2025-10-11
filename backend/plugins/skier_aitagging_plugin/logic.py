@@ -1,27 +1,37 @@
 from __future__ import annotations
-
-import asyncio
 import logging
-from typing import Any, Literal
-
+import time
 from stash_ai_server.actions.models import ContextInput
-
 from stash_ai_server.tasks.models import TaskRecord
 
-from .stash_handler import add_error_tag_to_images, get_ai_tag_ids_from_names, remove_ai_tags_from_images
-
-from .http_handler import call_images_api
-
+from .models import AIModelInfo
+from .stash_handler import add_error_tag_to_images, get_ai_tag_ids_from_names, is_vr_scene, remove_ai_tags_from_images
+from .http_handler import call_images_api, call_scene_api, get_active_scene_models
 from .utils import extract_tags_from_response, get_selected_items
 from stash_ai_server.services.base import RemoteServiceBase
 from stash_ai_server.tasks.helpers import spawn_chunked_tasks, task_handler
 from stash_ai_server.tasks.models import TaskPriority
 from stash_ai_server.utils.stash_api_real import stash_api
-from stash_ai_server.services.registry import services
 
 _log = logging.getLogger(__name__)
 
 MAX_IMAGES_PER_REQUEST = 288
+
+current_server_models_cache: list[AIModelInfo] = []
+
+MODELS_CACHE_REFRESH_INTERVAL = 600  # seconds
+
+next_cache_refresh_time = 0.0
+
+async def update_model_cache(service: RemoteServiceBase) -> None:
+    """Update the cache of models from the remote service."""
+    global current_server_models_cache
+    global next_cache_refresh_time
+    try:
+        current_server_models_cache = await get_active_scene_models(service)
+        next_cache_refresh_time = time.monotonic() + MODELS_CACHE_REFRESH_INTERVAL
+    except Exception as e:
+        _log.error("Failed to update model cache: %s", e)
 
 # ==============================================================================
 # Image tagging - batch endpoint that accepts multiple image paths
@@ -55,7 +65,7 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
 
     result = None
     try:
-        result = await call_images_api(service, list(image_paths.values()), params)
+        result = await call_images_api(service, list(image_paths.values()))
         if result is None:
             return_status = "Failed"
         else:
@@ -84,56 +94,39 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
 
     return "dummy", return_status
 
-
-async def tag_images():
-    pass
-
 # ==============================================================================
-# Scene tagging - single scene endpoint, must spawn child tasks for multiple
+# Scene tagging
 # ==============================================================================
 
-# TODO: make scenes api work
-# async def _call_scene_api(service: RemoteServiceBase, scene_id: str, params: dict) -> SceneTaggingResponse | None:
-#     """Call the /scene endpoint for a single scene."""   
-#     try:
-#         payload = {
-#             "scene_id": scene_id,
-#             "params": params or {},
-#         }
-#         return await service.http.post(
-#             SCENE_ENDPOINT,
-#             json=payload,
-#             response_model=SceneTaggingResponse,
-#         )
-#     except asyncio.CancelledError:  # pragma: no cover
-#         raise
-#     except Exception as exc:  # noqa: BLE001
-#         _log.warning("scene API call failed for scene_id=%s: %s", scene_id, exc)
-#         return None
-
-
-async def tag_scene_single(service: RemoteServiceBase, ctx: ContextInput, params: dict) -> dict:
-    """
-    Tag a single scene using the /scene endpoint.
-    Used for detail view or when only one scene is selected.
-    """
-    return {
-        "scene_id": None,
-        "tags": [],
-        "summary": "No scene available for this request",
-    }
-
-async def tag_scene_all(service: Any, ctx: ContextInput, params: dict) -> dict:
-    """Handle 'all scenes' request - just acknowledge, don't process."""
-    return {
-        "scene_id": None,
-        "tags": [],
-        "summary": "No scene available for this request",
-    }
 
 @task_handler(id="skier.ai_tag.scene.task")
 async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecord) -> dict:
-    service = services.get(task_record.service)
+    scene_id = ctx.entity_id
+    scene_path, scene_tags = stash_api.get_scene_path_and_tags(int(scene_id))
+
+    service = params["service"]
+    
+
+    #TODO: Check if already tagged with same models logic
+
+    #TODO: path mutation logic
+
+    # TODO: Check what services don't need processing again (or possibly all)
+    global next_cache_refresh_time
+    if service.was_disconnected:
+        await update_model_cache(service)
+        service.was_disconnected = False
+    elif time.monotonic() > next_cache_refresh_time:
+        await update_model_cache(service)
+
+    # Get models used for tagging this scene in the past if exist
+
+    # Compare models used for tagging this scene in the past with current models and determine which categories need to be retagged if any
+
+    # TODO: VR Scene handling
+    vr_scene = is_vr_scene(scene_tags)
+    result = await call_scene_api(service, scene_path, 2.0, vr_scene)
+    _log.debug(f"Scene API result: {result}")
 
     # TODO
     return {
@@ -145,6 +138,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
 
 async def tag_scenes(service: RemoteServiceBase, ctx: ContextInput, params: dict, task_record: TaskRecord):
     selected_items = get_selected_items(ctx)
+    params["service"] = service
     if not selected_items:
         # TODO: standardize empty responses
         return {"message": "No scenes to process"}

@@ -74,6 +74,14 @@ class StashAPI:
         _log.warning("Fetched image paths for ids=%s -> %s", images_ids, out)
         return out
 
+    def get_scene_path_and_tags(self, scene_id: int):
+        scene_result = self.stash_interface.find_scene(id=scene_id, fragment="files {path} tags {id}")
+        if not scene_result or 'files' not in scene_result or not scene_result['files']:
+            return None, []
+        path = scene_result['files'][0]['path']
+        tags = [tag['id'] for tag in scene_result.get('tags', []) if 'id' in tag]
+        return path, tags
+
 def _have_valid_api_key(api_key) -> bool:
     return bool(api_key and api_key != 'REPLACE_WITH_API_KEY' and api_key.strip() != '')
 

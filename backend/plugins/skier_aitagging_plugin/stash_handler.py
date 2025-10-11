@@ -7,11 +7,16 @@ AI_Base_Tag_Name = "AI"
 AI_Base_Tag_Id = stash_api.fetch_tag_id(AI_Base_Tag_Name, create_if_missing=True)
 
 AI_Error_Tag_Name = "AI_Errored"
+
+VR_TAG_NAME = stash_api.stash_interface.get_configuration()["ui"].get("vrTag", None)
+VR_Tag_Id = stash_api.fetch_tag_id(VR_TAG_NAME) if VR_TAG_NAME else None
 AI_Error_Tag_Id = stash_api.fetch_tag_id(AI_Error_Tag_Name, parent_id=AI_Base_Tag_Id, create_if_missing=True)
 
 AI_tags_cache = stash_api.get_tags_with_parent(parent_tag_id=AI_Base_Tag_Id)
 
 AI_tags_cache[AI_Error_Tag_Name] = AI_Error_Tag_Id
+
+# TODO: Get VR tag id
 
 def remove_ai_tags_from_images(image_ids: list[int]) -> None:
     """Remove all AI tags from the given images."""
@@ -30,3 +35,8 @@ def add_error_tag_to_images(image_ids: list[int]) -> None:
 def get_ai_tag_ids_from_names(tag_names: list[str]) -> list[int]:
     """Get tag IDs for the given tag names, creating them if necessary."""
     return [stash_api.fetch_tag_id(tag, parent_id=AI_Base_Tag_Id, create_if_missing=True, add_to_cache=AI_tags_cache) for tag in tag_names]
+
+def is_vr_scene(tag_ids: list[int]) -> bool:
+    """Check if the scene is tagged as VR."""
+    global VR_Tag_Id
+    return VR_Tag_Id in tag_ids if VR_Tag_Id else False

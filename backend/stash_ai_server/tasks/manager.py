@@ -12,6 +12,8 @@ from stash_ai_server.actions.models import ContextInput
 from stash_ai_server.db.session import SessionLocal
 from stash_ai_server.tasks.history import TaskHistory
 
+from stash_ai_server.services.base import RemoteServiceBase
+
 _log = logging.getLogger(__name__)
 
 SERVICE_CONFIG: dict[str, dict] = {}
@@ -87,6 +89,12 @@ class TaskManager:
         if event in ('completed', 'failed', 'cancelled'):
             self._persist_history(task)
 
+    
+    async def _set_service_disconnected(self, service: RemoteServiceBase):
+        if service.was_disconnected:
+            return
+        service.was_disconnected = True
+    
     async def _service_ready(self, service_name: str) -> bool:
         try:
             from stash_ai_server.services.registry import services
@@ -104,13 +112,11 @@ class TaskManager:
         except Exception as exc:  # pragma: no cover - defensive
             if self._debug:
                 self._log.debug(f"READY-ERROR service={service_name} error={exc}")
+
+            await self._set_service_disconnected(service)
             return False
-        if not ready and self._debug:
-            detail_fn = getattr(service, 'connectivity', None)
-            detail = detail_fn() if callable(detail_fn) else 'not ready'
-            queue = self.queues.get(service_name)
-            queued = len(queue) if queue is not None else 0
-            self._log.debug(f"PAUSE service={service_name} {detail} queued={queued}")
+        if not ready:
+            await self._set_service_disconnected(service)
         return ready
 
     # --- persistence -------------------------------------------------

@@ -258,6 +258,7 @@ class RemoteServiceBase(ServiceBase):
     failure_backoff_seconds: float = 20.0
     request_timeout: httpx.Timeout | float | int | None = None
     verify_ssl: bool | str | None = True
+    was_disconnected: bool = False
 
     def __init__(self) -> None:
         super().__init__()
