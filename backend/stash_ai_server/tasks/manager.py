@@ -184,6 +184,8 @@ class TaskManager:
                 if isinstance(svc_name, str) and svc_name:
                     service = svc_name
         if not service:
+            service = spec.service
+        if not service:
             raise ValueError("Cannot determine service name for task")
         task = TaskRecord(
             id=__import__('uuid').uuid4().hex,

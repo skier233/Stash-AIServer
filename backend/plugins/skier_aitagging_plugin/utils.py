@@ -23,18 +23,15 @@ def extract_tags_from_response(response: dict) -> list[str]:
                 tags.append(tag_info)
     return tags
 
-def get_selected_items(scope: Scope, ctx: ContextInput) -> list[str]:
+def get_selected_items(ctx: ContextInput) -> list[str]:
     """Collect target IDs based on scope."""
-    selected = list(ctx.selected_ids or [])
-    visible = list(ctx.visible_ids or [])
-    entity = [ctx.entity_id] if ctx.entity_id else []
 
-    if scope == "detail":
-        return entity or selected
-    if scope == "selected":
-        return selected or entity
-    if scope == "page":
-        return visible
-    if scope == "all":
+    if ctx.is_detail_view:
+        return [ctx.entity_id]
+    elif ctx.selected_ids:
+        return [ctx.selected_ids]
+    elif ctx.visible_ids:
+        return [ctx.visible_ids]
+    else:
+        # TODO
         return []
-    raise ValueError(f"Unknown scope '{scope}'")

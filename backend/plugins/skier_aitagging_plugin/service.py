@@ -92,7 +92,7 @@ class SkierAITaggingService(RemoteServiceBase):
         contexts=[ContextRule(pages=["scenes"], selection="single")],
     )
     async def tag_scene_single(self, ctx: ContextInput, params: dict):
-        return await logic.tag_scene_single(self, ctx, params)
+        return await logic.tag_scenes(self, ctx, params)
 
     @action(
         id="skier.ai_tag.scene.selected",
@@ -103,7 +103,7 @@ class SkierAITaggingService(RemoteServiceBase):
         controller=True,
     )
     async def tag_scene_selected(self, ctx: ContextInput, params: dict, task_record):
-        return await logic.spawn_scene_batch(self, ctx, params, task_record)
+        return await logic.tag_scenes(self, ctx, params, task_record)
 
     @action(
         id="skier.ai_tag.scene.page",
@@ -114,7 +114,7 @@ class SkierAITaggingService(RemoteServiceBase):
         controller=True,
     )
     async def tag_scene_page(self, ctx: ContextInput, params: dict, task_record):
-        return await logic.spawn_scene_batch(self, ctx, params, task_record)
+        return await logic.tag_scenes(self, ctx, params, task_record)
 
     @action(
         id="skier.ai_tag.scene.all",
@@ -125,7 +125,7 @@ class SkierAITaggingService(RemoteServiceBase):
     )
     async def tag_scene_all(self, ctx: ContextInput, params: dict):
         # For "all" scope, just acknowledge the request
-        return await logic.tag_scene_all(self, ctx, params)
+        return await logic.tag_scenes(self, ctx, params)
 
 def register():
     services.register(SkierAITaggingService())

@@ -83,5 +83,5 @@ def new_task(action_id: str, service: str, priority: TaskPriority, ctx: ContextI
 @dataclass
 class TaskSpec:
     id: str
-    service: str
+    service: str = ''
     controller: bool = False

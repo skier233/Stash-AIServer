@@ -13,7 +13,6 @@ from .stash_handler import add_error_tag_to_images, get_ai_tag_ids_from_names, r
 from .http_handler import call_images_api
 
 from .utils import extract_tags_from_response, get_selected_items
-from .models import Scope
 from stash_ai_server.services.base import RemoteServiceBase
 from stash_ai_server.tasks.helpers import spawn_chunked_tasks, task_handler
 from stash_ai_server.tasks.models import TaskPriority
@@ -22,31 +21,22 @@ from stash_ai_server.services.registry import services
 
 _log = logging.getLogger(__name__)
 
-
-
-_EXCLUDED_CHILD_PARAM_KEYS = {
-    "hold",
-    "hold_children",
-    "holdChildren",
-    "hold_parent_seconds",
-    "holdParentSeconds",
-    "chunk_size",
-    "chunkSize",
-}
+MAX_IMAGES_PER_REQUEST = 288
 
 # ==============================================================================
 # Image tagging - batch endpoint that accepts multiple image paths
 # ==============================================================================
 
 
-async def tag_images(service: RemoteServiceBase, scope: Scope, ctx: ContextInput, params: dict) -> dict:
+@task_handler(id="skier.ai_tag.image.task")
+async def tag_images_task(ctx: ContextInput, params: dict, taskRecord: TaskRecord) -> dict:
     """
     Tag images using batch /images endpoint.
-    All images in the scope are sent in a single request.
     """
-    targets = get_selected_items(scope, ctx)
-    
-    image_paths = stash_api.get_image_paths(targets)
+    image_to_process = get_selected_items(ctx)
+    service = params["service"]
+
+    image_paths = stash_api.get_image_paths(image_to_process)
     # Try remote API first
 
     return_status = "Success"
@@ -86,6 +76,9 @@ async def tag_images(service: RemoteServiceBase, scope: Scope, ctx: ContextInput
 
     return "dummy", return_status
 
+
+async def tag_images():
+    pass
 
 # ==============================================================================
 # Scene tagging - single scene endpoint, must spawn child tasks for multiple
@@ -130,73 +123,77 @@ async def tag_scene_all(service: Any, ctx: ContextInput, params: dict) -> dict:
         "summary": "No scene available for this request",
     }
 
-
-@task_handler(id="skier.ai_tag.scene.chunk", service="ai")
-async def _run_scene_chunk(ctx: ContextInput, params: dict, task_record: TaskRecord = None):
-    """
-    Process a single scene as a child task.
-    The /scene endpoint only handles one scene at a time.
-    """
+@task_handler(id="skier.ai_tag.scene.task")
+async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecord) -> dict:
     service = services.get(task_record.service)
-    return await tag_scene_single(service, ctx, params)
+
+    # TODO
+    return {
+        "scene_id": None,
+        "tags": [],
+        "summary": "No scene available for this request",
+    }
 
 
-def _child_params(params: dict) -> dict:
-    return {k: v for k, v in params.items() if k not in _EXCLUDED_CHILD_PARAM_KEYS}
-
-
-async def tag_scenes(service: RemoteServiceBase, scope: Scope, ctx: ContextInput, params: dict):
-    pass
-
-async def spawn_scene_batch(
-    service: Any,
-    ctx: ContextInput,
-    params: dict,
-    task_record,
-) -> dict:
-    """
-    Spawn child tasks for each scene in the selection.
-    Since /scene endpoint only handles one scene at a time, we must create
-    individual child tasks for each scene.
-    """
-    # Determine scope based on context
-    if ctx.is_detail_view:
-        scope = "detail"
-    elif ctx.selected_ids:
-        scope = "selected"
-    elif ctx.visible_ids:
-        scope = "page"
-    else:
-        scope = "all"
-    
-    targets = get_selected_items(scope, ctx)
-    
-    if not targets:
+async def tag_scenes(service: RemoteServiceBase, ctx: ContextInput, params: dict, task_record: TaskRecord):
+    selected_items = get_selected_items(ctx)
+    if not selected_items:
+        # TODO: standardize empty responses
         return {"message": "No scenes to process"}
+    if len(selected_items) == 1:
+        await tag_scene_task(ctx, params, task_record)
+        # TODO: Standardize output
+        return {"message": "Single scene processed directly"}
 
-    chunk_size = 1
-    child_priority = TaskPriority.from_str(params.get("child_priority") or params.get("priority"))
-    child_params = _child_params(params)
-    
-    hold_value = params.get("hold_children")
-    if hold_value is None:
-        hold_value = params.get("holdChildren")
-    if isinstance(hold_value, str):
-        hold = hold_value.strip().lower() not in {"false", "0", "no", ""}
-    elif hold_value is None:
-        hold = True
-    else:
-        hold = bool(hold_value)
+    task_priority = TaskPriority.low
+    if ctx.is_detail_view:
+        task_priority = TaskPriority.high
+    elif ctx.selected_ids and len(ctx.selected_ids) >= 1:
+        task_priority = TaskPriority.normal
+    elif ctx.visible_ids and len(ctx.visible_ids) >= 1:
+        task_priority = TaskPriority.normal
 
     result = await spawn_chunked_tasks(
         parent_task=task_record,
         parent_context=ctx,
-        handler=_run_scene_chunk,
-        items=targets,
-        chunk_size=chunk_size,
-        params=child_params,
-        priority=child_priority,
-        hold_children=hold,
+        handler=tag_scene_task,
+        items=selected_items,
+        chunk_size=1,
+        params=params,
+        priority=task_priority,
+        hold_children=True,
+    )
+
+    return result
+
+async def tag_images(service: RemoteServiceBase, ctx: ContextInput, params: dict, task_record: TaskRecord):
+    selected_items = get_selected_items(ctx)
+    params["service"] = service
+    if not selected_items:
+        # TODO: standardize empty responses
+        return {"message": "No images to process"}
+    if len(selected_items) <= MAX_IMAGES_PER_REQUEST:
+        await tag_images_task(ctx, params, task_record)
+        # TODO: Standardize output
+        return {"message": "Single scene processed directly"}
+
+    task_priority = TaskPriority.low
+    if ctx.is_detail_view:
+        task_priority = TaskPriority.high
+    elif ctx.selected_ids and len(ctx.selected_ids) >= 1:
+        task_priority = TaskPriority.normal
+    elif ctx.visible_ids and len(ctx.visible_ids) >= 1:
+        task_priority = TaskPriority.normal
+
+    result = await spawn_chunked_tasks(
+        parent_task=task_record,
+        parent_context=ctx,
+        handler=tag_images_task,
+        items=selected_items,
+        chunk_size=MAX_IMAGES_PER_REQUEST,
+        params=params,
+        priority=task_priority,
+        hold_children=True,
     )
 
     return result

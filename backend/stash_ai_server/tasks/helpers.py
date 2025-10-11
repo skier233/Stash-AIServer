@@ -11,7 +11,7 @@ from stash_ai_server.tasks.manager import manager as task_manager
 T = TypeVar("T")
 
 
-def task_handler(*, id: str, service: str, controller: bool = False):
+def task_handler(*, id: str, service: str | None = None, controller: bool = False):
     """Decorator that attaches a TaskSpec template to a coroutine handler.
 
     The decorated function can then be passed directly to TaskManager.submit
@@ -20,7 +20,7 @@ def task_handler(*, id: str, service: str, controller: bool = False):
     """
 
     def decorator(fn: Callable[..., Any]):
-        spec = TaskSpec(id=id, service=service, controller=controller)
+        spec = TaskSpec(id=id, service=service or '', controller=controller)
         setattr(fn, "_task_spec", spec)
         return fn
 
@@ -79,6 +79,9 @@ async def spawn_chunked_tasks(
     spec_template = task_spec or getattr(handler, "_task_spec", None)
     if spec_template is None:
         raise ValueError("Handler is missing task metadata. Decorate with @task_handler or pass task_spec explicitly.")
+
+    if not spec_template.service:
+        spec_template.service = parent_task.service
 
     spawned: list[str] = []
     for chunk in _chunk_items(items, chunk_size):
