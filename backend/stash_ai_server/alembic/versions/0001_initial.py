@@ -224,6 +224,95 @@ def upgrade() -> None:  # noqa: D401
     # Library + time for trending / analytics
     op.create_index('ix_interaction_library_search_library_created', 'interaction_library_search', ['library', 'created_at'])
 
+    # ------------------------------------------------------------------
+    # AI model catalog and result storage (shared across plugins)
+    # ------------------------------------------------------------------
+    op.create_table(
+        'ai_models',
+        sa.Column('id', sa.Integer, primary_key=True),
+        sa.Column('service', sa.String(length=100), nullable=False),
+        sa.Column('plugin_name', sa.String(length=100), nullable=True),
+        sa.Column('model_id', sa.String(length=100), nullable=True),
+        sa.Column('name', sa.String(length=150), nullable=False),
+        sa.Column('version', sa.String(length=50), nullable=True),
+        sa.Column('model_type', sa.String(length=50), nullable=True),
+        sa.Column('categories', sa.JSON, nullable=True),
+        sa.Column('extra', sa.JSON, nullable=True),
+        sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+    sa.UniqueConstraint('service', 'model_id', 'name', name='uq_ai_model_service_model_name'),
+    )
+    op.create_index('ix_ai_models_service', 'ai_models', ['service'])
+
+    op.create_table(
+        'ai_model_runs',
+        sa.Column('id', sa.Integer, primary_key=True),
+        sa.Column('service', sa.String(length=100), nullable=False),
+        sa.Column('plugin_name', sa.String(length=100), nullable=True),
+        sa.Column('entity_type', sa.String(length=20), nullable=False),
+        sa.Column('entity_id', sa.String(length=64), nullable=False),
+        sa.Column('status', sa.String(length=20), nullable=False, server_default='completed'),
+        sa.Column('input_params', sa.JSON, nullable=True),
+        sa.Column('started_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+        sa.Column('completed_at', sa.DateTime, nullable=True),
+        sa.Column('result_metadata', sa.JSON, nullable=True),
+    )
+    op.create_index('ix_ai_model_runs_entity', 'ai_model_runs', ['entity_type', 'entity_id'])
+    op.create_index('ix_ai_model_runs_service_entity', 'ai_model_runs', ['service', 'entity_type', 'entity_id'])
+
+    op.create_table(
+        'ai_model_run_models',
+        sa.Column('id', sa.Integer, primary_key=True),
+        sa.Column('run_id', sa.Integer, sa.ForeignKey('ai_model_runs.id', ondelete='CASCADE'), nullable=False),
+        sa.Column('model_id', sa.Integer, sa.ForeignKey('ai_models.id', ondelete='SET NULL'), nullable=True),
+        sa.Column('status', sa.String(length=20), nullable=False, server_default='completed'),
+        sa.Column('input_params', sa.JSON, nullable=True),
+        sa.Column('skip_reason', sa.String(length=200), nullable=True),
+        sa.Column('result_checksum', sa.String(length=64), nullable=True),
+        sa.Column('duration_ms', sa.Integer, nullable=True),
+        sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+    )
+    op.create_index('ix_ai_run_models_run', 'ai_model_run_models', ['run_id'])
+    op.create_index('ix_ai_run_models_model', 'ai_model_run_models', ['model_id'])
+
+    op.create_table(
+        'ai_result_timespans',
+        sa.Column('id', sa.Integer, primary_key=True),
+        sa.Column('run_id', sa.Integer, sa.ForeignKey('ai_model_runs.id', ondelete='CASCADE'), nullable=False),
+        sa.Column('run_model_id', sa.Integer, sa.ForeignKey('ai_model_run_models.id', ondelete='CASCADE'), nullable=True),
+        sa.Column('entity_type', sa.String(length=20), nullable=False),
+        sa.Column('entity_id', sa.String(length=64), nullable=False),
+        sa.Column('payload_type', sa.String(length=50), nullable=False),
+        sa.Column('label', sa.String(length=150), nullable=True),
+        sa.Column('start_s', sa.Float, nullable=False),
+        sa.Column('end_s', sa.Float, nullable=True),
+        sa.Column('confidence', sa.Float, nullable=True),
+        sa.Column('value_json', sa.JSON, nullable=True),
+        sa.Column('reference_id', sa.Integer, nullable=True),
+    )
+    op.create_index('ix_ai_timespans_entity', 'ai_result_timespans', ['entity_type', 'entity_id'])
+    op.create_index('ix_ai_timespans_run', 'ai_result_timespans', ['run_id'])
+    op.create_index('ix_ai_timespans_payload', 'ai_result_timespans', ['payload_type', 'label'])
+    op.create_index('ix_ai_timespans_start', 'ai_result_timespans', ['entity_type', 'entity_id', 'start_s'])
+
+    op.create_table(
+        'ai_result_aggregates',
+        sa.Column('id', sa.Integer, primary_key=True),
+        sa.Column('run_id', sa.Integer, sa.ForeignKey('ai_model_runs.id', ondelete='CASCADE'), nullable=False),
+        sa.Column('run_model_id', sa.Integer, sa.ForeignKey('ai_model_run_models.id', ondelete='CASCADE'), nullable=True),
+        sa.Column('entity_type', sa.String(length=20), nullable=False),
+        sa.Column('entity_id', sa.String(length=64), nullable=False),
+        sa.Column('payload_type', sa.String(length=50), nullable=False),
+        sa.Column('category', sa.String(length=100), nullable=True),
+        sa.Column('label', sa.String(length=150), nullable=True),
+        sa.Column('reference_id', sa.Integer, nullable=True),
+        sa.Column('metric', sa.String(length=50), nullable=False),
+        sa.Column('value_float', sa.Float, nullable=True),
+        sa.Column('value_json', sa.JSON, nullable=True),
+        sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
+    )
+    op.create_index('ix_ai_aggregates_entity', 'ai_result_aggregates', ['entity_type', 'entity_id'])
+    op.create_index('ix_ai_aggregates_payload', 'ai_result_aggregates', ['payload_type', 'category', 'label', 'metric'])
+
 
 def downgrade() -> None:  # pragma: no cover - full rollback seldom used
     # Drop added composite indexes (must precede table drops)

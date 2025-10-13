@@ -172,6 +172,51 @@ def _load_or_create_meta(db: Session, manifest: PluginManifest) -> PluginMeta:
     db.commit(); db.refresh(row)
     return row
 
+
+def _ensure_local_source(db: Session) -> PluginSource:
+    src = db.execute(select(PluginSource).where(PluginSource.name == 'local')).scalar_one_or_none()
+    if src:
+        return src
+    src = PluginSource(name='local', url='local://manual', enabled=True)
+    db.add(src)
+    db.commit(); db.refresh(src)
+    return src
+
+
+def _ensure_catalog_entry_from_manifest(
+    db: Session,
+    *,
+    manifest: PluginManifest,
+    raw_manifest: dict,
+) -> None:
+    """Ensure a PluginCatalog row exists for on-disk manifests.
+
+    Plugins fetched via remote sources already create catalog rows. For
+    drag-and-drop plugins we synthesize a local source entry so the UI can
+    surface metadata and dependency details.
+    """
+
+    # If a catalog row already exists (remote or local), leave it intact.
+    existing = db.execute(select(PluginCatalog).where(PluginCatalog.plugin_name == manifest.name)).scalar_one_or_none()
+    if existing:
+        return
+
+    src = _ensure_local_source(db)
+    dependencies = manifest.depends_on or []
+    dependencies_json = {'plugins': dependencies} if dependencies else None
+    row = PluginCatalog(
+        source_id=src.id,
+        plugin_name=manifest.name,
+        version=manifest.version,
+        description=raw_manifest.get('description') if isinstance(raw_manifest, dict) else None,
+        human_name=manifest.human_name,
+        server_link=manifest.server_link,
+        dependencies_json=dependencies_json,
+        manifest_json=raw_manifest if isinstance(raw_manifest, dict) else None,
+    )
+    db.add(row)
+    db.commit()
+
 def _apply_migrations(manifest: PluginManifest, meta: PluginMeta):
     mig_dir = PLUGIN_DIR / manifest.name / 'migrations'
     if not mig_dir.exists():
@@ -398,6 +443,10 @@ def initialize_plugins():
             m = _parse_manifest(manifest_path)
             if m:
                 manifests[m.name] = m; manifest_data_map[m.name] = raw
+                try:
+                    _ensure_catalog_entry_from_manifest(db, manifest=m, raw_manifest=raw)
+                except Exception as e:
+                    print(f"[plugin] unable to synthesize catalog entry name={m.name}: {e}", flush=True)
         metas: Dict[str, PluginMeta] = {n: _load_or_create_meta(db, mf) for n, mf in manifests.items()}
         missing_map: Dict[str, List[str]] = {}
         for name, mf in manifests.items():

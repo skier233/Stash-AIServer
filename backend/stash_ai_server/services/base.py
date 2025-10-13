@@ -3,15 +3,15 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from typing import Any, Mapping, Type, TypeVar, cast
+from typing import Any, Mapping, TypeVar, cast
 
 import httpx
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 
 from .registry import ServiceBase
 
-T = TypeVar("T", bound=BaseModel)
+T = TypeVar("T")
 
 _DEFAULT_TIMEOUT = httpx.Timeout(7200, connect=10.0)
 _DEFAULT_HEADERS: Mapping[str, str] = {
@@ -116,7 +116,7 @@ class HTTPClient:
         method: str,
         path: str = "",
         *,
-        response_model: Type[T] | None = None,
+        response_model: Any | None = None,
         expect_json: bool = False,
         raise_for_status: bool = True,
         **kwargs: Any,
@@ -144,7 +144,8 @@ class HTTPClient:
             if payload is None:
                 raise ValueError("Expected JSON payload but response was empty")
             try:
-                return cast(T, response_model.model_validate(payload))
+                adapter = response_model if isinstance(response_model, TypeAdapter) else TypeAdapter(response_model)
+                return cast(T, adapter.validate_python(payload))
             except ValidationError as exc:
                 raise exc
 
@@ -158,7 +159,7 @@ class HTTPClient:
         path: str = "",
         *,
         params: Mapping[str, Any] | None = None,
-        response_model: Type[T] | None = None,
+        response_model: Any | None = None,
         expect_json: bool = False,
         **kwargs: Any,
     ) -> T | Any | httpx.Response:
@@ -177,7 +178,7 @@ class HTTPClient:
         *,
         json: Any = None,
         data: Any = None,
-        response_model: Type[T] | None = None,
+        response_model: Any | None = None,
         expect_json: bool = False,
         **kwargs: Any,
     ) -> T | Any | httpx.Response:
@@ -197,7 +198,7 @@ class HTTPClient:
         *,
         json: Any = None,
         data: Any = None,
-        response_model: Type[T] | None = None,
+        response_model: Any | None = None,
         expect_json: bool = False,
         **kwargs: Any,
     ) -> T | Any | httpx.Response:
@@ -215,7 +216,7 @@ class HTTPClient:
         self,
         path: str = "",
         *,
-        response_model: Type[T] | None = None,
+        response_model: Any | None = None,
         expect_json: bool = False,
         **kwargs: Any,
     ) -> T | Any | httpx.Response:

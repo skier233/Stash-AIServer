@@ -11,5 +11,5 @@ settings:
   - key: server_url
     label: Remote Service URL
     type: string
-    default: ""
+    default: "http://localhost:8000"
     description: Base URL for the Skier tagging backend (e.g. https://example.com)

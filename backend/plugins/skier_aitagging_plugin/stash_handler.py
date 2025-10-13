@@ -36,6 +36,22 @@ def get_ai_tag_ids_from_names(tag_names: list[str]) -> list[int]:
     """Get tag IDs for the given tag names, creating them if necessary."""
     return [stash_api.fetch_tag_id(tag, parent_id=AI_Base_Tag_Id, create_if_missing=True, add_to_cache=AI_tags_cache) for tag in tag_names]
 
+
+def resolve_ai_tag_reference(label: str) -> int | None:
+    """Resolve (and ensure) the Stash tag id for a label used in AI results."""
+    if not label:
+        return None
+    try:
+        return stash_api.fetch_tag_id(
+            label,
+            parent_id=AI_Base_Tag_Id,
+            create_if_missing=True,
+            add_to_cache=AI_tags_cache,
+        )
+    except Exception:
+        _log.exception("Failed to resolve AI tag reference for label=%s", label)
+        return None
+
 def is_vr_scene(tag_ids: list[int]) -> bool:
     """Check if the scene is tagged as VR."""
     global VR_Tag_Id

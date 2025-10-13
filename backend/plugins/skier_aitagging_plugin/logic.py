@@ -1,37 +1,57 @@
 from __future__ import annotations
+
 import logging
 import time
+from typing import Any
 from stash_ai_server.actions.models import ContextInput
 from stash_ai_server.tasks.models import TaskRecord
 
 from .models import AIModelInfo
-from .stash_handler import add_error_tag_to_images, get_ai_tag_ids_from_names, is_vr_scene, remove_ai_tags_from_images
+from .stash_handler import (
+    add_error_tag_to_images,
+    get_ai_tag_ids_from_names,
+    is_vr_scene,
+    remove_ai_tags_from_images,
+    resolve_ai_tag_reference,
+)
 from .http_handler import call_images_api, call_scene_api, get_active_scene_models
 from .utils import extract_tags_from_response, get_selected_items
 from stash_ai_server.services.base import RemoteServiceBase
 from stash_ai_server.tasks.helpers import spawn_chunked_tasks, task_handler
 from stash_ai_server.tasks.models import TaskPriority
 from stash_ai_server.utils.stash_api_real import stash_api
+from stash_ai_server.db.ai_results_store import (
+    get_latest_scene_run_async,
+    store_scene_run_async,
+)
 
 _log = logging.getLogger(__name__)
 
 MAX_IMAGES_PER_REQUEST = 288
 
-current_server_models_cache: list[AIModelInfo] = []
+current_server_models_cache: dict[str, AIModelInfo] = {}
 
 MODELS_CACHE_REFRESH_INTERVAL = 600  # seconds
 
 next_cache_refresh_time = 0.0
 
-async def update_model_cache(service: RemoteServiceBase) -> None:
+async def update_model_cache(service: RemoteServiceBase, *, force: bool = False) -> None:
     """Update the cache of models from the remote service."""
     global current_server_models_cache
     global next_cache_refresh_time
+
+    if service.was_disconnected:
+        force = True
+    now = time.monotonic()
+    if not force and now < next_cache_refresh_time:
+        return
     try:
-        current_server_models_cache = await get_active_scene_models(service)
-        next_cache_refresh_time = time.monotonic() + MODELS_CACHE_REFRESH_INTERVAL
-    except Exception as e:
-        _log.error("Failed to update model cache: %s", e)
+        models = await get_active_scene_models(service)
+        current_server_models_cache = {str(model.identifier): model for model in models}
+        _log.info("Updated model cache: %s", list(current_server_models_cache.values()))
+        next_cache_refresh_time = now + MODELS_CACHE_REFRESH_INTERVAL
+    except Exception as exc:
+        _log.error("Failed to update model cache: %s", exc)
 
 # ==============================================================================
 # Image tagging - batch endpoint that accepts multiple image paths
@@ -109,15 +129,22 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
 
     #TODO: Check if already tagged with same models logic
 
+    # Retrieve the latest stored run so we can determine future skip conditions.
+    previous_run = await get_latest_scene_run_async(service=service.name, scene_id=str(scene_id))
+    if previous_run:
+        _log.debug(
+            "Previous AI run found for scene_id=%s completed_at=%s models=%s",
+            scene_id,
+            previous_run.completed_at,
+            [m.model_name for m in previous_run.models],
+        )
+
     #TODO: path mutation logic
 
     # TODO: Check what services don't need processing again (or possibly all)
     global next_cache_refresh_time
-    if service.was_disconnected:
-        await update_model_cache(service)
-        service.was_disconnected = False
-    elif time.monotonic() > next_cache_refresh_time:
-        await update_model_cache(service)
+
+    await update_model_cache(service)
 
     # Get models used for tagging this scene in the past if exist
 
@@ -126,7 +153,43 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
     # TODO: VR Scene handling
     vr_scene = is_vr_scene(scene_tags)
     result = await call_scene_api(service, scene_path, 2.0, vr_scene)
+
+
     _log.debug(f"Scene API result: {result}")
+
+    if result is None:
+        return {
+            "scene_id": scene_id,
+            "tags": [],
+            "summary": "Remote tagging service returned no data",
+        }
+
+    result_models_payload = [model.model_dump(exclude_none=True) for model in result.models]
+
+    missing_from_cache = [m for m in result.models if str(m.identifier) not in current_server_models_cache]
+    if missing_from_cache:
+        _log.debug(
+            "Discovered %d models not present in cache; triggering refresh", len(missing_from_cache)
+        )
+        await update_model_cache(service, force=True)
+
+    # Persist the raw result so future runs can reuse data without remote calls.
+    try:
+        await store_scene_run_async(
+            service=service.name,
+            plugin_name=service.plugin_name,
+            scene_id=str(scene_id),
+            input_params={
+                "frame_interval": 2.0,
+                "vr_video": vr_scene,
+                "threshold": 0.5,
+            },
+            result_payload=result.model_dump(exclude_none=True),
+            requested_models=result_models_payload,
+            label_resolver=lambda label, _category: resolve_ai_tag_reference(label),
+        )
+    except Exception:
+        _log.exception("Failed to persist AI scene run for scene_id=%s", scene_id)
 
     # TODO
     return {

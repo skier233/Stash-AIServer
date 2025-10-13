@@ -30,11 +30,13 @@ class StashAPI:
             if parent_id is None:
                 tag = self.stash_interface.find_tag(tag_name, create=True)["id"]
             else:
-                tag = self.stash_interface.find_tag(tag_name)["id"]
+                tag = self.stash_interface.find_tag(tag_name)
                 if tag is None:
-                    tag = self.stash_interface.create_tag({"name":tag_name, "ignore_auto_tag": True, "parent_ids":[parent_id]})['id']
+                    tag = self.stash_interface.create_tag({"name":tag_name, "ignore_auto_tag": True, "parent_ids":[parent_id]})
+                tag = tag["id"] if tag else None
         else:
-            tag = self.stash_interface.find_tag(tag_name)["id"]
+            tag = self.stash_interface.find_tag(tag_name)
+            tag = tag["id"]  if tag else None
         if tag:
             self.tag_id_cache[tag_name] = tag
             if add_to_cache is not None and tag_name not in add_to_cache:
