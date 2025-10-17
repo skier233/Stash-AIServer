@@ -16,20 +16,26 @@ from .stash_handler import (
 )
 from .http_handler import call_images_api, call_scene_api, get_active_scene_models
 from .utils import extract_tags_from_response, get_selected_items
+from .reprocessing import determine_model_plan, derive_scene_annotations
 from stash_ai_server.services.base import RemoteServiceBase
 from stash_ai_server.tasks.helpers import spawn_chunked_tasks, task_handler
 from stash_ai_server.tasks.models import TaskPriority
 from stash_ai_server.utils.stash_api_real import stash_api
 from stash_ai_server.db.ai_results_store import (
     get_latest_scene_run_async,
+    get_scene_model_history_async,
     store_scene_run_async,
+    purge_scene_categories,
 )
 
 _log = logging.getLogger(__name__)
 
 MAX_IMAGES_PER_REQUEST = 288
 
-current_server_models_cache: dict[str, AIModelInfo] = {}
+SCENE_FRAME_INTERVAL = 2.0
+SCENE_THRESHOLD = 0.5
+
+current_server_models_cache: list[AIModelInfo] = []
 
 MODELS_CACHE_REFRESH_INTERVAL = 600  # seconds
 
@@ -47,8 +53,7 @@ async def update_model_cache(service: RemoteServiceBase, *, force: bool = False)
         return
     try:
         models = await get_active_scene_models(service)
-        current_server_models_cache = {str(model.identifier): model for model in models}
-        _log.info("Updated model cache: %s", list(current_server_models_cache.values()))
+        current_server_models_cache = models
         next_cache_refresh_time = now + MODELS_CACHE_REFRESH_INTERVAL
     except Exception as exc:
         _log.error("Failed to update model cache: %s", exc)
@@ -121,41 +126,63 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
 
 @task_handler(id="skier.ai_tag.scene.task")
 async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecord) -> dict:
-    scene_id = ctx.entity_id
-    scene_path, scene_tags = stash_api.get_scene_path_and_tags(int(scene_id))
+    scene_id_raw = ctx.entity_id
+    if scene_id_raw is None:
+        raise ValueError("Context missing scene entity_id")
+    try:
+        scene_id = int(scene_id_raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid scene_id: {scene_id_raw}") from exc
+
+    scene_path, scene_tags = stash_api.get_scene_path_and_tags(scene_id)
 
     service = params["service"]
-    
-
-    #TODO: Check if already tagged with same models logic
 
     # Retrieve the latest stored run so we can determine future skip conditions.
-    previous_run = await get_latest_scene_run_async(service=service.name, scene_id=str(scene_id))
-    if previous_run:
+    historical_models = await get_scene_model_history_async(service=service.name, scene_id=scene_id)
+    if historical_models:
         _log.debug(
-            "Previous AI run found for scene_id=%s completed_at=%s models=%s",
+            "Scene %s historical models: %s",
             scene_id,
-            previous_run.completed_at,
-            [m.model_name for m in previous_run.models],
+            [m.model_name for m in historical_models],
         )
 
     #TODO: path mutation logic
 
-    # TODO: Check what services don't need processing again (or possibly all)
-    global next_cache_refresh_time
-
     await update_model_cache(service)
 
-    # Get models used for tagging this scene in the past if exist
+    skip_categories, should_reprocess = determine_model_plan(
+        current_models=current_server_models_cache,
+        previous_models=historical_models,
+        current_frame_interval=SCENE_FRAME_INTERVAL,
+        current_threshold=SCENE_THRESHOLD,
+    )
 
-    # Compare models used for tagging this scene in the past with current models and determine which categories need to be retagged if any
+    if not should_reprocess:
+        _log.info("Skipping remote tagging for scene_id=%s; existing data considered current", scene_id)
+        return derive_scene_annotations(
+            scene_id=scene_id,
+            service_name=service.name,
+            categories_processed=skip_categories,
+        )
 
     # TODO: VR Scene handling
     vr_scene = is_vr_scene(scene_tags)
-    result = await call_scene_api(service, scene_path, 2.0, vr_scene)
+    _log.debug(
+        "Running scene tagging for scene_id=%s; skipping categories=%s",
+        scene_id,
+        skip_categories,
+    )
+    result = await call_scene_api(
+        service,
+        scene_path,
+        SCENE_FRAME_INTERVAL,
+        vr_scene,
+        threshold=SCENE_THRESHOLD,
+        skip_categories=skip_categories,
+    )
 
-
-    _log.debug(f"Scene API result: {result}")
+    _log.debug("Scene API result: %s", result)
 
     if result is None:
         return {
@@ -164,39 +191,53 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
             "summary": "Remote tagging service returned no data",
         }
 
+    processed_categories = {
+        str(category)
+        for category in (result.timespans.keys() if result.timespans else [])
+        if category is not None
+    }
+
     result_models_payload = [model.model_dump(exclude_none=True) for model in result.models]
 
-    missing_from_cache = [m for m in result.models if str(m.identifier) not in current_server_models_cache]
+    missing_from_cache = [m for m in result.models if m not in current_server_models_cache]
     if missing_from_cache:
         _log.debug(
             "Discovered %d models not present in cache; triggering refresh", len(missing_from_cache)
         )
         await update_model_cache(service, force=True)
 
-    # Persist the raw result so future runs can reuse data without remote calls.
+    run_id: int | None = None
     try:
-        await store_scene_run_async(
+        run_id = await store_scene_run_async(
             service=service.name,
             plugin_name=service.plugin_name,
-            scene_id=str(scene_id),
+            scene_id=scene_id,
             input_params={
-                "frame_interval": 2.0,
+                "frame_interval": SCENE_FRAME_INTERVAL,
                 "vr_video": vr_scene,
-                "threshold": 0.5,
+                "threshold": SCENE_THRESHOLD,
             },
             result_payload=result.model_dump(exclude_none=True),
             requested_models=result_models_payload,
-            label_resolver=lambda label, _category: resolve_ai_tag_reference(label),
+            resolve_reference=lambda label, _category: resolve_ai_tag_reference(label),
         )
     except Exception:
         _log.exception("Failed to persist AI scene run for scene_id=%s", scene_id)
 
-    # TODO
-    return {
-        "scene_id": None,
-        "tags": [],
-        "summary": "No scene available for this request",
-    }
+    #TODO: this logic is sketchy
+    if run_id is not None and processed_categories:
+        purge_scene_categories(
+            service=service.name,
+            scene_id=scene_id,
+            categories=processed_categories,
+            exclude_run_id=run_id,
+        )
+
+    return derive_scene_annotations(
+        scene_id=scene_id,
+        service_name=service.name,
+        categories_processed=processed_categories,
+    )
 
 
 async def tag_scenes(service: RemoteServiceBase, ctx: ContextInput, params: dict, task_record: TaskRecord):

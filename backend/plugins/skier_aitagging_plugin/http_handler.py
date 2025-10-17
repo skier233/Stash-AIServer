@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from typing import Sequence
 from .models import AIModelInfo, AIVideoResultV3, ImageResult
 from stash_ai_server.services.base import RemoteServiceBase
 
@@ -29,7 +30,15 @@ async def call_images_api(service: RemoteServiceBase, image_paths: list[str]) ->
         _log.warning("images API call failed: %s", exc)
         raise
 
-async def call_scene_api(service: RemoteServiceBase, scene_path: str, frame_interval: float, vr_video: bool) -> AIVideoResultV3 | None:
+async def call_scene_api(
+    service: RemoteServiceBase,
+    scene_path: str,
+    frame_interval: float,
+    vr_video: bool,
+    *,
+    threshold: float,
+    skip_categories: Sequence[str] | None = None,
+) -> AIVideoResultV3 | None:
     """Call the /scene endpoint for a single scene."""   
     try:
         payload = {
@@ -37,8 +46,10 @@ async def call_scene_api(service: RemoteServiceBase, scene_path: str, frame_inte
             "frame_interval": frame_interval,
             "return_confidence": True,
             "vr_video": vr_video,
-            "threshold": 0.5
+            "threshold": threshold,
         }
+        if skip_categories:
+            payload["categories_to_skip"] = list(skip_categories)
         return await service.http.post(
             SCENE_ENDPOINT,
             json=payload,

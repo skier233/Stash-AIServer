@@ -14,9 +14,9 @@ class AIModel(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     service: Mapped[str] = mapped_column(sa.String(100), nullable=False)
     plugin_name: Mapped[str | None] = mapped_column(sa.String(100), nullable=True)
-    model_id: Mapped[str | None] = mapped_column(sa.String(100), nullable=True)
+    model_id: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
     name: Mapped[str] = mapped_column(sa.String(150), nullable=False)
-    version: Mapped[str | None] = mapped_column(sa.String(50), nullable=True)
+    version: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
     model_type: Mapped[str | None] = mapped_column(sa.String(50), nullable=True)
     categories: Mapped[list[str] | None] = mapped_column(sa.JSON, nullable=True)
     extra: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
@@ -39,7 +39,7 @@ class AIModelRun(Base):
     service: Mapped[str] = mapped_column(sa.String(100), nullable=False)
     plugin_name: Mapped[str | None] = mapped_column(sa.String(100), nullable=True)
     entity_type: Mapped[str] = mapped_column(sa.String(20), nullable=False)
-    entity_id: Mapped[str] = mapped_column(sa.String(64), nullable=False)
+    entity_id: Mapped[int] = mapped_column(sa.Integer, nullable=False)
     status: Mapped[str] = mapped_column(sa.String(20), nullable=False, server_default="completed")
     input_params: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
     started_at: Mapped[dt.datetime] = mapped_column(
@@ -70,23 +70,14 @@ class AIModelRunModel(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     run_id: Mapped[int] = mapped_column(sa.ForeignKey("ai_model_runs.id", ondelete="CASCADE"), nullable=False)
     model_id: Mapped[int | None] = mapped_column(sa.ForeignKey("ai_models.id", ondelete="SET NULL"), nullable=True)
-    status: Mapped[str] = mapped_column(sa.String(20), nullable=False, server_default="completed")
     input_params: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
-    skip_reason: Mapped[str | None] = mapped_column(sa.String(200), nullable=True)
-    result_checksum: Mapped[str | None] = mapped_column(sa.String(64), nullable=True)
-    duration_ms: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
+    frame_interval: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
     created_at: Mapped[sa.DateTime] = mapped_column(
         sa.DateTime, nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")
     )
 
     run: Mapped[AIModelRun] = relationship("AIModelRun", back_populates="models")  # type: ignore  # noqa: F821
     model: Mapped[AIModel | None] = relationship("AIModel", back_populates="runs")
-    timespans: Mapped[list["AIResultTimespan"]] = relationship(
-        "AIResultTimespan", back_populates="run_model", cascade="all, delete-orphan"
-    )
-    aggregates: Mapped[list["AIResultAggregate"]] = relationship(
-        "AIResultAggregate", back_populates="run_model", cascade="all, delete-orphan"
-    )
 
     __table_args__ = (
         sa.Index("ix_ai_run_models_run", "run_id"),
@@ -99,28 +90,22 @@ class AIResultTimespan(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     run_id: Mapped[int] = mapped_column(sa.ForeignKey("ai_model_runs.id", ondelete="CASCADE"), nullable=False)
-    run_model_id: Mapped[int | None] = mapped_column(
-        sa.ForeignKey("ai_model_run_models.id", ondelete="CASCADE"), nullable=True
-    )
     entity_type: Mapped[str] = mapped_column(sa.String(20), nullable=False)
-    entity_id: Mapped[str] = mapped_column(sa.String(64), nullable=False)
+    entity_id: Mapped[int] = mapped_column(sa.Integer, nullable=False)
     payload_type: Mapped[str] = mapped_column(sa.String(50), nullable=False)
-    label: Mapped[str | None] = mapped_column(sa.String(150), nullable=True)
+    category: Mapped[str | None] = mapped_column(sa.String(100), nullable=True)
+    str_value: Mapped[str | None] = mapped_column(sa.String(150), nullable=True)
+    value_id: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
     start_s: Mapped[float] = mapped_column(sa.Float, nullable=False)
     end_s: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
-    confidence: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
     value_json: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
-    reference_id: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
 
     run: Mapped[AIModelRun] = relationship("AIModelRun", back_populates="timespans")
-    run_model: Mapped[AIModelRunModel | None] = relationship(
-        "AIModelRunModel", back_populates="timespans"
-    )
 
     __table_args__ = (
         sa.Index("ix_ai_timespans_entity", "entity_type", "entity_id"),
         sa.Index("ix_ai_timespans_run", "run_id"),
-        sa.Index("ix_ai_timespans_payload", "payload_type", "label"),
+    sa.Index("ix_ai_timespans_payload", "payload_type", "category", "str_value"),
         sa.Index("ix_ai_timespans_start", "entity_type", "entity_id", "start_s"),
     )
 
@@ -130,15 +115,12 @@ class AIResultAggregate(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     run_id: Mapped[int] = mapped_column(sa.ForeignKey("ai_model_runs.id", ondelete="CASCADE"), nullable=False)
-    run_model_id: Mapped[int | None] = mapped_column(
-        sa.ForeignKey("ai_model_run_models.id", ondelete="CASCADE"), nullable=True
-    )
     entity_type: Mapped[str] = mapped_column(sa.String(20), nullable=False)
-    entity_id: Mapped[str] = mapped_column(sa.String(64), nullable=False)
+    entity_id: Mapped[int] = mapped_column(sa.Integer, nullable=False)
     payload_type: Mapped[str] = mapped_column(sa.String(50), nullable=False)
     category: Mapped[str | None] = mapped_column(sa.String(100), nullable=True)
-    label: Mapped[str | None] = mapped_column(sa.String(150), nullable=True)
-    reference_id: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
+    str_value: Mapped[str | None] = mapped_column(sa.String(150), nullable=True)
+    value_id: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
     metric: Mapped[str] = mapped_column(sa.String(50), nullable=False)
     value_float: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
     value_json: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
@@ -147,13 +129,10 @@ class AIResultAggregate(Base):
     )
 
     run: Mapped[AIModelRun] = relationship("AIModelRun", back_populates="aggregates")
-    run_model: Mapped[AIModelRunModel | None] = relationship(
-        "AIModelRunModel", back_populates="aggregates"
-    )
 
     __table_args__ = (
         sa.Index("ix_ai_aggregates_entity", "entity_type", "entity_id"),
-        sa.Index("ix_ai_aggregates_payload", "payload_type", "label", "metric"),
+    sa.Index("ix_ai_aggregates_payload", "payload_type", "str_value", "metric"),
     )
 
 

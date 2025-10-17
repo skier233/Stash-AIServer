@@ -86,8 +86,8 @@ def upgrade() -> None:  # noqa: D401
         'task_history',
         sa.Column('id', sa.Integer, primary_key=True),
         # unique already implies an index; remove extra index=True
-        sa.Column('task_id', sa.String(length=64), nullable=False, unique=True),
-        sa.Column('action_id', sa.String(length=200), nullable=False),
+        sa.Column('task_id', sa.Integer, nullable=False, unique=True),
+        sa.Column('action_id', sa.Integer, nullable=False),
         sa.Column('service', sa.String(length=100), nullable=False),
         sa.Column('status', sa.String(length=50), nullable=False),
         sa.Column('started_at', sa.Float, nullable=True),
@@ -95,7 +95,7 @@ def upgrade() -> None:  # noqa: D401
         sa.Column('submitted_at', sa.Float, nullable=False),
         sa.Column('duration_ms', sa.Integer, nullable=True),
         sa.Column('items_sent', sa.Integer, nullable=True),
-        sa.Column('item_id', sa.String(length=200), nullable=True),
+        sa.Column('item_id', sa.Integer, nullable=True),
         sa.Column('error', sa.Text, nullable=True),
         sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
     )
@@ -107,11 +107,11 @@ def upgrade() -> None:  # noqa: D401
     op.create_table(
         'interaction_events',
         sa.Column('id', sa.Integer, primary_key=True),
-        sa.Column('client_event_id', sa.String(length=64), nullable=True),
-        sa.Column('session_id', sa.String(length=64), nullable=False),
+        sa.Column('client_event_id', sa.Integer, nullable=True),
+        sa.Column('session_id', sa.Integer, nullable=False),
         sa.Column('event_type', sa.String(length=50), nullable=False),
         sa.Column('entity_type', sa.String(length=30), nullable=False),
-        sa.Column('entity_id', sa.String(length=64), nullable=False),
+        sa.Column('entity_id', sa.Integer, nullable=False),
         sa.Column('client_ts', sa.DateTime, nullable=False),
         sa.Column('metadata', sa.JSON, nullable=True),
         sa.UniqueConstraint('client_event_id', name='uq_interaction_client_event_id')
@@ -131,11 +131,11 @@ def upgrade() -> None:  # noqa: D401
     op.create_table(
         'interaction_sessions',
         sa.Column('id', sa.Integer, primary_key=True),
-        sa.Column('session_id', sa.String(length=64), nullable=False),
+        sa.Column('session_id', sa.Integer, nullable=False),
         sa.Column('last_event_ts', sa.DateTime, nullable=False),
         sa.Column('session_start_ts', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.Column('last_entity_type', sa.String(length=30), nullable=True),
-        sa.Column('last_entity_id', sa.String(length=64), nullable=True),
+        sa.Column('last_entity_id', sa.Integer, nullable=True),
         sa.Column('last_entity_event_ts', sa.DateTime, nullable=True),
         sa.Column('updated_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.Column('client_fingerprint', sa.String(length=128), nullable=True),
@@ -151,8 +151,8 @@ def upgrade() -> None:  # noqa: D401
     # session alias mapping
     op.create_table(
         'interaction_session_aliases',
-        sa.Column('alias_session_id', sa.String(length=64), primary_key=True),
-        sa.Column('canonical_session_id', sa.String(length=64), nullable=False),
+        sa.Column('alias_session_id', sa.Integer, primary_key=True),
+        sa.Column('canonical_session_id', sa.Integer, nullable=False),
         sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
     )
     op.create_index('ix_interaction_session_aliases_canonical', 'interaction_session_aliases', ['canonical_session_id'])
@@ -161,8 +161,8 @@ def upgrade() -> None:  # noqa: D401
     op.create_table(
         'scene_watch',
         sa.Column('id', sa.Integer, primary_key=True),
-        sa.Column('session_id', sa.String(length=64), nullable=False),
-        sa.Column('scene_id', sa.String(length=64), nullable=False),
+        sa.Column('session_id', sa.Integer, nullable=False),
+        sa.Column('scene_id', sa.Integer, nullable=False),
         sa.Column('page_entered_at', sa.DateTime, nullable=False),
         sa.Column('page_left_at', sa.DateTime, nullable=True),
         sa.Column('total_watched_s', sa.Float, nullable=False, server_default='0'),
@@ -179,8 +179,8 @@ def upgrade() -> None:  # noqa: D401
         'scene_watch_segments',
         sa.Column('id', sa.Integer, primary_key=True),
         sa.Column('scene_watch_id', sa.Integer, nullable=False),
-        sa.Column('session_id', sa.String(length=64), nullable=False),
-        sa.Column('scene_id', sa.String(length=64), nullable=False),
+        sa.Column('session_id', sa.Integer, nullable=False),
+        sa.Column('scene_id', sa.Integer, nullable=False),
         sa.Column('start_s', sa.Float, nullable=False),
         sa.Column('end_s', sa.Float, nullable=False),
         sa.Column('watched_s', sa.Float, nullable=False),
@@ -195,7 +195,7 @@ def upgrade() -> None:  # noqa: D401
     # aggregated scene stats
     op.create_table(
         'scene_derived',
-        sa.Column('scene_id', sa.String(length=64), primary_key=True),
+        sa.Column('scene_id', sa.Integer, primary_key=True),
         sa.Column('last_viewed_at', sa.DateTime, nullable=True),
         sa.Column('derived_o_count', sa.Integer, nullable=False, server_default='0'),
         sa.Column('view_count', sa.Integer, nullable=False, server_default='0'),
@@ -204,7 +204,7 @@ def upgrade() -> None:  # noqa: D401
     # aggregated image stats
     op.create_table(
         'image_derived',
-        sa.Column('image_id', sa.String(length=64), primary_key=True),
+    sa.Column('image_id', sa.Integer, primary_key=True),
         sa.Column('last_viewed_at', sa.DateTime, nullable=True),
         sa.Column('derived_o_count', sa.Integer, nullable=False, server_default='0'),
         sa.Column('view_count', sa.Integer, nullable=False, server_default='0'),
@@ -214,7 +214,7 @@ def upgrade() -> None:  # noqa: D401
     op.create_table(
         'interaction_library_search',
         sa.Column('id', sa.Integer, primary_key=True),
-        sa.Column('session_id', sa.String(length=64), nullable=False),
+        sa.Column('session_id', sa.Integer, nullable=False),
         sa.Column('library', sa.String(length=20), nullable=False),
         sa.Column('query', sa.String(length=512), nullable=True),
         sa.Column('filters', sa.JSON, nullable=True),
@@ -232,9 +232,9 @@ def upgrade() -> None:  # noqa: D401
         sa.Column('id', sa.Integer, primary_key=True),
         sa.Column('service', sa.String(length=100), nullable=False),
         sa.Column('plugin_name', sa.String(length=100), nullable=True),
-        sa.Column('model_id', sa.String(length=100), nullable=True),
+        sa.Column('model_id', sa.Integer, nullable=True),
         sa.Column('name', sa.String(length=150), nullable=False),
-        sa.Column('version', sa.String(length=50), nullable=True),
+        sa.Column('version', sa.Float, nullable=True),
         sa.Column('model_type', sa.String(length=50), nullable=True),
         sa.Column('categories', sa.JSON, nullable=True),
         sa.Column('extra', sa.JSON, nullable=True),
@@ -249,7 +249,7 @@ def upgrade() -> None:  # noqa: D401
         sa.Column('service', sa.String(length=100), nullable=False),
         sa.Column('plugin_name', sa.String(length=100), nullable=True),
         sa.Column('entity_type', sa.String(length=20), nullable=False),
-        sa.Column('entity_id', sa.String(length=64), nullable=False),
+        sa.Column('entity_id', sa.Integer, nullable=False),
         sa.Column('status', sa.String(length=20), nullable=False, server_default='completed'),
         sa.Column('input_params', sa.JSON, nullable=True),
         sa.Column('started_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
@@ -264,11 +264,8 @@ def upgrade() -> None:  # noqa: D401
         sa.Column('id', sa.Integer, primary_key=True),
         sa.Column('run_id', sa.Integer, sa.ForeignKey('ai_model_runs.id', ondelete='CASCADE'), nullable=False),
         sa.Column('model_id', sa.Integer, sa.ForeignKey('ai_models.id', ondelete='SET NULL'), nullable=True),
-        sa.Column('status', sa.String(length=20), nullable=False, server_default='completed'),
         sa.Column('input_params', sa.JSON, nullable=True),
-        sa.Column('skip_reason', sa.String(length=200), nullable=True),
-        sa.Column('result_checksum', sa.String(length=64), nullable=True),
-        sa.Column('duration_ms', sa.Integer, nullable=True),
+        sa.Column('frame_interval', sa.Float, nullable=True),
         sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
     )
     op.create_index('ix_ai_run_models_run', 'ai_model_run_models', ['run_id'])
@@ -278,40 +275,38 @@ def upgrade() -> None:  # noqa: D401
         'ai_result_timespans',
         sa.Column('id', sa.Integer, primary_key=True),
         sa.Column('run_id', sa.Integer, sa.ForeignKey('ai_model_runs.id', ondelete='CASCADE'), nullable=False),
-        sa.Column('run_model_id', sa.Integer, sa.ForeignKey('ai_model_run_models.id', ondelete='CASCADE'), nullable=True),
         sa.Column('entity_type', sa.String(length=20), nullable=False),
-        sa.Column('entity_id', sa.String(length=64), nullable=False),
+        sa.Column('entity_id', sa.Integer, nullable=False),
         sa.Column('payload_type', sa.String(length=50), nullable=False),
-        sa.Column('label', sa.String(length=150), nullable=True),
+        sa.Column('category', sa.String(length=100), nullable=True),
+        sa.Column('str_value', sa.String(length=150), nullable=True),
+        sa.Column('value_id', sa.Integer, nullable=True),
         sa.Column('start_s', sa.Float, nullable=False),
         sa.Column('end_s', sa.Float, nullable=True),
-        sa.Column('confidence', sa.Float, nullable=True),
         sa.Column('value_json', sa.JSON, nullable=True),
-        sa.Column('reference_id', sa.Integer, nullable=True),
     )
     op.create_index('ix_ai_timespans_entity', 'ai_result_timespans', ['entity_type', 'entity_id'])
     op.create_index('ix_ai_timespans_run', 'ai_result_timespans', ['run_id'])
-    op.create_index('ix_ai_timespans_payload', 'ai_result_timespans', ['payload_type', 'label'])
+    op.create_index('ix_ai_timespans_payload', 'ai_result_timespans', ['payload_type', 'category', 'str_value'])
     op.create_index('ix_ai_timespans_start', 'ai_result_timespans', ['entity_type', 'entity_id', 'start_s'])
 
     op.create_table(
         'ai_result_aggregates',
         sa.Column('id', sa.Integer, primary_key=True),
         sa.Column('run_id', sa.Integer, sa.ForeignKey('ai_model_runs.id', ondelete='CASCADE'), nullable=False),
-        sa.Column('run_model_id', sa.Integer, sa.ForeignKey('ai_model_run_models.id', ondelete='CASCADE'), nullable=True),
         sa.Column('entity_type', sa.String(length=20), nullable=False),
-        sa.Column('entity_id', sa.String(length=64), nullable=False),
+        sa.Column('entity_id', sa.Integer, nullable=False),
         sa.Column('payload_type', sa.String(length=50), nullable=False),
         sa.Column('category', sa.String(length=100), nullable=True),
-        sa.Column('label', sa.String(length=150), nullable=True),
-        sa.Column('reference_id', sa.Integer, nullable=True),
+        sa.Column('str_value', sa.String(length=150), nullable=True),
+        sa.Column('value_id', sa.Integer, nullable=True),
         sa.Column('metric', sa.String(length=50), nullable=False),
         sa.Column('value_float', sa.Float, nullable=True),
         sa.Column('value_json', sa.JSON, nullable=True),
         sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
     )
     op.create_index('ix_ai_aggregates_entity', 'ai_result_aggregates', ['entity_type', 'entity_id'])
-    op.create_index('ix_ai_aggregates_payload', 'ai_result_aggregates', ['payload_type', 'category', 'label', 'metric'])
+    op.create_index('ix_ai_aggregates_payload', 'ai_result_aggregates', ['payload_type', 'str_value', 'metric'])
 
 
 def downgrade() -> None:  # pragma: no cover - full rollback seldom used
