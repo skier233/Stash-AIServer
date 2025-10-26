@@ -57,8 +57,35 @@ export interface InteractionEvent<TMeta = any> {
   ts: string;
   type: InteractionEventType;
   entity_type: 'scene' | 'image' | 'gallery' | 'session' | 'library';
-  entity_id: string;
+  entity_id: number;
   metadata?: TMeta; // Arbitrary structured metadata; put page_url here if needed.
+}
+
+const NUMERIC_ENTITY_TYPES: ReadonlySet<InteractionEvent['entity_type']> = new Set(['scene', 'image', 'gallery']);
+
+function hashToUint32(value: string): number {
+  let hash = 0x811c9dc5; // FNV-1a 32-bit offset basis
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  const out = hash >>> 0;
+  return out === 0 ? 1 : out; // avoid zero to keep sentinel-free
+}
+
+function normalizeEntityIdForEvent(entityType: InteractionEvent['entity_type'], entityId: string | number | null | undefined): number {
+  if (entityId === null || entityId === undefined) throw new Error(`missing entity id for ${entityType}`);
+  if (typeof entityId === 'number' && Number.isFinite(entityId)) {
+    return Math.trunc(entityId);
+  }
+  const raw = String(entityId).trim();
+  if (!raw) throw new Error(`missing entity id for ${entityType}`);
+  if (NUMERIC_ENTITY_TYPES.has(entityType)) {
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) throw new Error(`expected numeric entity id for ${entityType}, received ${entityId}`);
+    return Math.trunc(parsed);
+  }
+  return hashToUint32(`${entityType}:${raw}`);
 }
 
 // Internal persisted queue shape (allows future extension)
@@ -116,7 +143,7 @@ export class InteractionTracker {
   private pageVisibilityHandler: (() => void) | null = null;
   private beforeUnloadHandler: (() => void) | null = null;
   private currentScene?: SceneWatchState;
-  private lastEntityView: { type: string; id: string; ts: number } | null = null;
+  private lastEntityView: { type: string; id: number; rawId?: string; ts: number } | null = null;
   private initialized = false;
   private lastScenePageEntered: string | null = null; // track current scene page for leave events
   private lastLibrarySearchSignature: string | null = null; // dedupe library_search emissions
@@ -472,13 +499,21 @@ export class InteractionTracker {
       return;
     }
 
+    let normalizedSceneId: number;
+    try {
+      normalizedSceneId = normalizeEntityIdForEvent('scene', sceneId);
+    } catch (err) {
+      this.log('failed to normalize scene id', { sceneId, err });
+      return;
+    }
+
     // Emit scene_page_leave for previous scene if different
     if (this.lastScenePageEntered && this.lastScenePageEntered !== sceneId) {
       this.trackInternal('scene_page_leave', 'scene', this.lastScenePageEntered, { next_scene: sceneId });
     }
     
     this.trackInternal('scene_view','scene',sceneId,{ title: opts?.title, from: opts?.from, last_viewed_entity: this.lastEntityView });
-  this.lastEntityView = { type: 'scene', id: sceneId, ts: now };
+    this.lastEntityView = { type: 'scene', id: normalizedSceneId, rawId: sceneId, ts: now };
     // Also emit scene_page_enter event to track page visit timing
     this.trackInternal('scene_page_enter', 'scene', sceneId, { title: opts?.title, from: opts?.from });
     this.lastScenePageEntered = sceneId;
@@ -573,20 +608,34 @@ export class InteractionTracker {
   }
 
   public trackImageView(imageId: string, opts?: { title?: string }) {
+    let normalizedImageId: number;
+    try {
+      normalizedImageId = normalizeEntityIdForEvent('image', imageId);
+    } catch (err) {
+      this.log('failed to normalize image id', { imageId, err });
+      return;
+    }
     this.trackInternal('image_view','image',imageId,{ title: opts?.title, last_viewed_entity: this.lastEntityView });
-    this.lastEntityView = { type: 'image', id: imageId, ts: Date.now() };
+    this.lastEntityView = { type: 'image', id: normalizedImageId, rawId: imageId, ts: Date.now() };
   }
 
   public trackGalleryView(galleryId: string, opts?: { title?: string }) {
+    let normalizedGalleryId: number;
+    try {
+      normalizedGalleryId = normalizeEntityIdForEvent('gallery', galleryId);
+    } catch (err) {
+      this.log('failed to normalize gallery id', { galleryId, err });
+      return;
+    }
     this.trackInternal('gallery_view','gallery',galleryId,{ title: opts?.title, last_viewed_entity: this.lastEntityView });
-    this.lastEntityView = { type: 'gallery', id: galleryId, ts: Date.now() };
+    this.lastEntityView = { type: 'gallery', id: normalizedGalleryId, rawId: galleryId, ts: Date.now() };
   }
 
   /**
    * Persist a library search or filter action. library should be 'scenes' or 'images'.
    */
   public trackLibrarySearch(library: 'scenes'|'images'|'galleries'|'performers'|'tags', query?: string, filters?: any) {
-    const meta: any = { query: query ?? null, filters: filters ?? null };
+    const meta: any = { library, query: query ?? null, filters: filters ?? null };
     try {
       // Build a stable signature to suppress duplicates from multiple detection paths
       const sig = library + '|' + JSON.stringify({ q: meta.query, f: meta.filters });
@@ -652,7 +701,23 @@ export class InteractionTracker {
   public setEnabled(v: boolean) { this.cfg.enabled = v; this.log('enabled set to '+v); }
 
   // --------------------------- Internal Helpers ----------------------------
-  private trackInternal(type: InteractionEventType, entityType: InteractionEvent['entity_type'], entityId: string, metadata?: any) {
+  private trackInternal(type: InteractionEventType, entityType: InteractionEvent['entity_type'], entityId: string | number, metadata?: any) {
+    let normalizedId: number;
+    try {
+      normalizedId = normalizeEntityIdForEvent(entityType, entityId);
+    } catch (err) {
+      this.log('failed to normalize entity id', { type, entityType, entityId, err });
+      return;
+    }
+
+    let meta = metadata ? { ...metadata } : undefined;
+    if (typeof entityId === 'string') {
+      const raw = entityId.trim();
+      if (raw && (meta?.raw_entity_id === undefined)) {
+        if (meta) meta.raw_entity_id = raw; else meta = { raw_entity_id: raw };
+      }
+    }
+
     const ev: InteractionEvent = {
       id: 'evt_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
       session_id: this.sessionId,
@@ -660,19 +725,20 @@ export class InteractionTracker {
       ts: new Date().toISOString(),
       type,
       entity_type: entityType,
-      entity_id: entityId,
-      metadata
+      entity_id: normalizedId,
+      metadata: meta
     };
 
     // Queue
     if (this.cfg.enabled) this.enqueue(ev); else return;
     // Immediate flush logic
-  if (this.cfg.immediateTypes.includes(type)) this.flushQueue();
+    if (this.cfg.immediateTypes.includes(type)) this.flushQueue();
     // Always provide a clear structured console output when debug is on
     this.log('event captured', ev);
     // Additionally emit a more visible console.info for quick manual QA when debug is true
     if (this.cfg.debug && (console as any).info) {
-      (console as any).info('%c[InteractionTracker] %c'+type+'%c -> '+entityType+':'+entityId, 'color:#888', 'color:#0A7;', 'color:#555', ev);
+      const displayId = typeof entityId === 'string' ? entityId : normalizedId;
+      (console as any).info('%c[InteractionTracker] %c'+type+'%c -> '+entityType+':'+displayId, 'color:#888', 'color:#0A7;', 'color:#555', ev);
     }
   }
 
@@ -863,7 +929,31 @@ export class InteractionTracker {
     try { localStorage.setItem(this.cfg.localStorageKey, JSON.stringify(this.queue)); } catch {}
   }
   private restoreQueue() {
-    try { const raw = localStorage.getItem(this.cfg.localStorageKey); if (raw) this.queue = JSON.parse(raw); } catch { this.queue = []; }
+    try {
+      const raw = localStorage.getItem(this.cfg.localStorageKey);
+      if (!raw) { this.queue = []; return; }
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) { this.queue = []; return; }
+      const restored: StoredQueueRecord[] = [];
+      for (const rec of parsed) {
+        if (!rec || typeof rec !== 'object') continue;
+        const attempts = (rec as StoredQueueRecord).attempts ?? 0;
+        const storedEvent = (rec as StoredQueueRecord).event as InteractionEvent | undefined;
+        if (!storedEvent) continue;
+        try {
+          const normalizedEvent: InteractionEvent = {
+            ...storedEvent,
+            entity_id: normalizeEntityIdForEvent(storedEvent.entity_type, storedEvent.entity_id)
+          };
+          restored.push({ event: normalizedEvent, attempts });
+        } catch {
+          // drop invalid legacy record silently
+        }
+      }
+      this.queue = restored;
+    } catch {
+      this.queue = [];
+    }
   }
 
   // ------------------------------- Utilities -------------------------------
@@ -874,7 +964,7 @@ export class InteractionTracker {
 ;(function expose(){
   const inst = InteractionTracker.instance; // initialize immediately
   (window as any).stashAIInteractionTracker = inst;
-  (window as any).trackInteractionEvent = function(type: InteractionEventType, entityType: InteractionEvent['entity_type'], entityId: string, metadata?: any){
+  (window as any).trackInteractionEvent = function(type: InteractionEventType, entityType: InteractionEvent['entity_type'], entityId: string | number, metadata?: any){
     // Limited manual escape hatch
     (inst as any).trackInternal?.(type, entityType, entityId, metadata);
   };

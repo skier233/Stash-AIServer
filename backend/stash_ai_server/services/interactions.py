@@ -28,7 +28,7 @@ _log = logging.getLogger(__name__)
 class _SyntheticInteractionEvent:
     __slots__ = ('id', 'client_event_id', 'session_id', 'event_type', 'entity_type', 'entity_id', 'client_ts', 'event_metadata')
 
-    def __init__(self, *, client_event_id: str | None, session_id: str, event_type: str, entity_type: str, entity_id: str, client_ts: datetime, event_metadata: dict | None):
+    def __init__(self, *, client_event_id: str | None, session_id: str, event_type: str, entity_type: str, entity_id: int, client_ts: datetime, event_metadata: dict | None):
         self.id = None
         self.client_event_id = client_event_id
         self.session_id = session_id

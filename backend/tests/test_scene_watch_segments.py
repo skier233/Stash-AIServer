@@ -19,7 +19,7 @@ from stash_ai_server.services.interactions import ingest_events
 def test_long_watch_segment_spanning_batches(progress_events: int, include_complete: bool):
     """Ensure long viewing sessions split across batches persist a continuous segment even without an explicit pause."""
     session = SessionLocal()
-    scene_id = "scene-long-window"
+    scene_id = 424242
     session_id = "session-long-window"
     client_id = "client-long-window"
     fingerprint = "fingerprint-long-window"
