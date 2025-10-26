@@ -120,6 +120,8 @@ export class InteractionTracker {
   private initialized = false;
   private lastScenePageEntered: string | null = null; // track current scene page for leave events
   private lastLibrarySearchSignature: string | null = null; // dedupe library_search emissions
+  private lastSceneViewSceneId: string | null = null; // dedupe rapid successive scene_view emissions
+  private lastSceneViewAt: number | null = null; // epoch ms of last accepted scene_view
 
   private constructor() {
     this.cfg = this.buildConfig({});
@@ -461,16 +463,27 @@ export class InteractionTracker {
 
   // ---------------------------- Public API ---------------------------------
   public trackSceneView(sceneId: string, opts?: { title?: string; from?: string }) {
+    const now = Date.now();
+    const dedupeWindowMs = 2000;
+    if (this.lastSceneViewSceneId === sceneId && this.lastSceneViewAt !== null && (now - this.lastSceneViewAt) < dedupeWindowMs) {
+      this.log('deduping rapid scene_view', { sceneId, msSinceLast: now - this.lastSceneViewAt, from: opts?.from });
+      this.lastSceneViewAt = now;
+      this.lastSceneViewSceneId = sceneId;
+      return;
+    }
+
     // Emit scene_page_leave for previous scene if different
     if (this.lastScenePageEntered && this.lastScenePageEntered !== sceneId) {
       this.trackInternal('scene_page_leave', 'scene', this.lastScenePageEntered, { next_scene: sceneId });
     }
     
     this.trackInternal('scene_view','scene',sceneId,{ title: opts?.title, from: opts?.from, last_viewed_entity: this.lastEntityView });
-    this.lastEntityView = { type: 'scene', id: sceneId, ts: Date.now() };
+  this.lastEntityView = { type: 'scene', id: sceneId, ts: now };
     // Also emit scene_page_enter event to track page visit timing
     this.trackInternal('scene_page_enter', 'scene', sceneId, { title: opts?.title, from: opts?.from });
     this.lastScenePageEntered = sceneId;
+    this.lastSceneViewSceneId = sceneId;
+    this.lastSceneViewAt = now;
   }
 
   public instrumentSceneVideo(sceneId: string, video: HTMLVideoElement) {

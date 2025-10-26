@@ -38,12 +38,118 @@ class StoredSceneRun:
     aggregates: Mapping[str, float]
     models: Sequence[StoredModelSummary]
 
+# TODO: This may not be needed
+def _extract_frame_interval_from_run_instance(run: AIModelRun) -> float | None:
+    if run is None:
+        return None
+    metadata = run.result_metadata or {}
+    interval = _safe_float(metadata.get("frame_interval")) if isinstance(metadata, Mapping) else None
+    if interval is not None:
+        return interval
+    return _extract_float(run.input_params, "frame_interval")
+
+
+SceneTimespanBuckets = dict[str | None, dict[str | None, list[dict[str, Any]]]]
+
+
+def get_scene_timespans(
+    *,
+    service: str,
+    scene_id: int,
+) -> tuple[float | None, SceneTimespanBuckets] | None:
+    """
+    Retrieve ALL timespans for a scene across all runs, ordered for merge processing.
+    
+    Returns tuple of (frame_interval, timespan_map) where timespans are pre-ordered
+    by category, label, and start time for efficient merging.
+    """
+    scene_id_int = _ensure_int(scene_id)
+    if scene_id_int is None:
+        raise ValueError("scene_id must be an integer")
+    
+    with SessionLocal() as session:
+        # Get all timespans for this scene, ordered for merge processing
+        timespans_stmt = (
+            select(AIResultTimespan)
+            .join(AIModelRun, AIResultTimespan.run_id == AIModelRun.id)
+            .where(
+                AIModelRun.service == service,
+                AIModelRun.entity_type == "scene",
+                AIModelRun.entity_id == scene_id_int,
+                AIResultTimespan.payload_type == "tag",
+            )
+            .order_by(
+                AIResultTimespan.category,
+                AIResultTimespan.str_value,
+                AIResultTimespan.start_s
+            )
+        )
+        ordered_timespans = session.execute(timespans_stmt).scalars().all()
+        
+        if not ordered_timespans:
+            return None
+
+        timespan_map: SceneTimespanBuckets = {}
+        for ts in ordered_timespans:
+            raw_payload = ts.value_json if isinstance(ts.value_json, Mapping) else {}
+            payload_dict = dict(raw_payload) if raw_payload else {}
+            confidence = _safe_float(payload_dict.get("confidence"))
+            
+            # The DB stores tag_id in value_id
+            tag_id = ts.value_id if hasattr(ts, "value_id") and ts.value_id is not None else None
+            if tag_id is None:
+                continue
+                
+            category_key = ts.category
+            label_key = str(tag_id)  # Use tag_id as the key
+            
+            bucket = timespan_map.setdefault(category_key, {})
+            entry = {
+                "start": float(ts.start_s or 0.0),
+                "end": float(ts.end_s if ts.end_s is not None else ts.start_s),
+                "confidence": confidence,
+            }
+            bucket.setdefault(label_key, []).append(entry)
+
+        # Get frame_interval from the most recent run
+        # TODO we can't assume this is the frame interval used for all timespans
+        latest_run_stmt = (
+            select(AIModelRun)
+            .where(
+                AIModelRun.service == service,
+                AIModelRun.entity_type == "scene",
+                AIModelRun.entity_id == scene_id_int,
+            )
+            .order_by(AIModelRun.completed_at.desc().nullslast(), AIModelRun.id.desc())
+            .limit(1)
+        )
+        latest_run = session.execute(latest_run_stmt).scalar_one_or_none()
+        frame_interval = _extract_frame_interval_from_run_instance(latest_run) if latest_run else None
+        return (frame_interval, timespan_map)
+
+
+async def get_scene_timespans_async(
+    *,
+    service: str,
+    scene_id: int,
+) -> tuple[float | None, SceneTimespanBuckets] | None:
+    return await asyncio.to_thread(get_scene_timespans, service=service, scene_id=scene_id)
+
 
 def _ensure_int(value: Any) -> int | None:
     if value is None:
         return None
     try:
         return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
     except (TypeError, ValueError):
         return None
 
@@ -303,6 +409,7 @@ def _store_scene_timespans(
                 else:
                     # Unexpected shape; skip
                     continue
+                resolved_id = resolve_reference(label_name, category_name) if resolve_reference else None
                 end_val = (float(end) if end is not None else float(start)) + interval
                 ts = AIResultTimespan(
                     run=run,
@@ -311,10 +418,10 @@ def _store_scene_timespans(
                     payload_type="tag",
                     category=category_name,
                     str_value=None,
-                    value_id=resolve_reference(label_name, category_name) if resolve_reference else None,
+                    value_id=resolved_id,
                     start_s=float(start),
                     end_s=end_val,
-                    value_json=value_json or None,
+                    value_json=value_json if value_json else None,
                 )
                 session.add(ts)
                 span = max(0.0, end_val - float(start))

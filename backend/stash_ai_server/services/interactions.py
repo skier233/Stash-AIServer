@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 from typing import Iterable, List, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import select, delete, update
@@ -22,6 +23,7 @@ from stash_ai_server.schemas.interaction import InteractionEventIn
 
 CONTROL_EVENT_TYPES = {'scene_watch_start', 'scene_watch_pause', 'scene_watch_complete', 'scene_seek'}
 
+_log = logging.getLogger(__name__)
 
 class _SyntheticInteractionEvent:
     __slots__ = ('id', 'client_event_id', 'session_id', 'event_type', 'entity_type', 'entity_id', 'client_ts', 'event_metadata')
@@ -194,7 +196,7 @@ def _update_session(db: Session, ev: InteractionEvent, sess: InteractionSession 
                 if t and i:
                     try:
                         sess.last_entity_type = t
-                        sess.last_entity_id = str(i)
+                        sess.last_entity_id = i
                         if ts:
                             try:
                                 parsed = datetime.fromisoformat(ts)
@@ -233,8 +235,8 @@ def _finalize_stale_sessions_for_fingerprint(db: Session, client_fingerprint: st
         min_session_minutes = 10
     min_session_seconds = min_session_minutes * 60
 
-    scene_counts: dict[str, int] = defaultdict(int)
-    image_counts: dict[str, int] = defaultdict(int)
+    scene_counts: dict[int, int] = defaultdict(int)
+    image_counts: dict[int, int] = defaultdict(int)
     finalize_ids: list[int] = []
 
     for s in stale_sessions:
@@ -252,9 +254,9 @@ def _finalize_stale_sessions_for_fingerprint(db: Session, client_fingerprint: st
                 finalize_ids.append(s.id)
                 continue
             if ent_type == 'scene':
-                scene_counts[str(ent_id)] += 1
+                scene_counts[ent_id] += 1
             elif ent_type == 'image':
-                image_counts[str(ent_id)] += 1
+                image_counts[ent_id] += 1
             finalize_ids.append(s.id)
         except Exception:
             continue
@@ -381,7 +383,7 @@ def _find_or_create_session_id(db: Session, incoming_session_id: str, client_fin
         raise
 
 
-def recompute_segments(db: Session, session_id: str, scene_id: str, scene_watch_id: int):
+def recompute_segments(db: Session, session_id: str, scene_id: int, scene_watch_id: int):
     # Fetch rows and delegate to the rows-based implementation
     try:
         min_duration = float(sys_get('SEGMENT_MIN_DURATION_SECONDS', 1.5) or 1.5)
@@ -397,7 +399,7 @@ def recompute_segments(db: Session, session_id: str, scene_id: str, scene_watch_
     return recompute_segments_from_rows(rows, session_id, scene_id, scene_watch_id, merge_gap=1.0, min_duration=min_duration)
 
 
-def recompute_segments_from_rows(rows: list, session_id: str, scene_id: str, scene_watch_id: int, merge_gap: float = 1.0, min_duration: float = 0.0):
+def recompute_segments_from_rows(rows: list, session_id: str, scene_id: int, scene_watch_id: int, merge_gap: float = 1.0, min_duration: float = 0.0):
     """Compute segments from a list of InteractionEvent rows (ordered by client_ts).
     This mirrors recompute_segments but operates on provided rows so callers can fetch a limited window.
     """
@@ -535,7 +537,7 @@ def _update_scene_watch_stats(db: Session, scene_watch: SceneWatch, segments: li
             pass
 
 
-def update_image_derived(db: Session, image_id: str, ev_list: list):
+def update_image_derived(db: Session, image_id: int, ev_list: list):
     # find view events for this image in the batch
     last_view = None
     view_events = 0
@@ -557,7 +559,7 @@ def update_image_derived(db: Session, image_id: str, ev_list: list):
 
 
 
-def _bulk_update_scene_derived(db: Session, scene_ev_list: list, scene_ids: set[str]):
+def _bulk_update_scene_derived(db: Session, scene_ev_list: list, scene_ids: set[int]):
     """Efficiently update SceneDerived rows for a set of scene_ids using batched queries.
 
     Logic per scene:
@@ -575,8 +577,8 @@ def _bulk_update_scene_derived(db: Session, scene_ev_list: list, scene_ids: set[
     min_session_seconds = min_session_minutes * 60
 
     # 1. Aggregate scene_view counts & last_view timestamps in one pass
-    view_counts: dict[str,int] = defaultdict(int)
-    last_view_ts: dict[str,datetime] = {}
+    view_counts: dict[int,int] = defaultdict(int)
+    last_view_ts: dict[int,datetime] = {}
     for e in scene_ev_list:
         # caller guarantees these are scene-relevant events and filtered to scene_ids
         if getattr(e, 'type', None) == 'scene_view' and getattr(e, 'entity_id', None) in scene_ids:

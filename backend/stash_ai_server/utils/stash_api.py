@@ -47,7 +47,18 @@ class StashAPI:
     def get_tags_with_parent(self, parent_tag_id: int) -> Dict[str, int]:
         return {item['name']: item['id'] for item in self.stash_interface.find_tags(f={"parents": {"value":parent_tag_id, "modifier":"INCLUDES"}}, fragment="id name")}
 
-    # Images
+    def get_stash_tag_name(self, tag_id: int) -> str | None:
+        """Get the tag name for a given tag ID from Stash."""
+        try:
+            tag_data = self.stash_interface.find_tag(tag_id)
+            if tag_data and "name" in tag_data:
+                return tag_data["name"]
+            return None
+        except Exception:
+            _log.exception("Failed to get tag name for tag_id=%s", tag_id)
+            return None
+
+    # Images    
 
     def remove_tags_from_images(self, image_ids: list[int], tag_ids: list[int]) -> bool:
         self.stash_interface.update_images({"ids": image_ids, "tag_ids": {"ids": tag_ids, "mode": "REMOVE"}})
@@ -76,6 +87,8 @@ class StashAPI:
         _log.warning("Fetched image paths for ids=%s -> %s", images_ids, out)
         return out
 
+    # Scenes
+
     def get_scene_path_and_tags(self, scene_id: int):
         scene_result = self.stash_interface.find_scene(id=scene_id, fragment="files {path} tags {id}")
         if not scene_result or 'files' not in scene_result or not scene_result['files']:
@@ -83,6 +96,37 @@ class StashAPI:
         path = scene_result['files'][0]['path']
         tags = [tag['id'] for tag in scene_result.get('tags', []) if 'id' in tag]
         return path, tags
+    
+    # Scene Markers
+
+    def destroy_scene_markers(self, marker_ids: list[int]):
+        self.stash_interface.destroy_markers(marker_ids)
+
+    def destroy_markers_with_tags(self, scene_id, tag_ids: list[int]):
+        markers = self.stash_interface.find_scene_markers(
+            scene_marker_filter={
+                "tags": {"value": tag_ids, "modifier": "INCLUDES"},
+                "scenes": {"value": [scene_id], "modifier": "EQUALS"}
+            },
+            fragment="id"
+        )
+        marker_ids = [marker['id'] for marker in markers] if markers else []
+        if marker_ids:
+            self.destroy_scene_markers(marker_ids)
+
+    def create_scene_markers(self, scene_id: int,timespans: Dict[tuple[int, str], list[tuple[float, float]]]):
+        for (tag_id, tag_name), spans in timespans.items():
+            for start, end in spans:
+                marker_data = {
+                    "scene_id": scene_id,
+                    "seconds": start,
+                    "end_seconds": end,
+                    "primary_tag_id": tag_id,
+                    "tag_ids": [tag_id],
+                    "title": tag_name,
+                }
+                self.stash_interface.create_scene_marker(marker_data)
+        
 
 def _have_valid_api_key(api_key) -> bool:
     return bool(api_key and api_key != 'REPLACE_WITH_API_KEY' and api_key.strip() != '')

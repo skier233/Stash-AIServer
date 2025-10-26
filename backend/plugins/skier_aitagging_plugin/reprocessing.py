@@ -1,9 +1,10 @@
 from __future__ import annotations
+
 import logging
-from typing import Iterable, Sequence
+from typing import Sequence
 
 from .models import AIModelInfo
-from stash_ai_server.db.ai_results_store import StoredModelSummary, StoredSceneRun
+from stash_ai_server.db.ai_results_store import StoredModelSummary
 
 
 _log = logging.getLogger(__name__)
@@ -62,22 +63,6 @@ def determine_model_plan(
     return categories_to_skip, will_reprocess
 
 
-#TODO: implement and move to another file
-def derive_scene_annotations(
-    *,
-    scene_id: int,
-    service_name: str,
-    categories_processed: Iterable[str],
-) -> dict[str, object]:
-    """Placeholder for downstream tag/marker derivation."""
-    return {
-        "scene_id": scene_id,
-        "service": service_name,
-        "processed_categories": list(categories_processed),
-        "summary": "Annotation derivation not yet implemented",
-    }
-
-
 def _should_skip_category(
     prev_category: tuple[str, int, float, float, float] | None,
     current_category: tuple[str, int, float, float, float]
@@ -112,3 +97,5 @@ def _should_skip_category(
     else:
         _log.debug("Current version %s is greater than previous version %s; cannot skip", curr_version, prev_version)
         return False
+
+

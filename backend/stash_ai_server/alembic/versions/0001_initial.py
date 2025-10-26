@@ -108,7 +108,7 @@ def upgrade() -> None:  # noqa: D401
         'interaction_events',
         sa.Column('id', sa.Integer, primary_key=True),
         sa.Column('client_event_id', sa.Integer, nullable=True),
-        sa.Column('session_id', sa.Integer, nullable=False),
+        sa.Column('session_id', sa.String(length=128), nullable=False),
         sa.Column('event_type', sa.String(length=50), nullable=False),
         sa.Column('entity_type', sa.String(length=30), nullable=False),
         sa.Column('entity_id', sa.Integer, nullable=False),
@@ -131,7 +131,7 @@ def upgrade() -> None:  # noqa: D401
     op.create_table(
         'interaction_sessions',
         sa.Column('id', sa.Integer, primary_key=True),
-        sa.Column('session_id', sa.Integer, nullable=False),
+        sa.Column('session_id', sa.String(length=128), nullable=False),
         sa.Column('last_event_ts', sa.DateTime, nullable=False),
         sa.Column('session_start_ts', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
         sa.Column('last_entity_type', sa.String(length=30), nullable=True),
@@ -151,8 +151,8 @@ def upgrade() -> None:  # noqa: D401
     # session alias mapping
     op.create_table(
         'interaction_session_aliases',
-        sa.Column('alias_session_id', sa.Integer, primary_key=True),
-        sa.Column('canonical_session_id', sa.Integer, nullable=False),
+        sa.Column('alias_session_id', sa.String(length=128), primary_key=True),
+        sa.Column('canonical_session_id', sa.String(length=128), nullable=False),
         sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
     )
     op.create_index('ix_interaction_session_aliases_canonical', 'interaction_session_aliases', ['canonical_session_id'])
@@ -161,7 +161,7 @@ def upgrade() -> None:  # noqa: D401
     op.create_table(
         'scene_watch',
         sa.Column('id', sa.Integer, primary_key=True),
-        sa.Column('session_id', sa.Integer, nullable=False),
+        sa.Column('session_id', sa.String(length=128), nullable=False),
         sa.Column('scene_id', sa.Integer, nullable=False),
         sa.Column('page_entered_at', sa.DateTime, nullable=False),
         sa.Column('page_left_at', sa.DateTime, nullable=True),
@@ -179,7 +179,7 @@ def upgrade() -> None:  # noqa: D401
         'scene_watch_segments',
         sa.Column('id', sa.Integer, primary_key=True),
         sa.Column('scene_watch_id', sa.Integer, nullable=False),
-        sa.Column('session_id', sa.Integer, nullable=False),
+        sa.Column('session_id', sa.String(length=128), nullable=False),
         sa.Column('scene_id', sa.Integer, nullable=False),
         sa.Column('start_s', sa.Float, nullable=False),
         sa.Column('end_s', sa.Float, nullable=False),
@@ -214,7 +214,7 @@ def upgrade() -> None:  # noqa: D401
     op.create_table(
         'interaction_library_search',
         sa.Column('id', sa.Integer, primary_key=True),
-        sa.Column('session_id', sa.Integer, nullable=False),
+        sa.Column('session_id', sa.String(length=128), nullable=False),
         sa.Column('library', sa.String(length=20), nullable=False),
         sa.Column('query', sa.String(length=512), nullable=True),
         sa.Column('filters', sa.JSON, nullable=True),

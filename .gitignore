@@ -9,3 +9,4 @@ backend/config.env
 *.egg-info
 /backend/data/app.db
 .vscode/launch.json
+backend/plugins/skier_aitagging_plugin/tag_settings.csv

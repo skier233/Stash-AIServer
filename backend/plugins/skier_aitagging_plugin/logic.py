@@ -16,11 +16,13 @@ from .stash_handler import (
 )
 from .http_handler import call_images_api, call_scene_api, get_active_scene_models
 from .utils import extract_tags_from_response, get_selected_items
-from .reprocessing import determine_model_plan, derive_scene_annotations
+from .reprocessing import determine_model_plan
+from .marker_handling import apply_scene_markers
 from stash_ai_server.services.base import RemoteServiceBase
 from stash_ai_server.tasks.helpers import spawn_chunked_tasks, task_handler
 from stash_ai_server.tasks.models import TaskPriority
 from stash_ai_server.utils.stash_api_real import stash_api
+from .tag_config import get_tag_configuration
 from stash_ai_server.db.ai_results_store import (
     get_latest_scene_run_async,
     get_scene_model_history_async,
@@ -160,11 +162,15 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
 
     if not should_reprocess:
         _log.info("Skipping remote tagging for scene_id=%s; existing data considered current", scene_id)
-        return derive_scene_annotations(
+        markers_by_tag = await apply_scene_markers(
             scene_id=scene_id,
             service_name=service.name,
-            categories_processed=skip_categories,
         )
+        return {
+            "scene_id": scene_id,
+            "markers": markers_by_tag,
+            "summary": f"Retrieved {sum(len(spans) for spans in markers_by_tag.values())} markers from storage",
+        }
 
     # TODO: VR Scene handling
     vr_scene = is_vr_scene(scene_tags)
@@ -208,6 +214,18 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
 
     run_id: int | None = None
     try:
+        # Create a resolve function that uses tag config to map backend tags to stash tags
+        
+        tag_config = get_tag_configuration()
+        
+        def resolve_backend_to_stash_tag_id(backend_label: str, category: str | None) -> int | None:
+            """Resolve backend tag name to Stash tag ID using configuration."""
+            settings = tag_config.resolve(backend_label)
+            stash_name = settings.stash_name or backend_label
+            if not stash_name:
+                return None
+            return resolve_ai_tag_reference(stash_name)
+        
         run_id = await store_scene_run_async(
             service=service.name,
             plugin_name=service.plugin_name,
@@ -219,12 +237,12 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
             },
             result_payload=result.model_dump(exclude_none=True),
             requested_models=result_models_payload,
-            resolve_reference=lambda label, _category: resolve_ai_tag_reference(label),
+            resolve_reference=resolve_backend_to_stash_tag_id,
         )
     except Exception:
         _log.exception("Failed to persist AI scene run for scene_id=%s", scene_id)
 
-    #TODO: this logic is sketchy
+    #TODO: this logic is kinda sketchy
     if run_id is not None and processed_categories:
         purge_scene_categories(
             service=service.name,
@@ -233,11 +251,16 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
             exclude_run_id=run_id,
         )
 
-    return derive_scene_annotations(
+    markers_by_tag = await apply_scene_markers(
         scene_id=scene_id,
         service_name=service.name,
-        categories_processed=processed_categories,
     )
+    
+    return {
+        "scene_id": scene_id,
+        "markers": markers_by_tag,
+        "summary": f"Processed scene with {sum(len(spans) for spans in markers_by_tag.values())} markers",
+    }
 
 
 async def tag_scenes(service: RemoteServiceBase, ctx: ContextInput, params: dict, task_record: TaskRecord):

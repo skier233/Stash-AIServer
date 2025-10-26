@@ -9,7 +9,7 @@ class InteractionEvent(Base):
     __tablename__ = 'interaction_events'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     client_event_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
-    session_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    session_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
     event_type: Mapped[str] = mapped_column(String(50), index=True, nullable=False)
     entity_type: Mapped[str] = mapped_column(String(30), nullable=False)
     entity_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
@@ -27,7 +27,7 @@ class InteractionEvent(Base):
 class InteractionSession(Base):
     __tablename__ = 'interaction_sessions'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    session_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    session_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     # last client event timestamp
     last_event_ts: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     # session start timestamp
@@ -45,14 +45,14 @@ class InteractionSession(Base):
 
 class InteractionSessionAlias(Base):
     __tablename__ = 'interaction_session_aliases'
-    alias_session_id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    canonical_session_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    alias_session_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    canonical_session_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now(timezone.utc), nullable=False)
 
 class SceneWatch(Base):
     __tablename__ = 'scene_watch'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    session_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    session_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
     scene_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
     # page visit timing
     page_entered_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
@@ -69,7 +69,7 @@ class SceneWatchSegment(Base):
     __tablename__ = 'scene_watch_segments'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     scene_watch_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)  # FK to scene_watch
-    session_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    session_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
     scene_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
     start_s: Mapped[float] = mapped_column(Float, nullable=False)
     end_s: Mapped[float] = mapped_column(Float, nullable=False)
@@ -97,7 +97,7 @@ class ImageDerived(Base):
 class InteractionLibrarySearch(Base):
     __tablename__ = 'interaction_library_search'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    session_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    session_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
     # either 'scenes' or 'images' (frontend should set entity_type to 'library' and entity_id to 'scenes'/'images')
     library: Mapped[str] = mapped_column(String(20), nullable=False)
     # raw search string

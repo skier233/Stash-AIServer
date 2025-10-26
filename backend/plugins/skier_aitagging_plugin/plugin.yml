@@ -13,3 +13,8 @@ settings:
     type: string
     default: "http://localhost:8000"
     description: Base URL for the Skier tagging backend (e.g. https://example.com)
+  - key: tag_suffix
+    label: Tag Name Suffix
+    type: string
+    default: "_AI"
+    description: Suffix appended to backend tag names when creating Stash tags (if not explicitly defined in tag_settings.csv)
