@@ -1,5 +1,4 @@
 from __future__ import annotations
-from time import timezone
 from sqlalchemy import Integer, String, DateTime, JSON, Float, Index, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime, timezone
