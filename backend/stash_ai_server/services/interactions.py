@@ -8,6 +8,7 @@ import traceback
 import os
 from stash_ai_server.core.system_settings import get_value as sys_get
 from collections import defaultdict
+from stash_ai_server.utils.string_utils import normalize_null_strings
 
 from stash_ai_server.models.interaction import (
     InteractionEvent,
@@ -98,6 +99,9 @@ def ingest_events(db: Session, events: Iterable[InteractionEventIn], client_fing
             setattr(ev, '_client_ts_naive', client_ts_val)
             # find or use cached canonical session id
             sess_id = session_resolution_cache.get(ev.session_id) if ev.session_id is not None else None
+            # Normalize event metadata to convert string nulls to None
+            if hasattr(ev, 'metadata'):
+                ev.metadata = normalize_null_strings(ev.metadata)
             if sess_id is None and getattr(ev, 'session_id', None) is not None:
                 # fallback to resolving on-the-fly
                 sess_id = _find_or_create_session_id(db, ev.session_id, client_fingerprint)
