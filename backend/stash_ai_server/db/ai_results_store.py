@@ -5,7 +5,7 @@ import datetime as dt
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from stash_ai_server.db.session import SessionLocal
@@ -37,6 +37,7 @@ class StoredSceneRun:
     input_params: Mapping[str, Any] | None
     aggregates: Mapping[str, float]
     models: Sequence[StoredModelSummary]
+
 
 # TODO: This may not be needed
 def _extract_frame_interval_from_run_instance(run: AIModelRun) -> float | None:
@@ -134,6 +135,52 @@ async def get_scene_timespans_async(
     scene_id: int,
 ) -> tuple[float | None, SceneTimespanBuckets] | None:
     return await asyncio.to_thread(get_scene_timespans, service=service, scene_id=scene_id)
+
+
+def get_scene_tag_totals(
+    *,
+    service: str,
+    scene_id: int,
+) -> dict[int, float]:
+    scene_id_int = _ensure_int(scene_id)
+    if scene_id_int is None:
+        raise ValueError("scene_id must be an integer")
+
+    with SessionLocal() as session:
+        stmt = (
+            select(
+                AIResultAggregate.value_id,
+                AIResultAggregate.value_float,
+            )
+            .join(AIModelRun, AIResultAggregate.run_id == AIModelRun.id)
+            .where(
+                AIModelRun.service == service,
+                AIModelRun.entity_type == "scene",
+                AIModelRun.entity_id == scene_id_int,
+                AIResultAggregate.payload_type == "tag",
+                AIResultAggregate.metric == "duration_s",
+                AIResultAggregate.value_id.isnot(None),
+            )
+        )
+
+        totals: dict[int, float] = {}
+        for tag_id, value in session.execute(stmt):
+            tag_int = int(tag_id)
+            totals[tag_int] = totals.get(tag_int, 0.0) + float(value or 0.0)
+
+        return totals
+
+
+async def get_scene_tag_totals_async(
+    *,
+    service: str,
+    scene_id: int,
+) -> dict[int, float]:
+    return await asyncio.to_thread(
+        get_scene_tag_totals,
+        service=service,
+        scene_id=scene_id,
+    )
 
 
 def _ensure_int(value: Any) -> int | None:
@@ -300,11 +347,12 @@ def _extract_float(params: Any, key: str) -> float | None:
         return None
 
 
-def _collect_scene_model_history(
+def _collect_model_history(
     session: Session,
     *,
     service: str,
-    scene_id: int,
+    entity_type: str,
+    entity_id: int,
 ) -> list[StoredModelSummary]:
     stmt = (
         select(AIModelRunModel)
@@ -315,8 +363,8 @@ def _collect_scene_model_history(
         .join(AIModelRun, AIModelRunModel.run_id == AIModelRun.id)
         .where(
             AIModelRun.service == service,
-            AIModelRun.entity_type == "scene",
-            AIModelRun.entity_id == scene_id,
+            AIModelRun.entity_type == entity_type,
+            AIModelRun.entity_id == entity_id,
         )
     )
     run_models = session.scalars(stmt).all()
@@ -439,6 +487,10 @@ def _store_aggregates(
     resolve_reference: Callable[[str, str | None], int | None] | None = None,
 ) -> None:
     for (category, label), value in totals.items():
+        label_name = str(label)
+        resolved_id = resolve_reference(label_name, category) if resolve_reference else None
+        if resolved_id is None:
+            continue
         aggregate = AIResultAggregate(
             run=run,
             entity_type="scene",
@@ -446,7 +498,7 @@ def _store_aggregates(
             payload_type="tag",
             category=category,
             str_value=None,
-            value_id=resolve_reference(label, category) if resolve_reference else None,
+            value_id=resolved_id,
             metric="duration_s",
             value_float=float(value),
         )
@@ -565,6 +617,108 @@ async def store_scene_run_async(
     )
 
 
+def store_image_run(
+    *,
+    service: str,
+    plugin_name: str | None,
+    image_id: int,
+    tag_records: Mapping[str, Sequence[int]] | None,
+    input_params: Mapping[str, Any] | None = None,
+    requested_models: Sequence[Mapping[str, Any]] | None = None,
+) -> int:
+    image_id_int = _ensure_int(image_id)
+    if image_id_int is None:
+        raise ValueError("image_id must be an integer")
+
+    categories_to_clear = tag_records.keys()
+
+    now = dt.datetime.now(dt.timezone.utc)
+    with SessionLocal() as session:
+        model_records = _upsert_models(
+            session,
+            service=service,
+            plugin_name=plugin_name,
+            models=requested_models or [],
+        )
+
+        run = AIModelRun(
+            service=service,
+            plugin_name=plugin_name,
+            entity_type="image",
+            entity_id=image_id_int,
+            status="completed",
+            input_params=dict(input_params) if input_params else None,
+            completed_at=now,
+        )
+        session.add(run)
+        session.flush()
+
+        if categories_to_clear:
+            stale_run_ids = (
+                select(AIModelRun.id)
+                .where(
+                    AIModelRun.service == service,
+                    AIModelRun.entity_type == "image",
+                    AIModelRun.entity_id == image_id_int,
+                    AIModelRun.id != run.id,
+                )
+            )
+            session.execute(
+                delete(AIResultAggregate).where(
+                    AIResultAggregate.run_id.in_(stale_run_ids),
+                    AIResultAggregate.category.in_(categories_to_clear),
+                )
+            )
+
+        if requested_models:
+            _assign_run_models(
+                session,
+                run=run,
+                model_records=model_records,
+                models=requested_models,
+                input_params=None,
+                frame_interval=None,
+            )
+
+        for category_value, tag_ids in tag_records.items():
+            for tag_id in tag_ids:
+                aggregate = AIResultAggregate(
+                    run=run,
+                    entity_type="image",
+                    entity_id=image_id_int,
+                    payload_type="tag",
+                    category=category_value,
+                    str_value=None,
+                    value_id=tag_id,
+                    metric="presence",
+                    value_float=None,
+                )
+                session.add(aggregate)
+
+        session.commit()
+        return run.id
+
+
+async def store_image_run_async(
+    *,
+    service: str,
+    plugin_name: str | None,
+    image_id: int,
+    tag_records: Mapping[str | None, Sequence[int]] | None,
+    input_params: Mapping[str, Any] | None = None,
+    requested_models: Sequence[Mapping[str, Any]] | None = None,
+) -> int:
+    return await asyncio.to_thread(
+        store_image_run,
+        service=service,
+        plugin_name=plugin_name,
+        image_id=image_id,
+        tag_records=tag_records,
+        input_params=input_params,
+        requested_models=requested_models,
+    )
+
+
 def get_scene_model_history(
     *,
     service: str,
@@ -575,10 +729,30 @@ def get_scene_model_history(
         raise ValueError("scene_id must be an integer")
 
     with SessionLocal() as session:
-        model_summaries = _collect_scene_model_history(
+        model_summaries = _collect_model_history(
             session,
             service=service,
-            scene_id=scene_id_int,
+            entity_type="scene",
+            entity_id=scene_id_int,
+        )
+        return tuple(model_summaries)
+
+
+def get_image_model_history(
+    *,
+    service: str,
+    image_id: int,
+) -> Sequence[StoredModelSummary]:
+    image_id_int = _ensure_int(image_id)
+    if image_id_int is None:
+        raise ValueError("image_id must be an integer")
+
+    with SessionLocal() as session:
+        model_summaries = _collect_model_history(
+            session,
+            service=service,
+            entity_type="image",
+            entity_id=image_id_int,
         )
         return tuple(model_summaries)
 
@@ -623,10 +797,11 @@ def get_latest_scene_run(
             key = f"{category}:{label_key}" if category else label_key
             aggregates[key] = float(agg.value_float or 0.0)
 
-        model_summaries = _collect_scene_model_history(
+        model_summaries = _collect_model_history(
             session,
             service=service,
-            scene_id=scene_id_int,
+            entity_type="scene",
+            entity_id=scene_id_int,
         )
 
         return StoredSceneRun(
@@ -636,6 +811,49 @@ def get_latest_scene_run(
             aggregates=aggregates,
             models=model_summaries,
         )
+
+
+def get_image_tag_ids(
+    *,
+    service: str,
+    image_id: int,
+) -> list[int]:
+    image_id_int = _ensure_int(image_id)
+    if image_id_int is None:
+        raise ValueError("image_id must be an integer")
+
+    with SessionLocal() as session:
+        stmt = (
+            select(AIResultAggregate.value_id)
+            .join(AIModelRun, AIResultAggregate.run_id == AIModelRun.id)
+            .where(
+                AIModelRun.service == service,
+                AIModelRun.entity_type == "image",
+                AIModelRun.entity_id == image_id_int,
+                AIResultAggregate.payload_type == "tag",
+                AIResultAggregate.metric == "presence",
+                AIResultAggregate.value_id.isnot(None),
+            )
+        )
+
+        tag_ids: list[int] = []
+        seen: set[int] = set()
+        for (value_id,) in session.execute(stmt):
+            tag_int = int(value_id)
+            if tag_int in seen:
+                continue
+            seen.add(tag_int)
+            tag_ids.append(tag_int)
+
+        return tag_ids
+
+
+async def get_image_tag_ids_async(
+    *,
+    service: str,
+    image_id: int,
+) -> list[int]:
+    return await asyncio.to_thread(get_image_tag_ids, service=service, image_id=image_id)
 
 
 def purge_scene_categories(
@@ -696,3 +914,11 @@ async def get_scene_model_history_async(
     scene_id: int,
 ) -> Sequence[StoredModelSummary]:
     return await asyncio.to_thread(get_scene_model_history, service=service, scene_id=scene_id)
+
+
+async def get_image_model_history_async(
+    *,
+    service: str,
+    image_id: int,
+) -> Sequence[StoredModelSummary]:
+    return await asyncio.to_thread(get_image_model_history, service=service, image_id=image_id)

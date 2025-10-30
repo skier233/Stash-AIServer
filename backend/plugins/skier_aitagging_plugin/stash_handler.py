@@ -1,5 +1,5 @@
 import logging
-from stash_ai_server.utils.stash_api_real import stash_api
+from stash_ai_server.utils.stash_api import stash_api
 
 _log = logging.getLogger(__name__)
 
@@ -12,6 +12,7 @@ VR_TAG_NAME = stash_api.stash_interface.get_configuration()["ui"].get("vrTag", N
 VR_Tag_Id = stash_api.fetch_tag_id(VR_TAG_NAME) if VR_TAG_NAME else None
 AI_Error_Tag_Id = stash_api.fetch_tag_id(AI_Error_Tag_Name, parent_id=AI_Base_Tag_Id, create_if_missing=True)
 
+#TODO: could be nice to not have to rely on the parent logic
 AI_tags_cache = stash_api.get_tags_with_parent(parent_tag_id=AI_Base_Tag_Id)
 
 AI_tags_cache[AI_Error_Tag_Name] = AI_Error_Tag_Id

@@ -11,6 +11,7 @@ class StashAPI:
     api_key: str | None
     stash_interface: StashInterface | None = None
     tag_id_cache: Dict[str, int] = {}
+    tag_name_cache: Dict[int, str] = {}
 
     def __init__(self) -> None:
         self.stash_url = sys_get("STASH_URL")
@@ -39,6 +40,7 @@ class StashAPI:
             tag = tag["id"]  if tag else None
         if tag:
             self.tag_id_cache[tag_name] = tag
+            self.tag_name_cache[tag] = tag_name 
             if add_to_cache is not None and tag_name not in add_to_cache:
                 add_to_cache[tag_name] = tag
             return tag
@@ -49,9 +51,13 @@ class StashAPI:
 
     def get_stash_tag_name(self, tag_id: int) -> str | None:
         """Get the tag name for a given tag ID from Stash."""
+        if tag_id in self.tag_name_cache:
+            return self.tag_name_cache[tag_id]
         try:
             tag_data = self.stash_interface.find_tag(tag_id)
             if tag_data and "name" in tag_data:
+                self.tag_name_cache[tag_id] = tag_data["name"]
+                self.tag_id_cache[tag_data["name"]] = tag_id
                 return tag_data["name"]
             return None
         except Exception:
@@ -96,6 +102,30 @@ class StashAPI:
         path = scene_result['files'][0]['path']
         tags = [tag['id'] for tag in scene_result.get('tags', []) if 'id' in tag]
         return path, tags
+
+    def add_tags_to_scene(self, scene_id: int, tag_ids: list[int]) -> None:
+        if not tag_ids:
+            return
+        payload = {
+            "ids": [scene_id],
+            "tag_ids": {
+                "ids": tag_ids,
+                "mode": "ADD",
+            },
+        }
+        self.stash_interface.update_scenes(payload)
+
+    def remove_tags_from_scene(self, scene_id: int, tag_ids: list[int]) -> None:
+        if not tag_ids:
+            return
+        payload = {
+            "ids": [scene_id],
+            "tag_ids": {
+                "ids": tag_ids,
+                "mode": "REMOVE",
+            },
+        }
+        self.stash_interface.update_scenes(payload)
     
     # Scene Markers
 

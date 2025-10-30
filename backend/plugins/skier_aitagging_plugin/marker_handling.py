@@ -308,10 +308,9 @@ def _timespans_from_storage(
     result: dict[str | None, dict[str, list[TagTimeFrame]]] = {}
     if not raw_timespans:
         return frame_interval, result
-    for category, tag_map in raw_timespans.items():
+    for category_key, tag_map in raw_timespans.items():
         if not isinstance(tag_map, Mapping):
             continue
-        category_key = _normalize_category(category)
         bucket = result.setdefault(category_key, {})
         for label_key, spans in tag_map.items():
             if not spans:
@@ -329,14 +328,6 @@ def _timespans_from_storage(
         if not bucket:
             result.pop(category_key, None)
     return frame_interval, result
-
-
-def _normalize_category(value: object) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
 
 def _normalize_label(label: object) -> str | None:
     if label is None:

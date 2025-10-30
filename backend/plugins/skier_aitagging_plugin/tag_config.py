@@ -115,12 +115,33 @@ class TagConfiguration:
 
     def resolve(self, tag_name: str) -> TagSettings:
         normalized = (tag_name or "").strip()
-        effective = replace(self._global_settings, tag_name=normalized or self._global_settings.tag_name)
         override = self._overrides.get(normalized.lower()) if normalized else None
+
+        suffix = (self._tag_suffix or "").strip()
+        base_name = normalized
+
+        if not override and normalized and suffix:
+            norm_lower = normalized.lower()
+            suffix_lower = suffix.lower()
+            if norm_lower.endswith(suffix_lower) and len(normalized) > len(suffix):
+                stripped = normalized[: -len(suffix)].strip()
+                if stripped:
+                    base_name = stripped
+                    potential_override = self._overrides.get(stripped.lower())
+                    if potential_override:
+                        override = potential_override
+
+        effective = replace(self._global_settings, tag_name=base_name or self._global_settings.tag_name)
         if override:
             _apply_override(effective, override)
+
         if not effective.stash_name:
-            effective.stash_name = normalized + self._tag_suffix if normalized else normalized
+            stash_base = base_name or normalized
+            if suffix and stash_base and not stash_base.lower().endswith(suffix.lower()):
+                effective.stash_name = stash_base + suffix
+            else:
+                effective.stash_name = stash_base or None
+
         if not effective.merge_strategy:
             effective.merge_strategy = "default"
         return effective

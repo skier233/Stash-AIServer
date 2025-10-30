@@ -16,7 +16,7 @@ class InteractionEventIn(BaseModel):
     ts: datetime  # client timestamp (original event ts)
     type: str
     entity_type: str
-    entity_id: str
+    entity_id: int
     metadata: Optional[dict[str, Any]] = None
     # keep metadata only; page_url/user_agent/viewport/schema_version removed
 
