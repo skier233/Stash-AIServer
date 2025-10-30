@@ -6,6 +6,7 @@ import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import select, delete
 import httpx, traceback  # json unused
+from stash_ai_server.utils.string_utils import normalize_null_strings
 from stash_ai_server.db.session import SessionLocal
 from stash_ai_server.models.plugin import PluginMeta, PluginSource, PluginCatalog, PluginSetting
 from stash_ai_server.plugin_runtime import loader as plugin_loader
@@ -174,6 +175,8 @@ async def upsert_setting(plugin_name: str, key: str, payload: SettingUpsert, db:
             opts = row.options if isinstance(row.options, list) else []
             if v not in opts:
                 raise HTTPException(status_code=400, detail='INVALID_OPTION')
+    # Normalize any 'null' string values
+    v = normalize_null_strings(v)
     # Null means reset to default
     row.value = v
     db.commit()
