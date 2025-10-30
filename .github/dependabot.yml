@@ -23,3 +23,29 @@ updates:
       include: "scope"
     open-pull-requests-limit: 10
     versioning-strategy: "auto"
+
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "daily"
+    labels:
+      - "dependencies"
+      - "javascript"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: "docker"
+    directory: "/backend"
+    schedule:
+      interval: "daily"
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    # Note: Monitor Docker base image updates. If Python version updates
+    # (e.g., 3.12 -> 3.13) cause issues, consider adding ignore rules or
+    # pinning the version explicitly in the Dockerfile.
