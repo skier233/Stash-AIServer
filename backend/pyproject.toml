@@ -22,7 +22,7 @@ dependencies = [
   "python-dotenv==1.0.1",
   "httpx==0.27.2",
   "stashapp-tools==0.2.58",
-  "PyYAML==6.0.2",
+  "PyYAML==6.0.3",
   "packaging==24.1"
 ]
 
