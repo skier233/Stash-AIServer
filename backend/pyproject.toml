@@ -20,7 +20,7 @@ dependencies = [
   "alembic==1.13.2",
   "pydantic==2.9.2",
   "python-dotenv==1.2.1",
-  "httpx==0.27.2",
+  "httpx==0.28.1",
   "stashapp-tools==0.2.58",
   "PyYAML==6.0.3",
   "packaging==24.1"
