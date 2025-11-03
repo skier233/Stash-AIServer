@@ -201,15 +201,7 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
-def _normalize_null_strings(obj: Any) -> Any:
-    """Recursively convert string 'null' (case-insensitive) to None inside dict/list structures."""
-    if isinstance(obj, str):
-        return None if obj.lower() == "null" else obj
-    if isinstance(obj, Mapping):
-        return {k: _normalize_null_strings(v) for k, v in obj.items()}
-    if isinstance(obj, Sequence) and not isinstance(obj, (str, bytes)):
-        return [_normalize_null_strings(v) for v in obj]
-    return obj
+from stash_ai_server.utils.string_utils import normalize_null_strings as _normalize_null_strings
 
 
 def _model_identifier(data: Mapping[str, Any]) -> tuple[int | None, str | None]:
