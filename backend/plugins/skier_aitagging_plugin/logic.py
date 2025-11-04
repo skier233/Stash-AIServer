@@ -173,6 +173,7 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
 
         if response is not None:
             result_payload = response.result if isinstance(response.result, list) else []
+            models_used = response.models if hasattr(response, "models") and response.models else []
             for idx, image_id in enumerate(remote_image_ids):
                 payload = result_payload[idx]
                 if payload.get("error"):
@@ -200,7 +201,7 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
                         image_id=image_id,
                         tag_records=resolved_records,
                         input_params=None,
-                        requested_models=requested_models_payload, #TODO: this is a bug. We need to make the images response include the model data like scenes does and store what actually ran
+                        requested_models=models_used if models_used else requested_models_payload,
                     )
                 except Exception:
                     _log.exception("Failed to persist image tagging run for image_id=%s", image_id)

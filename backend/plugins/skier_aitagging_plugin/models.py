@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 class ImageResult(BaseModel):
     result: List[Dict[str, Any]] = Field(..., min_items=1)
+    models: List[Any] | None = None
 
 
 Scope = Literal["detail", "selected", "page", "all"] 

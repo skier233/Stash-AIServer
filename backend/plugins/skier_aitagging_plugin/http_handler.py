@@ -4,7 +4,7 @@ from typing import Sequence
 from .models import AIModelInfo, AIVideoResultV3, ImageResult
 from stash_ai_server.services.base import RemoteServiceBase
 
-IMAGES_ENDPOINT = "/process_images/"  # Batch endpoint - accepts multiple image paths
+IMAGES_ENDPOINT = "/v3/process_images/"  # Batch endpoint - accepts multiple image paths
 SCENE_ENDPOINT = "/v3/process_video/"    # Single scene endpoint - processes one scene at a time
 ACTIVE_SCENE_MODELS = "/v3/current_ai_models/"
 
