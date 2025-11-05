@@ -18,7 +18,7 @@ jobs:
       tag: ${{ steps.set.outputs.tag }}
       version: ${{ steps.set.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - id: set
@@ -49,11 +49,11 @@ jobs:
     needs: determine
     if: needs.determine.outputs.is_release == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - name: Sync version from tag
@@ -95,7 +95,7 @@ jobs:
       - name: Show dist contents
         run: ls -l backend/dist
       - name: Upload wheel artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: wheel
           path: backend/dist/*.whl
@@ -107,7 +107,7 @@ jobs:
     if: needs.determine.outputs.is_release == 'true'
     steps:
       - name: Download wheel artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           name: wheel
           path: dist_dl
@@ -150,7 +150,7 @@ jobs:
     needs: [determine, publish]
     if: needs.determine.outputs.is_release == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
       - name: Set up Buildx
@@ -190,7 +190,7 @@ jobs:
               sys.exit(1)
           PY
       - name: Build & push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: ./backend
           file: ./backend/Dockerfile

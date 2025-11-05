@@ -1,3 +1,4 @@
+# Original project-specific patterns (preserved)
 */node_modules/*
 */__pycache__/*
 *.pyc
@@ -10,3 +11,72 @@ backend/config.env
 /backend/data/app.db
 .vscode/launch.json
 backend/plugins/skier_aitagging_plugin/tag_settings.csv
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Additional Python patterns
+*.py[cod]
+*$py.class
+*.so
+.Python
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+.installed.cfg
+*.egg
+MANIFEST
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+*.mo
+*.log
+*.pot
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+cython_debug/
+poetry.toml
+.ruff_cache/
+pyrightconfig.json
+
+# Node.js
+node_modules/
+package-lock.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDEs
+.idea/
