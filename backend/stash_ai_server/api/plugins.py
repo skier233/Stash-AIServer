@@ -10,6 +10,7 @@ from stash_ai_server.db.session import SessionLocal
 from stash_ai_server.models.plugin import PluginMeta, PluginSource, PluginCatalog, PluginSetting
 from stash_ai_server.plugin_runtime import loader as plugin_loader
 from stash_ai_server.core.system_settings import SYSTEM_PLUGIN_NAME, get_value as sys_get_value, invalidate_cache as sys_invalidate_cache
+from stash_ai_server.utils.path_mutation import invalidate_path_mapping_cache
 
 router = APIRouter(prefix='/plugins', tags=['plugins'])
 
@@ -177,6 +178,8 @@ async def upsert_setting(plugin_name: str, key: str, payload: SettingUpsert, db:
     # Null means reset to default
     row.value = v
     db.commit()
+    if key == 'path_mappings':
+        invalidate_path_mapping_cache(plugin_name)
     return {'status': 'ok'}
 
 # ---------------- System (global) settings endpoints -----------------
@@ -216,6 +219,8 @@ async def upsert_system_setting(key: str, payload: SettingUpsert, db: Session = 
     row.value = v
     db.commit()
     sys_invalidate_cache()
+    if key == 'PATH_MAPPINGS':
+        invalidate_path_mapping_cache(system=True)
     return {'status': 'ok'}
 
 

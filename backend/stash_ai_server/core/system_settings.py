@@ -23,6 +23,7 @@ _DEFS: List[Dict[str, Any]] = [
     # STASH_PORT default changed to None so that an explicitly provided URL port is respected.
     # Previously defaulted to 9999 which unintentionally overrode URLs like http://host.docker.internal:3000
     { 'key': 'STASH_PORT', 'type': 'number', 'label': 'Stash Port Override', 'default': None, 'description': 'Explicit port override if different from URL (leave unset to use URL port).' },
+    { 'key': 'PATH_MAPPINGS', 'type': 'path_map', 'label': 'AI Overhaul Path Mappings', 'default': [], 'description': 'Rewrite stash file paths for the AI Overhaul backend when accessing media directly.' },
     { 'key': 'INTERACTION_MIN_SESSION_MINUTES', 'type': 'number', 'label': 'Interaction Min Session (min)', 'default': 10 },
     { 'key': 'INTERACTION_MERGE_TTL_SECONDS', 'type': 'number', 'label': 'Interaction Merge TTL (s)', 'default': 120 },
     { 'key': 'INTERACTION_SEGMENT_TIME_MARGIN_SECONDS', 'type': 'number', 'label': 'Interaction Segment Time Margin (s)', 'default': 2 },

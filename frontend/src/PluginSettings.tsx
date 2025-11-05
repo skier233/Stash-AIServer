@@ -13,6 +13,15 @@ interface InstalledPlugin { name: string; version: string; status: string; requi
 interface Source { id: number; name: string; url: string; enabled: boolean; last_refreshed_at?: string|null; last_error?: string|null; }
 interface CatalogEntry { plugin_name: string; version: string; description?: string; manifest?: any; }
 
+const PATH_SLASH_MODES = ['auto', 'unix', 'win', 'unchanged'];
+const PATH_SLASH_MODE_LABELS: Record<string, string> = {
+  auto: 'Auto',
+  unix: 'Unix',
+  win: 'Windows',
+  unchanged: 'Keep',
+};
+const PATH_SLASH_MODE_SET = new Set(PATH_SLASH_MODES);
+
 // LocalStorage keys
 const LS_BACKEND_URL = 'AI_BACKEND_URL_OVERRIDE';
 const LS_INTERACTIONS = 'AI_INTERACTIONS_ENABLED';
@@ -303,6 +312,260 @@ const PluginSettings = () => {
   const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'collapse' };
   const thtd: React.CSSProperties = { border: '1px solid #333', padding: '4px 6px', fontSize: 12, verticalAlign: 'top' };
 
+  const normalizeSlashMode = (mode: any): string => {
+    if (typeof mode !== 'string') return 'auto';
+    const trimmed = mode.trim().toLowerCase();
+    if (trimmed === 'windows') return 'win';
+    if (trimmed === 'keep') return 'unchanged';
+    return PATH_SLASH_MODE_SET.has(trimmed) ? trimmed : 'auto';
+  };
+
+  const normalizePathMappingList = (input: any): any[] => {
+    if (!input) return [];
+    if (Array.isArray(input)) {
+      const rows: any[] = [];
+      for (const raw of input) {
+        if (raw == null) continue;
+        let source = '';
+        let target = '';
+        let mode: any = undefined;
+        if (typeof raw === 'object' && !Array.isArray(raw)) {
+          source = typeof raw.source === 'string' ? raw.source : '';
+          target = typeof raw.target === 'string' ? raw.target : '';
+          mode = raw.slash_mode;
+        } else if (Array.isArray(raw)) {
+          source = typeof raw[0] === 'string' ? raw[0] : '';
+          target = typeof raw[1] === 'string' ? raw[1] : '';
+          mode = raw[2];
+        }
+        source = source.trim();
+        target = target.trim();
+        if (!source) continue;
+        rows.push({ source, target, slash_mode: normalizeSlashMode(mode) });
+      }
+      return rows;
+    }
+    if (typeof input === 'string') {
+      const text = input.trim();
+      if (!text) return [];
+      try {
+        return normalizePathMappingList(JSON.parse(text));
+      } catch {
+        const rows = text
+          .split(/\r?\n/)
+          .map(line => line.trim())
+          .filter(Boolean)
+          .map(line => {
+            const parts = line.split('|').map(part => part.trim());
+            const source = parts[0] || '';
+            if (!source) return null;
+            const target = parts[1] || '';
+            const mode = parts[2];
+            return { source, target, slash_mode: normalizeSlashMode(mode) };
+          })
+          .filter(Boolean) as any[];
+        return rows;
+      }
+    }
+    if (typeof input === 'object') {
+      return Object.entries(input)
+        .map(([key, value]) => {
+          const source = typeof key === 'string' ? key.trim() : String(key);
+          if (!source) return null;
+          const target =
+            typeof value === 'string' ? value.trim() : value == null ? '' : String(value);
+          return { source, target, slash_mode: 'auto' };
+        })
+        .filter(Boolean) as any[];
+    }
+    return [];
+  };
+
+  const ensurePathMappingRows = (rows: any[]): any[] => {
+    if (!rows || !rows.length) return [{ source: '', target: '', slash_mode: 'auto' }];
+    return rows.map((row: any) => ({
+      source: typeof row?.source === 'string' ? row.source : '',
+      target: typeof row?.target === 'string' ? row.target : '',
+      slash_mode: normalizeSlashMode(row?.slash_mode),
+    }));
+  };
+
+  const PathMapEditor = ({ value, defaultValue, onChange, onReset }: { value: any; defaultValue: any; onChange: (next: any) => Promise<void> | void; onReset: () => Promise<void> | void; }) => {
+    const storedRows = normalizePathMappingList(value);
+    const defaultRows = normalizePathMappingList(defaultValue);
+    const storedKey = JSON.stringify(storedRows);
+    const defaultKey = JSON.stringify(defaultRows);
+    const [draft, setDraft] = React.useState(() => ensurePathMappingRows(storedRows));
+
+    React.useEffect(() => {
+      setDraft(ensurePathMappingRows(storedRows));
+    }, [storedKey]);
+
+    const sanitizedDraft = React.useMemo(
+      () =>
+        draft.map((row: any) => ({
+          source: (typeof row?.source === 'string' ? row.source : '').trim(),
+          target: (typeof row?.target === 'string' ? row.target : '').trim(),
+          slash_mode: normalizeSlashMode(row?.slash_mode),
+        })),
+      [draft],
+    );
+    const filteredDraft = React.useMemo(
+      () => sanitizedDraft.filter((row: any) => row.source),
+      [sanitizedDraft],
+    );
+    const dirty = JSON.stringify(filteredDraft) !== storedKey;
+    const resetDisabled = storedKey === defaultKey && !dirty;
+    const [pending, setPending] = React.useState(false);
+
+    const updateRow = (index: number, field: 'source' | 'target' | 'slash_mode', value: string) => {
+      setDraft((rows: any[]) =>
+        rows.map((row: any, idx: number) => {
+          if (idx !== index) return row;
+          if (field === 'slash_mode') {
+            return { ...row, slash_mode: value };
+          }
+          return { ...row, [field]: value };
+        }),
+      );
+    };
+
+    const removeRow = (index: number) => {
+      setDraft((rows: any[]) => {
+        const next = rows.filter((_: any, idx: number) => idx !== index);
+        return ensurePathMappingRows(next);
+      });
+    };
+
+    const addRow = () => {
+      setDraft((rows: any[]) => [...rows, { source: '', target: '', slash_mode: 'auto' }]);
+    };
+
+    const handleSave = async () => {
+      if (pending || !dirty) return;
+      setPending(true);
+      try {
+        await onChange(filteredDraft);
+        setDraft(ensurePathMappingRows(filteredDraft));
+      } catch (err) {
+        console.error('[PathMapEditor] save failed', err);
+      } finally {
+        setPending(false);
+      }
+    };
+
+    const handleReset = async () => {
+      if (pending) return;
+      setPending(true);
+      try {
+        await onReset();
+        setDraft(ensurePathMappingRows(defaultRows));
+      } catch (err) {
+        console.error('[PathMapEditor] reset failed', err);
+      } finally {
+        setPending(false);
+      }
+    };
+
+    const cellInputStyle: React.CSSProperties = {
+      width: '100%',
+      padding: '4px 6px',
+      background: '#111',
+      color: '#eee',
+      border: '1px solid #333',
+      fontSize: 12,
+    };
+    const selectStyle: React.CSSProperties = { ...cellInputStyle, minWidth: 110 };
+    const actionBtn: React.CSSProperties = {
+      fontSize: 11,
+      padding: '4px 6px',
+      cursor: pending ? 'not-allowed' : 'pointer',
+    };
+    const footerStyle: React.CSSProperties = { display: 'flex', gap: 8, marginTop: 8 };
+
+    return (
+      <div style={{ border: '1px solid #2a2a2a', borderRadius: 4, padding: 8, background: '#101010' }}>
+        <table style={{ ...tableStyle, marginBottom: 8 }}>
+          <thead>
+            <tr>
+              <th style={thtd}>Stash Prefix</th>
+              <th style={thtd}>Target Path</th>
+              <th style={thtd}>Slash Mode</th>
+              <th style={{ ...thtd, width: '1%', whiteSpace: 'nowrap' }}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {draft.map((row: any, idx: number) => (
+              <tr key={idx}>
+                <td style={thtd}>
+                  <input
+                    style={cellInputStyle}
+                    value={row.source}
+                    placeholder="E:\\Content\\"
+                    onChange={(e: any) => updateRow(idx, 'source', e.target.value)}
+                    disabled={pending}
+                  />
+                </td>
+                <td style={thtd}>
+                  <input
+                    style={cellInputStyle}
+                    value={row.target}
+                    placeholder="/mnt/content/"
+                    onChange={(e: any) => updateRow(idx, 'target', e.target.value)}
+                    disabled={pending}
+                  />
+                </td>
+                <td style={thtd}>
+                  <select
+                    style={selectStyle}
+                    value={normalizeSlashMode(row.slash_mode)}
+                    onChange={(e: any) => updateRow(idx, 'slash_mode', e.target.value)}
+                    disabled={pending}
+                  >
+                    {PATH_SLASH_MODES.map(mode => (
+                      <option key={mode} value={mode}>
+                        {PATH_SLASH_MODE_LABELS[mode]}
+                      </option>
+                    ))}
+                  </select>
+                </td>
+                <td style={{ ...thtd, textAlign: 'right' }}>
+                  <button
+                    type="button"
+                    style={actionBtn}
+                    onClick={() => removeRow(idx)}
+                    disabled={pending}
+                  >
+                    Remove
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div style={footerStyle}>
+          <button type="button" style={actionBtn} onClick={addRow} disabled={pending}>
+            Add Mapping
+          </button>
+          <button type="button" style={actionBtn} onClick={handleSave} disabled={pending || !dirty}>
+            Save
+          </button>
+          <button
+            type="button"
+            style={actionBtn}
+            onClick={handleReset}
+            disabled={pending || resetDisabled}
+          >
+            Reset
+          </button>
+        </div>
+        <div style={{ fontSize: 11, opacity: 0.7, marginTop: 6 }}>
+          Entries match stash paths by prefix before requests are made. Slash mode normalizes separators; unix also ensures a leading '/'.
+        </div>
+      </div>
+    );
+  };
+
   // Compose installed plugin rows
   function renderInstalled() {
     if (!installed.length) return <div style={{fontSize:12, opacity:0.7}}>No plugins installed.</div>;
@@ -356,6 +619,25 @@ const PluginSettings = () => {
     const t = f.type || 'string';
     const label = f.label || f.key;
     const val = f.value === undefined ? f.default : f.value;
+    if (t === 'path_map') {
+      const containerStyle: React.CSSProperties = { position:'relative', padding:'4px 4px 6px', border:'1px solid #2a2a2a', borderRadius:4, background:'#101010' };
+      const storedNormalized = normalizePathMappingList(val);
+      const defaultNormalized = normalizePathMappingList(f.default);
+      const changedMap = JSON.stringify(storedNormalized) !== JSON.stringify(defaultNormalized);
+      return (
+        <div style={containerStyle}>
+          <div style={{fontSize:12, marginBottom:6}}>
+            {label} {changedMap && <span style={{color:'#ffa657', fontSize:10}}>•</span>}
+          </div>
+          <PathMapEditor
+            value={val}
+            defaultValue={f.default}
+            onChange={async (next) => { await savePluginSetting(pluginName, f.key, next); }}
+            onReset={async () => { await savePluginSetting(pluginName, f.key, null); }}
+          />
+        </div>
+      );
+    }
     const changed = val !== undefined && val !== null && f.default !== undefined && val !== f.default;
     const inputStyle: React.CSSProperties = { padding:6, background:'#111', color:'#eee', border:'1px solid #333', minWidth:120 };
     const wrap: React.CSSProperties = { position:'relative', padding:'4px 4px 6px', border:'1px solid #2a2a2a', borderRadius:4, background:'#101010' };
@@ -389,6 +671,25 @@ const PluginSettings = () => {
     const t = f.type || 'string';
     const label = f.label || f.key;
     const val = f.value === undefined ? f.default : f.value;
+    if (t === 'path_map') {
+      const containerStyle: React.CSSProperties = { position:'relative', padding:'4px 4px 6px', border:'1px solid #2a2a2a', borderRadius:4, background:'#101010' };
+      const storedNormalized = normalizePathMappingList(val);
+      const defaultNormalized = normalizePathMappingList(f.default);
+      const changedMap = JSON.stringify(storedNormalized) !== JSON.stringify(defaultNormalized);
+      return (
+        <div style={containerStyle}>
+          <div style={{fontSize:12, marginBottom:6}}>
+            {label} {changedMap && <span style={{color:'#ffa657', fontSize:10}}>•</span>}
+          </div>
+          <PathMapEditor
+            value={val}
+            defaultValue={f.default}
+            onChange={async (next) => { await saveSystemSetting(f.key, next); }}
+            onReset={async () => { await saveSystemSetting(f.key, null); }}
+          />
+        </div>
+      );
+    }
     const changed = val !== undefined && val !== null && f.default !== undefined && val !== f.default;
     const inputStyle: React.CSSProperties = { padding:6, background:'#111', color:'#eee', border:'1px solid #333', minWidth:140 };
     const wrap: React.CSSProperties = { position:'relative', padding:'4px 4px 6px', border:'1px solid #2a2a2a', borderRadius:4, background:'#101010' };

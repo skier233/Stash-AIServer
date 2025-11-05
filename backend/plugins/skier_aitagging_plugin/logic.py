@@ -26,6 +26,7 @@ from stash_ai_server.services.base import RemoteServiceBase
 from stash_ai_server.tasks.helpers import spawn_chunked_tasks, task_handler
 from stash_ai_server.tasks.models import TaskPriority
 from stash_ai_server.utils.stash_api import stash_api
+from stash_ai_server.utils.path_mutation import mutate_path_for_plugin
 from .tag_config import get_tag_configuration
 from stash_ai_server.db.ai_results_store import (
     get_image_model_history_async,
@@ -122,8 +123,6 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
 
     #TODO: handle paths that are inside zip files and extract them to a temp location
 
-    #TODO: path mutation
-
     if not image_paths:
         return {"message": "No valid images to process"}
 
@@ -154,7 +153,7 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
         )
 
         if should_reprocess:
-            remote_targets[image_id] = path
+            remote_targets[image_id] = mutate_path_for_plugin(path, service.plugin_name)
         else:
             skipped_images.append(image_id)
 
@@ -243,9 +242,10 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Invalid scene_id: {scene_id_raw}") from exc
 
-    scene_path, scene_tags = stash_api.get_scene_path_and_tags(scene_id)
-
     service = params["service"]
+
+    scene_path, scene_tags = stash_api.get_scene_path_and_tags(scene_id)
+    remote_scene_path = mutate_path_for_plugin(scene_path or "", service.plugin_name)
 
     # Retrieve the latest stored run so we can determine future skip conditions.
     historical_models = await get_scene_model_history_async(service=service.name, scene_id=scene_id)
@@ -255,8 +255,6 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
             scene_id,
             [m.model_name for m in historical_models],
         )
-
-    #TODO: path mutation logic
 
     await update_model_cache(service)
 
@@ -302,7 +300,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
     )
     result = await call_scene_api(
         service,
-        scene_path,
+        remote_scene_path,
         SCENE_FRAME_INTERVAL,
         vr_scene,
         threshold=SCENE_THRESHOLD,
