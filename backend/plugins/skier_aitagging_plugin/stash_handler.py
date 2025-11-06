@@ -8,16 +8,22 @@ AI_Base_Tag_Id = stash_api.fetch_tag_id(AI_Base_Tag_Name, create_if_missing=True
 
 AI_Error_Tag_Name = "AI_Errored"
 
+AI_Tagged_Tag_Name = "AI_Tagged"
+
 VR_TAG_NAME = stash_api.stash_interface.get_configuration()["ui"].get("vrTag", None)
 VR_Tag_Id = stash_api.fetch_tag_id(VR_TAG_NAME) if VR_TAG_NAME else None
 AI_Error_Tag_Id = stash_api.fetch_tag_id(AI_Error_Tag_Name, parent_id=AI_Base_Tag_Id, create_if_missing=True)
+AI_Tagged_Tag_Id = stash_api.fetch_tag_id(AI_Tagged_Tag_Name, create_if_missing=True)
 
 #TODO: could be nice to not have to rely on the parent logic
 AI_tags_cache = stash_api.get_tags_with_parent(parent_tag_id=AI_Base_Tag_Id)
 
 AI_tags_cache[AI_Error_Tag_Name] = AI_Error_Tag_Id
 
-# TODO: Get VR tag id
+def has_ai_tagged(tags: list[int]) -> bool:
+    """Check if the scene has the AI_Tagged tag."""
+    global AI_Tagged_Tag_Id
+    return AI_Tagged_Tag_Id in tags if AI_Tagged_Tag_Id else False
 
 def remove_ai_tags_from_images(image_ids: list[int]) -> None:
     """Remove all AI tags from the given images."""

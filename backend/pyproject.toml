@@ -21,7 +21,7 @@ dependencies = [
   "pydantic==2.12.4",
   "python-dotenv==1.2.1",
   "httpx==0.28.1",
-  "stashapp-tools==0.2.59",
+  "stashapi==0.1.2",
   "PyYAML==6.0.3",
   "packaging==25.0"
 ]

@@ -8,6 +8,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Dict, Iterable, Tuple
 
+from .stash_handler import resolve_ai_tag_reference
+
 _log = logging.getLogger(__name__)
 
 _CONFIG_FILENAME = "tag_settings.csv"
@@ -212,6 +214,13 @@ def get_tag_configuration(*, reload: bool = False) -> TagConfiguration:
                 _CONFIG_CACHE = TagConfiguration.load()
     return _CONFIG_CACHE
 
+
+def resolve_backend_to_stash_tag_id(backend_label: str, tag_config, category: str | None) -> int | None:
+    settings = tag_config.resolve(backend_label)
+    stash_name = settings.stash_name or backend_label
+    if not stash_name:
+        return None
+    return resolve_ai_tag_reference(stash_name)
 
 def _parse_row(row_number: int, raw_row: dict[str, str]) -> tuple[str | None, TagSettingsOverride | None]:
     normalized = {}

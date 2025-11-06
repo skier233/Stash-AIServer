@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Sequence
@@ -9,6 +10,7 @@ from stash_ai_server.tasks.models import TaskRecord
 from .models import AIModelInfo
 from .stash_handler import (
     add_error_tag_to_images,
+    has_ai_tagged,
     is_vr_scene,
     resolve_ai_tag_reference,
 )
@@ -27,7 +29,8 @@ from stash_ai_server.tasks.helpers import spawn_chunked_tasks, task_handler
 from stash_ai_server.tasks.models import TaskPriority
 from stash_ai_server.utils.stash_api import stash_api
 from stash_ai_server.utils.path_mutation import mutate_path_for_plugin
-from .tag_config import get_tag_configuration
+from .legacy_ai_video_result import LegacyAIVideoResult
+from .tag_config import get_tag_configuration, resolve_backend_to_stash_tag_id
 from stash_ai_server.db.ai_results_store import (
     get_image_model_history_async,
     get_image_tag_ids_async,
@@ -235,8 +238,9 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
 @task_handler(id="skier.ai_tag.scene.task")
 async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecord) -> dict:
     scene_id_raw = ctx.entity_id
+    _log.debug("ASYNC debug scene id: %s", scene_id_raw)
     if scene_id_raw is None:
-        raise ValueError("Context missing scene entity_id")
+        raise ValueError("Context missing scene entity_id. ctx: %s" % ctx)
     try:
         scene_id = int(scene_id_raw)
     except (TypeError, ValueError) as exc:
@@ -244,11 +248,22 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
 
     service = params["service"]
 
-    scene_path, scene_tags = stash_api.get_scene_path_and_tags(scene_id)
+    # The Stash API client is synchronous, so run it in a worker to avoid blocking the event loop.
+    scene_path, scene_tags = await asyncio.to_thread(stash_api.get_scene_path_and_tags, scene_id)
     remote_scene_path = mutate_path_for_plugin(scene_path or "", service.plugin_name)
 
     # Retrieve the latest stored run so we can determine future skip conditions.
     historical_models = await get_scene_model_history_async(service=service.name, scene_id=scene_id)
+    legacy_imported = False
+    if has_ai_tagged(scene_tags) and not historical_models:
+        legacy_result = await LegacyAIVideoResult.try_load_from_scene_path(scene_path)
+        if legacy_result is None:
+            _log.info("No legacy AI json found for scene_id=%s", scene_id)
+        else:
+            legacy_imported = await legacy_result.save_to_db(scene_id=scene_id, service=service)
+            if legacy_imported:
+                historical_models = await get_scene_model_history_async(service=service.name, scene_id=scene_id)
+
     if historical_models:
         _log.debug(
             "Scene %s historical models: %s",
@@ -353,17 +368,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
 
     run_id: int | None = None
     try:
-        # Create a resolve function that uses tag config to map backend tags to stash tags
-        
         tag_config = get_tag_configuration()
-        
-        def resolve_backend_to_stash_tag_id(backend_label: str, category: str | None) -> int | None:
-            """Resolve backend tag name to Stash tag ID using configuration."""
-            settings = tag_config.resolve(backend_label)
-            stash_name = settings.stash_name or backend_label
-            if not stash_name:
-                return None
-            return resolve_ai_tag_reference(stash_name)
         
         run_id = await store_scene_run_async(
             service=service.name,
@@ -376,7 +381,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
             },
             result_payload=result.model_dump(exclude_none=True),
             requested_models=result_models_payload,
-            resolve_reference=resolve_backend_to_stash_tag_id,
+            resolve_reference=lambda backend_label, category: resolve_backend_to_stash_tag_id(backend_label, tag_config, category),
         )
     except Exception:
         _log.exception("Failed to persist AI scene run for scene_id=%s", scene_id)
@@ -421,6 +426,8 @@ async def tag_scenes(service: RemoteServiceBase, ctx: ContextInput, params: dict
         # TODO: standardize empty responses
         return {"message": "No scenes to process"}
     if len(selected_items) == 1:
+        if not ctx.entity_id:
+            ctx.entity_id = str(selected_items[0])
         await tag_scene_task(ctx, params, task_record)
         # TODO: Standardize output
         return {"message": "Single scene processed directly"}

@@ -7,11 +7,10 @@ from stash_ai_server.actions.registry import registry as action_registry, collec
 from stash_ai_server.db.session import SessionLocal
 from stash_ai_server.models.plugin import PluginSetting
 
-# Optional task manager: not required in minimal setups
 try:
-    from stash_ai_server.tasks.manager import manager as task_manager
+    from stash_ai_server.tasks.manager import manager as _initial_task_manager
 except Exception:
-    task_manager = None
+    _initial_task_manager = None
 
 
 _log = logging.getLogger(__name__)
@@ -80,6 +79,8 @@ class ServiceBase:
 class ServiceRegistry:
     def __init__(self):
         self._services: Dict[str, ServiceBase] = {}
+        self._task_manager = _initial_task_manager
+        self._pending_task_configs: set[str] = set()
 
     def register(self, service: ServiceBase):
         if service.name in self._services:
@@ -89,19 +90,57 @@ class ServiceRegistry:
         for definition, handler in collect_actions(service):
             definition.service = service.name
             action_registry.register(definition, handler)
-        # Configure task manager dynamically if available
-        try:
-            if task_manager is not None:
-                task_manager.configure_service(service.name, service.max_concurrency, service.server_url)
-        except Exception:
-            # Task system optional at this stage
-            pass
+        self._ensure_task_manager()
+        self._configure_service(service)
 
     def list(self) -> List[ServiceBase]:
         return list(self._services.values())
 
     def get(self, name: str) -> ServiceBase | None:
         return self._services.get(name)
+
+    def set_task_manager(self, manager) -> None:
+        if manager is None:
+            return
+        self._task_manager = manager
+        self._configure_pending_services()
+
+    def _ensure_task_manager(self):
+        if self._task_manager is not None:
+            return
+        try:
+            from stash_ai_server.tasks.manager import manager as _task_manager
+        except Exception:
+            _task_manager = None
+        if _task_manager is not None:
+            self.set_task_manager(_task_manager)
+
+    def _configure_service(self, service: ServiceBase) -> None:
+        manager = self._task_manager
+        if manager is None:
+            self._pending_task_configs.add(service.name)
+            return
+        try:
+            manager.configure_service(service.name, service.max_concurrency, service.server_url)
+            self._pending_task_configs.discard(service.name)
+        except Exception:
+            # Keep the service pending so a future attempt can retry once dependencies settle.
+            self._pending_task_configs.add(service.name)
+
+    def _configure_pending_services(self) -> None:
+        if self._task_manager is None:
+            return
+        for name in list(self._pending_task_configs):
+            service = self._services.get(name)
+            if service is None:
+                self._pending_task_configs.discard(name)
+                continue
+            try:
+                self._task_manager.configure_service(service.name, service.max_concurrency, service.server_url)
+                self._pending_task_configs.discard(name)
+            except Exception:
+                # Leave in pending for the next opportunity.
+                pass
 
 
 services = ServiceRegistry()

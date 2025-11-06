@@ -378,3 +378,14 @@ class TaskManager:
         return False
 
 manager = TaskManager()
+
+try:
+    from stash_ai_server.services.registry import services as _services_registry
+except Exception:
+    _services_registry = None
+
+if _services_registry is not None:
+    try:
+        _services_registry.set_task_manager(manager)
+    except Exception:
+        pass
