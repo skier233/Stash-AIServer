@@ -1,6 +1,7 @@
 
 import logging
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from stash_ai_server.actions.models import ContextInput
@@ -43,8 +44,6 @@ def resolve_image_tag_id_from_label(label: str, config) -> int | None:
         _log.warning("Failed to resolve image tag label '%s': empty or invalid", label)
         return None
     settings = config.resolve(normalized)
-    if not settings.image_enabled:
-        return None
     stash_name = settings.stash_name or normalized
     if not stash_name:
         _log.warning("Failed to resolve image tag label '%s': no stash name found", label)
@@ -73,3 +72,30 @@ def filter_enabled_tag_ids(tag_ids: Sequence[int], config) -> list[int]:
         applied.add(candidate)
         filtered.append(candidate)
     return filtered
+
+
+def collect_image_tag_records(tags_by_category: Mapping[str | None, Sequence[str]], config) -> dict[str | None, list[ImageTagRecord]]:
+    """Build unique per-category image tag records while preserving raw labels."""
+
+    records: dict[str | None, list[int]] = {}
+    for category_key, labels in tags_by_category.items():
+        normalized_category = (category_key or "").strip() or None
+        bucket = records.setdefault(normalized_category, [])
+        for raw_label in labels or []:
+            normalized_label = (raw_label or "").strip()
+            if not normalized_label:
+                continue
+            candidate_id = resolve_image_tag_id_from_label(normalized_label, config)
+            if candidate_id is not None:
+                bucket.append(candidate_id)
+            else:
+                lowered = normalized_label.lower()
+                if any(
+                    existing.tag_id is None and (existing.label or "").lower() == lowered
+                    for existing in bucket
+                ):
+                    continue
+            bucket.append(candidate_id)
+
+    # Drop empty buckets to keep downstream storage tidy
+    return {category: entries for category, entries in records.items() if entries}

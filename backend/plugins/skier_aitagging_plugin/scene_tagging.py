@@ -81,11 +81,8 @@ async def apply_scene_tags(
     # Avoid removing tags we plan to add again.
     tags_to_remove.difference_update(tags_to_add)
 
-    applied = tags_to_add
-    removed = tags_to_remove
-
-    removed_ids = list(removed) if removed else []
-    applied_ids = list(applied) if applied else []
+    removed_ids = list(tags_to_remove) if tags_to_remove else []
+    applied_ids = list(tags_to_add) if tags_to_add else []
 
     if removed_ids:
         try:

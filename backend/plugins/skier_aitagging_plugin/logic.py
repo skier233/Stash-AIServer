@@ -16,10 +16,10 @@ from .stash_handler import (
 )
 from .http_handler import call_images_api, call_scene_api, get_active_scene_models
 from .utils import (
+    collect_image_tag_records,
     extract_tags_from_response,
     filter_enabled_tag_ids,
     get_selected_items,
-    resolve_image_tag_id_from_label
 )
 from .reprocessing import determine_model_plan
 from .marker_handling import apply_scene_markers
@@ -184,18 +184,7 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
                     continue
 
                 tags_by_category = extract_tags_from_response(payload if isinstance(payload, dict) else {})
-                resolved_records: dict[str | None, list[int]] = {}
-                for category_key, labels in tags_by_category.items():
-                    normalized_category: str | None
-                    normalized = category_key.strip()
-                    normalized_category = normalized or None
-                    bucket = resolved_records.setdefault(normalized_category, [])
-                    for label in labels:
-                        candidate = resolve_image_tag_id_from_label(label, config)
-                        if candidate is None:
-                            continue
-                        if candidate not in bucket:
-                            bucket.append(candidate)
+                resolved_records = collect_image_tag_records(tags_by_category, config)
                 try:
                     await store_image_run_async(
                         service=service.name,
@@ -224,8 +213,10 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
             continue
 
         try:
-            stash_api.remove_tags_from_images([image_id], stored_tag_ids)
-            stash_api.add_tags_to_images([image_id], normalized_ids)
+            if stored_tag_ids:
+                stash_api.remove_tags_from_images([image_id], stored_tag_ids)
+            if normalized_ids:
+                stash_api.add_tags_to_images([image_id], normalized_ids)
         except Exception:
             _log.exception("Failed to refresh tags for image_id=%s", image_id)
 
