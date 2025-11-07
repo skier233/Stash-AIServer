@@ -210,7 +210,7 @@ def _merge_contiguous(
 
     merged: list[TagTimeFrame] = []
     current_start = spans[0].start
-    current_end = spans[0].end if spans[0].end is not None else spans[0].start
+    current_end = spans[0].end if spans[0].end is not None else spans[0].start + frame_interval
     confidences = _confidence_list(spans[0].confidence)
 
     for frame in spans[1:]:

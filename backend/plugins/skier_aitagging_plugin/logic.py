@@ -58,6 +58,7 @@ async def _apply_scene_markers_and_tags(
     *,
     scene_id: int,
     service_name: str,
+    scene_duration: float,
     existing_scene_tag_ids: Sequence[int] | None,
 ):
     """Reload stored markers and tags for a scene and provide basic counts."""
@@ -69,6 +70,7 @@ async def _apply_scene_markers_and_tags(
     tag_changes = await apply_scene_tags(
         scene_id=scene_id,
         service_name=service_name,
+        scene_duration=scene_duration,
         existing_scene_tag_ids=existing_scene_tag_ids,
     )
     marker_count = sum(len(spans) for spans in markers_by_tag.values())
@@ -240,7 +242,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
     service = params["service"]
 
     # The Stash API client is synchronous, so run it in a worker to avoid blocking the event loop.
-    scene_path, scene_tags = await asyncio.to_thread(stash_api.get_scene_path_and_tags, scene_id)
+    scene_path, scene_tags, scene_duration = await asyncio.to_thread(stash_api.get_scene_path_and_tags_and_duration, scene_id)
     remote_scene_path = mutate_path_for_plugin(scene_path or "", service.plugin_name)
 
     # Retrieve the latest stored run so we can determine future skip conditions.
@@ -282,6 +284,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
         ) = await _apply_scene_markers_and_tags(
             scene_id=scene_id,
             service_name=service.name,
+            scene_duration=scene_duration,
             existing_scene_tag_ids=scene_tags,
         )
 
@@ -326,6 +329,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
         ) = await _apply_scene_markers_and_tags(
             scene_id=scene_id,
             service_name=service.name,
+            scene_duration=scene_duration,
             existing_scene_tag_ids=scene_tags,
         )
         summary_parts = ["Remote tagging service returned no data"]
@@ -394,6 +398,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
     ) = await _apply_scene_markers_and_tags(
         scene_id=scene_id,
         service_name=service.name,
+        scene_duration=scene_duration,
         existing_scene_tag_ids=scene_tags,
     )
     summary_parts = [f"Processed scene with {marker_count} marker span(s)"]

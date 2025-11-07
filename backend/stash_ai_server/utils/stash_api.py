@@ -95,13 +95,14 @@ class StashAPI:
 
     # Scenes
 
-    def get_scene_path_and_tags(self, scene_id: int):
-        scene_result = self.stash_interface.find_scene(id=scene_id, fragment="files {path} tags {id}")
+    def get_scene_path_and_tags_and_duration(self, scene_id: int):
+        scene_result = self.stash_interface.find_scene(id=scene_id, fragment="files {path duration} tags {id}")
         if not scene_result or 'files' not in scene_result or not scene_result['files']:
-            return None, []
+            return None, [], None
         path = scene_result['files'][0]['path']
+        duration = scene_result['files'][0].get('duration')
         tags = [tag['id'] for tag in scene_result.get('tags', []) if 'id' in tag]
-        return path, tags
+        return path, tags, duration
 
     def add_tags_to_scene(self, scene_id: int, tag_ids: list[int]) -> None:
         if not tag_ids:

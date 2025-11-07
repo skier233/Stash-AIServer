@@ -6,7 +6,7 @@ import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Lock
-from typing import Dict, Iterable, Tuple
+from typing import Dict, Iterable, Tuple, Literal
 
 from .stash_handler import resolve_ai_tag_reference
 
@@ -42,13 +42,26 @@ def _get_tag_suffix() -> str:
 
 
 @dataclass(slots=True)
+class SceneTagDurationRequirement:
+    unit: Literal["seconds", "percent"]
+    value: float
+
+    def as_seconds(self, scene_duration: float | None) -> float | None:
+        if self.unit == "seconds":
+            return self.value
+        if scene_duration is None or scene_duration <= 0:
+            return None
+        return (self.value / 100.0) * scene_duration
+
+
+@dataclass(slots=True)
 class TagSettings:
     tag_name: str
     stash_name: str | None
     markers_enabled: bool
     scene_tag_enabled: bool
     image_enabled: bool
-    required_scene_tag_duration: float | None
+    required_scene_tag_duration: SceneTagDurationRequirement | None
     min_marker_duration: float | None
     max_gap: float | None
     merge_strategy: str
@@ -61,7 +74,7 @@ class TagSettingsOverride:
     markers_enabled: bool | None = None
     scene_tag_enabled: bool | None = None
     image_enabled: bool | None = None
-    required_scene_tag_duration: float | None = None
+    required_scene_tag_duration: SceneTagDurationRequirement | None = None
     min_marker_duration: float | None = None
     max_gap: float | None = None
     merge_strategy: str | None = None
@@ -242,7 +255,7 @@ def _parse_row(row_number: int, raw_row: dict[str, str]) -> tuple[str | None, Ta
     override.markers_enabled = _parse_bool(normalized.get("markersenabled"))
     override.scene_tag_enabled = _parse_bool(normalized.get("scenetagenabled"))
     override.image_enabled = _parse_bool(normalized.get("imageenabled"))
-    override.required_scene_tag_duration = _parse_float(normalized.get("requiredscenetagduration"))
+    override.required_scene_tag_duration = _parse_required_scene_duration(normalized.get("requiredscenetagduration"))
     override.min_marker_duration = _parse_float(normalized.get("minmarkerduration"))
     override.max_gap = _parse_float(normalized.get("maxgap"))
     override.merge_strategy = _normalize_string(normalized.get("mergestrategy"))
@@ -325,7 +338,57 @@ def _parse_float(value: object) -> float | None:
         return None
 
 
+def _parse_required_scene_duration(value: object) -> SceneTagDurationRequirement | None:
+    if value is None:
+        return None
+    if isinstance(value, SceneTagDurationRequirement):
+        return value
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        if numeric < 0:
+            _log.warning("Negative required scene tag duration '%s' will be treated as zero", value)
+            numeric = 0.0
+        return SceneTagDurationRequirement(unit="seconds", value=numeric)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        lowered = text.lower()
+        if lowered.endswith("s"):
+            numeric_text = lowered[:-1].strip()
+            try:
+                numeric = float(numeric_text)
+            except (TypeError, ValueError):
+                _log.warning("Unable to parse seconds duration '%s' in tag configuration", value)
+                return None
+            if numeric < 0:
+                _log.warning("Negative required scene tag duration '%s' will be treated as zero", value)
+                numeric = 0.0
+            return SceneTagDurationRequirement(unit="seconds", value=numeric)
+        if lowered.endswith("%"):
+            numeric_text = lowered[:-1].strip()
+            try:
+                numeric = float(numeric_text)
+            except (TypeError, ValueError):
+                _log.warning("Unable to parse percentage duration '%s' in tag configuration", value)
+                return None
+            return SceneTagDurationRequirement(unit="percent", value=numeric)
+        try:
+            numeric = float(text)
+        except (TypeError, ValueError):
+            _log.warning("Unable to parse required scene tag duration '%s' in tag configuration", value)
+            return None
+        if numeric < 0:
+            _log.warning("Negative required scene tag duration '%s' will be treated as zero", value)
+            numeric = 0.0
+        return SceneTagDurationRequirement(unit="seconds", value=numeric)
+
+    _log.warning("Unsupported required scene tag duration value '%s' in tag configuration", value)
+    return None
+
+
 __all__ = [
+    "SceneTagDurationRequirement",
     "TagSettings",
     "TagSettingsOverride",
     "TagConfiguration",

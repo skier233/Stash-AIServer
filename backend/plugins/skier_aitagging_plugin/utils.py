@@ -74,7 +74,7 @@ def filter_enabled_tag_ids(tag_ids: Sequence[int], config) -> list[int]:
     return filtered
 
 
-def collect_image_tag_records(tags_by_category: Mapping[str | None, Sequence[str]], config) -> dict[str | None, list[ImageTagRecord]]:
+def collect_image_tag_records(tags_by_category: Mapping[str | None, Sequence[str]], config) -> dict[str | None, list[int]]:
     """Build unique per-category image tag records while preserving raw labels."""
 
     records: dict[str | None, list[int]] = {}

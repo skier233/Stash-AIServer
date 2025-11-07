@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Sequence
 
@@ -7,20 +8,18 @@ from stash_ai_server.db.ai_results_store import get_scene_tag_totals_async
 from stash_ai_server.utils.stash_api import stash_api
 
 from .stash_handler import AI_tags_cache
-from .tag_config import TagSettings, get_tag_configuration
+from .tag_config import SceneTagDurationRequirement, TagSettings, get_tag_configuration
 
 _log = logging.getLogger(__name__)
 
 
-def _required_duration(settings: TagSettings) -> float:
-    threshold = settings.required_scene_tag_duration
-    return float(threshold) if threshold is not None else 0.0
 
 #TODO: look at the logic of passing in existing scene tags as its kinda weird
 async def apply_scene_tags(
     *,
     scene_id: int,
     service_name: str,
+    scene_duration: float,
     existing_scene_tag_ids: Sequence[int] | None = None,
 ) -> dict[str, list[int]]:
     """Apply scene-level AI tags based on stored aggregates.
@@ -59,7 +58,14 @@ async def apply_scene_tags(
             AI_tags_cache[tag_name] = tag_id
 
         settings = config.resolve(tag_name)
-        threshold = _required_duration(settings)
+        threshold = settings.required_scene_tag_duration.as_seconds(scene_duration)
+        if threshold is None:
+            _log.warning(
+                "Skipping percentage-based scene tag '%s' for scene_id=%s due to missing duration",
+                tag_name,
+                scene_id,
+            )
+            return
 
         if not settings.scene_tag_enabled:
             tags_to_remove.add(tag_id)
