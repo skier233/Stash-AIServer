@@ -233,14 +233,33 @@ const PluginSettings = () => {
   }, [backendBase]);
 
   const savePluginSetting = React.useCallback(async (pluginName: string, key: string, value: any) => {
+    let previousValue: any;
+    let capturedPrev = false;
+    setPluginSettings((p:any) => {
+      const list = p[pluginName] || [];
+      const cur = list.map((f:any) => {
+        if (f.key !== key) return f;
+        if (!capturedPrev) {
+          previousValue = f.value === undefined ? f.default : f.value;
+          capturedPrev = true;
+        }
+        return {...f, value};
+      });
+      return {...p, [pluginName]: cur};
+    });
     try {
       await jfetch(`${backendBase}/api/v1/plugins/settings/${pluginName}/${encodeURIComponent(key)}`, { method:'PUT', body: JSON.stringify({ value }) });
-      // update local copy
-      setPluginSettings((p:any) => {
-        const cur = (p[pluginName] || []).map((f:any) => f.key === key ? ({...f, value}) : f);
-        return {...p, [pluginName]: cur};
-      });
-    } catch(e:any) { setError(e.message); }
+      return true;
+    } catch(e:any) {
+      setError(e.message);
+      if (capturedPrev) {
+        setPluginSettings((p:any) => {
+          const cur = (p[pluginName] || []).map((f:any) => f.key === key ? ({...f, value: previousValue}) : f);
+          return {...p, [pluginName]: cur};
+        });
+      }
+      return false;
+    }
   }, [backendBase]);
 
   const retryBackendProbe = React.useCallback(() => {
@@ -618,10 +637,10 @@ const PluginSettings = () => {
   function FieldRenderer({f, pluginName}: {f:any, pluginName:string}) {
     const t = f.type || 'string';
     const label = f.label || f.key;
-    const val = f.value === undefined ? f.default : f.value;
+    const savedValue = f.value === undefined ? f.default : f.value;
     if (t === 'path_map') {
       const containerStyle: React.CSSProperties = { position:'relative', padding:'4px 4px 6px', border:'1px solid #2a2a2a', borderRadius:4, background:'#101010' };
-      const storedNormalized = normalizePathMappingList(val);
+      const storedNormalized = normalizePathMappingList(savedValue);
       const defaultNormalized = normalizePathMappingList(f.default);
       const changedMap = JSON.stringify(storedNormalized) !== JSON.stringify(defaultNormalized);
       return (
@@ -630,7 +649,7 @@ const PluginSettings = () => {
             {label} {changedMap && <span style={{color:'#ffa657', fontSize:10}}>•</span>}
           </div>
           <PathMapEditor
-            value={val}
+            value={savedValue}
             defaultValue={f.default}
             onChange={async (next) => { await savePluginSetting(pluginName, f.key, next); }}
             onReset={async () => { await savePluginSetting(pluginName, f.key, null); }}
@@ -638,42 +657,159 @@ const PluginSettings = () => {
         </div>
       );
     }
-    const changed = val !== undefined && val !== null && f.default !== undefined && val !== f.default;
+    const changed = savedValue !== undefined && savedValue !== null && f.default !== undefined && savedValue !== f.default;
     const inputStyle: React.CSSProperties = { padding:6, background:'#111', color:'#eee', border:'1px solid #333', minWidth:120 };
     const wrap: React.CSSProperties = { position:'relative', padding:'4px 4px 6px', border:'1px solid #2a2a2a', borderRadius:4, background:'#101010' };
-    const resetBtn = (changed ? <button style={{position:'absolute', top:2, right:4, fontSize:9, padding:'1px 4px', cursor:'pointer'}} onClick={()=>savePluginSetting(pluginName, f.key, null)}>Reset</button> : null);
+    const resetStyle: React.CSSProperties = { position:'absolute', top:2, right:4, fontSize:9, padding:'1px 4px', cursor:'pointer' };
     const labelEl = <span>{label} {changed && <span style={{color:'#ffa657', fontSize:10}}>•</span>}</span>;
+
     if (t === 'boolean') {
       return <div style={wrap}><label style={{fontSize:12, display:'flex', alignItems:'center', gap:8}}>
-        <input type="checkbox" checked={!!val} onChange={e=>savePluginSetting(pluginName, f.key, (e.target as any).checked)} /> {labelEl}
-      </label>{resetBtn}</div>;
+        <input type="checkbox" checked={!!savedValue} onChange={e=>savePluginSetting(pluginName, f.key, (e.target as any).checked)} /> {labelEl}
+      </label>{changed ? <button style={resetStyle} onClick={()=>savePluginSetting(pluginName, f.key, null)}>Reset</button> : null}</div>;
     }
+
     if (t === 'number') {
-      return <div style={wrap}><label style={{fontSize:12}}>{labelEl}<br/>
-        <input style={inputStyle} type="number" value={val ?? ''} onChange={e=>savePluginSetting(pluginName, f.key, Number((e.target as any).value))} />
-      </label>{resetBtn}</div>;
+      const [draft, setDraft] = React.useState(() => (savedValue === undefined || savedValue === null ? '' : String(savedValue)));
+      const [dirty, setDirty] = React.useState(false);
+      React.useEffect(() => {
+        if (!dirty) {
+          setDraft(savedValue === undefined || savedValue === null ? '' : String(savedValue));
+        }
+      }, [savedValue, dirty]);
+
+      const commit = React.useCallback(async () => {
+        if (!dirty) return;
+        const normalized = (draft ?? '').toString().trim();
+        const payload = normalized === '' ? null : Number(normalized);
+        if (payload !== null && Number.isNaN(payload)) {
+          return;
+        }
+        const ok = await savePluginSetting(pluginName, f.key, payload);
+        if (ok) {
+          setDirty(false);
+        }
+      }, [dirty, draft, pluginName, f.key]);
+
+      const handleReset = React.useCallback(async () => {
+        const prev = draft;
+        setDraft('');
+        setDirty(false);
+        const ok = await savePluginSetting(pluginName, f.key, null);
+        if (!ok) {
+          setDraft(prev);
+          setDirty(true);
+        }
+      }, [draft, pluginName, f.key]);
+
+      const handleChange = (event: any) => {
+        setDraft(event.target.value);
+        setDirty(true);
+      };
+
+      const handleKeyDown = (event: any) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          (event.target as HTMLInputElement).blur();
+        }
+      };
+
+      return (
+        <div style={wrap}>
+          <label style={{fontSize:12}}>{labelEl}<br/>
+            <input
+              style={inputStyle}
+              type="number"
+              value={draft}
+              onChange={handleChange}
+              onBlur={commit}
+              onKeyDown={handleKeyDown}
+            />
+          </label>
+          {changed ? <button style={resetStyle} onClick={handleReset}>Reset</button> : null}
+        </div>
+      );
     }
+
     if (t === 'select' || (f.options && Array.isArray(f.options))) {
-      return <div style={wrap}><label style={{fontSize:12}}>{labelEl}<br/>
-        <select style={inputStyle} value={val ?? ''} onChange={e=>savePluginSetting(pluginName, f.key, (e.target as any).value)}>
-          <option value="">(unset)</option>
-          {(f.options||[]).map((o:any,i:number)=><option key={i} value={o}>{typeof o === 'object' ? (o.value ?? o.key ?? JSON.stringify(o)) : String(o)}</option>)}
-        </select>
-      </label>{resetBtn}</div>;
+      const handleReset = async () => {
+        await savePluginSetting(pluginName, f.key, null);
+      };
+      return (
+        <div style={wrap}>
+          <label style={{fontSize:12}}>{labelEl}<br/>
+            <select style={inputStyle} value={savedValue ?? ''} onChange={e=>savePluginSetting(pluginName, f.key, (e.target as any).value)}>
+              <option value="">(unset)</option>
+              {(f.options||[]).map((o:any,i:number)=><option key={i} value={o}>{typeof o === 'object' ? (o.value ?? o.key ?? JSON.stringify(o)) : String(o)}</option>)}
+            </select>
+          </label>
+          {changed ? <button style={resetStyle} onClick={handleReset}>Reset</button> : null}
+        </div>
+      );
     }
-    // default string
-    return <div style={wrap}><label style={{fontSize:12}}>{labelEl}<br/>
-      <input style={inputStyle} value={val ?? ''} onChange={e=>savePluginSetting(pluginName, f.key, (e.target as any).value)} />
-    </label>{resetBtn}</div>;
+
+    const [draft, setDraft] = React.useState(() => (savedValue === undefined || savedValue === null ? '' : String(savedValue)));
+    const [dirty, setDirty] = React.useState(false);
+    React.useEffect(() => {
+      if (!dirty) {
+        setDraft(savedValue === undefined || savedValue === null ? '' : String(savedValue));
+      }
+    }, [savedValue, dirty]);
+
+    const commit = React.useCallback(async () => {
+      if (!dirty) return;
+      const ok = await savePluginSetting(pluginName, f.key, draft);
+      if (ok) {
+        setDirty(false);
+      }
+    }, [dirty, draft, pluginName, f.key]);
+
+    const handleReset = React.useCallback(async () => {
+      const prev = draft;
+      setDraft('');
+      setDirty(false);
+      const ok = await savePluginSetting(pluginName, f.key, null);
+      if (!ok) {
+        setDraft(prev);
+        setDirty(true);
+      }
+    }, [draft, pluginName, f.key]);
+
+    const handleChange = (event: any) => {
+      setDraft(event.target.value ?? '');
+      setDirty(true);
+    };
+
+    const handleKeyDown = (event: any) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        (event.target as HTMLInputElement).blur();
+      }
+    };
+
+    return (
+      <div style={wrap}>
+        <label style={{fontSize:12}}>{labelEl}<br/>
+          <input
+            style={inputStyle}
+            value={draft}
+            onChange={handleChange}
+            onBlur={commit}
+            onKeyDown={handleKeyDown}
+          />
+        </label>
+        {changed ? <button style={resetStyle} onClick={handleReset}>Reset</button> : null}
+      </div>
+    );
   }
 
   function SystemFieldRenderer({f}:{f:any}) {
     const t = f.type || 'string';
     const label = f.label || f.key;
-    const val = f.value === undefined ? f.default : f.value;
+    const savedValue = f.value === undefined ? f.default : f.value;
     if (t === 'path_map') {
       const containerStyle: React.CSSProperties = { position:'relative', padding:'4px 4px 6px', border:'1px solid #2a2a2a', borderRadius:4, background:'#101010' };
-      const storedNormalized = normalizePathMappingList(val);
+      const storedNormalized = normalizePathMappingList(savedValue);
       const defaultNormalized = normalizePathMappingList(f.default);
       const changedMap = JSON.stringify(storedNormalized) !== JSON.stringify(defaultNormalized);
       return (
@@ -682,7 +818,7 @@ const PluginSettings = () => {
             {label} {changedMap && <span style={{color:'#ffa657', fontSize:10}}>•</span>}
           </div>
           <PathMapEditor
-            value={val}
+            value={savedValue}
             defaultValue={f.default}
             onChange={async (next) => { await saveSystemSetting(f.key, next); }}
             onReset={async () => { await saveSystemSetting(f.key, null); }}
@@ -690,20 +826,171 @@ const PluginSettings = () => {
         </div>
       );
     }
-    const changed = val !== undefined && val !== null && f.default !== undefined && val !== f.default;
+    const changed = savedValue !== undefined && savedValue !== null && f.default !== undefined && savedValue !== f.default;
     const inputStyle: React.CSSProperties = { padding:6, background:'#111', color:'#eee', border:'1px solid #333', minWidth:140 };
     const wrap: React.CSSProperties = { position:'relative', padding:'4px 4px 6px', border:'1px solid #2a2a2a', borderRadius:4, background:'#101010' };
-    const resetBtn = (changed ? <button style={{position:'absolute', top:2, right:4, fontSize:9, padding:'1px 4px', cursor:'pointer'}} onClick={()=>saveSystemSetting(f.key, null)}>Reset</button> : null);
+    const resetStyle: React.CSSProperties = { position:'absolute', top:2, right:4, fontSize:9, padding:'1px 4px', cursor:'pointer' };
     const labelEl = <span>{label} {changed && <span style={{color:'#ffa657', fontSize:10}}>•</span>}</span>;
-    if (t === 'boolean') return <div style={wrap}><label style={{fontSize:12, display:'flex', alignItems:'center', gap:8}}><input type="checkbox" checked={!!val} onChange={e=>saveSystemSetting(f.key, (e.target as any).checked)} /> {labelEl}</label>{resetBtn}</div>;
-    if (t === 'number') return <div style={wrap}><label style={{fontSize:12}}>{labelEl}<br/><input style={inputStyle} type="number" value={val ?? ''} onChange={e=>saveSystemSetting(f.key, Number((e.target as any).value))} /></label>{resetBtn}</div>;
-    if (t === 'select' || (f.options && Array.isArray(f.options))) return <div style={wrap}><label style={{fontSize:12}}>{labelEl}<br/><select style={inputStyle} value={val ?? ''} onChange={e=>saveSystemSetting(f.key, (e.target as any).value)}><option value="">(unset)</option>{(f.options||[]).map((o:any,i:number)=><option key={i} value={o}>{typeof o === 'object' ? (o.value ?? o.key ?? JSON.stringify(o)) : String(o)}</option>)}</select></label>{resetBtn}</div>;
-    return <div style={wrap}><label style={{fontSize:12}}>{labelEl}<br/><input style={inputStyle} value={val ?? ''} onChange={e=>saveSystemSetting(f.key, (e.target as any).value)} /></label>{resetBtn}</div>;
+
+    if (t === 'boolean') {
+      return <div style={wrap}><label style={{fontSize:12, display:'flex', alignItems:'center', gap:8}}><input type="checkbox" checked={!!savedValue} onChange={e=>saveSystemSetting(f.key, (e.target as any).checked)} /> {labelEl}</label>{changed ? <button style={resetStyle} onClick={()=>saveSystemSetting(f.key, null)}>Reset</button> : null}</div>;
+    }
+
+    if (t === 'number') {
+      const [draft, setDraft] = React.useState(() => (savedValue === undefined || savedValue === null ? '' : String(savedValue)));
+      const [dirty, setDirty] = React.useState(false);
+      React.useEffect(() => {
+        if (!dirty) {
+          setDraft(savedValue === undefined || savedValue === null ? '' : String(savedValue));
+        }
+      }, [savedValue, dirty]);
+
+      const commit = React.useCallback(async () => {
+        if (!dirty) return;
+        const normalized = (draft ?? '').toString().trim();
+        const payload = normalized === '' ? null : Number(normalized);
+        if (payload !== null && Number.isNaN(payload)) {
+          return;
+        }
+        const ok = await saveSystemSetting(f.key, payload);
+        if (ok) {
+          setDirty(false);
+        }
+      }, [dirty, draft, f.key]);
+
+      const handleReset = React.useCallback(async () => {
+        const prev = draft;
+        setDraft('');
+        setDirty(false);
+        const ok = await saveSystemSetting(f.key, null);
+        if (!ok) {
+          setDraft(prev);
+          setDirty(true);
+        }
+      }, [draft, f.key]);
+
+      const handleChange = (event: any) => {
+        setDraft(event.target.value);
+        setDirty(true);
+      };
+
+      const handleKeyDown = (event: any) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          (event.target as HTMLInputElement).blur();
+        }
+      };
+
+      return (
+        <div style={wrap}>
+          <label style={{fontSize:12}}>{labelEl}<br/>
+            <input
+              style={inputStyle}
+              type="number"
+              value={draft}
+              onChange={handleChange}
+              onBlur={commit}
+              onKeyDown={handleKeyDown}
+            />
+          </label>
+          {changed ? <button style={resetStyle} onClick={handleReset}>Reset</button> : null}
+        </div>
+      );
+    }
+
+    if (t === 'select' || (f.options && Array.isArray(f.options))) {
+      const handleReset = async () => {
+        await saveSystemSetting(f.key, null);
+      };
+      return (
+        <div style={wrap}>
+          <label style={{fontSize:12}}>{labelEl}<br/>
+            <select style={inputStyle} value={savedValue ?? ''} onChange={e=>saveSystemSetting(f.key, (e.target as any).value)}>
+              <option value="">(unset)</option>
+              {(f.options||[]).map((o:any,i:number)=><option key={i} value={o}>{typeof o === 'object' ? (o.value ?? o.key ?? JSON.stringify(o)) : String(o)}</option>)}
+            </select>
+          </label>
+          {changed ? <button style={resetStyle} onClick={handleReset}>Reset</button> : null}
+        </div>
+      );
+    }
+
+    const [draft, setDraft] = React.useState(() => (savedValue === undefined || savedValue === null ? '' : String(savedValue)));
+    const [dirty, setDirty] = React.useState(false);
+    React.useEffect(() => {
+      if (!dirty) {
+        setDraft(savedValue === undefined || savedValue === null ? '' : String(savedValue));
+      }
+    }, [savedValue, dirty]);
+
+    const commit = React.useCallback(async () => {
+      if (!dirty) return;
+      const ok = await saveSystemSetting(f.key, draft);
+      if (ok) {
+        setDirty(false);
+      }
+    }, [dirty, draft, f.key]);
+
+    const handleReset = React.useCallback(async () => {
+      const prev = draft;
+      setDraft('');
+      setDirty(false);
+      const ok = await saveSystemSetting(f.key, null);
+      if (!ok) {
+        setDraft(prev);
+        setDirty(true);
+      }
+    }, [draft, f.key]);
+
+    const handleChange = (event: any) => {
+      setDraft(event.target.value ?? '');
+      setDirty(true);
+    };
+
+    const handleKeyDown = (event: any) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        (event.target as HTMLInputElement).blur();
+      }
+    };
+
+    return (
+      <div style={wrap}>
+        <label style={{fontSize:12}}>{labelEl}<br/>
+          <input
+            style={inputStyle}
+            value={draft}
+            onChange={handleChange}
+            onBlur={commit}
+            onKeyDown={handleKeyDown}
+          />
+        </label>
+        {changed ? <button style={resetStyle} onClick={handleReset}>Reset</button> : null}
+      </div>
+    );
   }
 
   const saveSystemSetting = React.useCallback(async (key: string, value: any) => {
-    try { await jfetch(`${backendBase}/api/v1/plugins/system/settings/${encodeURIComponent(key)}`, { method:'PUT', body: JSON.stringify({ value }) }); setSystemSettings((cur:any[]) => cur.map(f=> f.key===key ? ({...f, value}) : f)); }
-    catch(e:any){ setError(e.message); }
+    let previousValue: any;
+    let capturedPrev = false;
+    setSystemSettings((cur:any[]) => cur.map(f => {
+      if (f.key !== key) return f;
+      if (!capturedPrev) {
+        previousValue = f.value === undefined ? f.default : f.value;
+        capturedPrev = true;
+      }
+      return ({...f, value});
+    }));
+    try {
+      await jfetch(`${backendBase}/api/v1/plugins/system/settings/${encodeURIComponent(key)}`, { method:'PUT', body: JSON.stringify({ value }) });
+      return true;
+    } catch(e:any){
+      setError(e.message);
+      if (capturedPrev) {
+        setSystemSettings((cur:any[]) => cur.map(f => f.key===key ? ({...f, value: previousValue}) : f));
+      }
+      return false;
+    }
   }, [backendBase]);
 
   function renderSources() {
