@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from typing import Sequence
-from .models import AIModelInfo, AIVideoResultV3, ImageResult
+from .models import AIModelInfo, AIVideoResultV3, ImageResult, VideoServerResponse
 from stash_ai_server.services.base import RemoteServiceBase
 
 IMAGES_ENDPOINT = "/v3/process_images/"  # Batch endpoint - accepts multiple image paths
@@ -38,7 +38,7 @@ async def call_scene_api(
     *,
     threshold: float,
     skip_categories: Sequence[str] | None = None,
-) -> AIVideoResultV3 | None:
+) -> VideoServerResponse | None:
     """Call the /scene endpoint for a single scene."""   
     try:
         payload = {
@@ -53,7 +53,7 @@ async def call_scene_api(
         return await service.http.post(
             SCENE_ENDPOINT,
             json=payload,
-            response_model=AIVideoResultV3
+            response_model=VideoServerResponse
         )
     except asyncio.CancelledError:  # pragma: no cover
         raise

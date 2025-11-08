@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 class ImageResult(BaseModel):
     result: List[Dict[str, Any]] = Field(..., min_items=1)
     models: List[Any] | None = None
+    metrics: Dict[str, Any] | None = None
 
 
 Scope = Literal["detail", "selected", "page", "all"] 
@@ -37,3 +38,7 @@ class AIVideoResultV3(BaseModel):
 
     def to_json(self):
         return self.model_dump_json(exclude_none=True)
+
+class VideoServerResponse(BaseModel):
+    result: AIVideoResultV3 | None = None
+    metrics: Dict[str, Any] | None = None

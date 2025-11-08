@@ -170,6 +170,7 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
         remote_paths = [remote_targets[iid] for iid in remote_image_ids]
         try:
             response = await call_images_api(service, remote_paths)
+            _log.debug("Scene API metrics: %s", response.metrics)
         except Exception:
             _log.exception("Remote image tagging failed for %d images", len(remote_image_ids))
             await asyncio.to_thread(add_error_tag_to_images, remote_image_ids)
@@ -308,7 +309,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
         scene_id,
         skip_categories,
     )
-    result = await call_scene_api(
+    tempresult = await call_scene_api(
         service,
         remote_scene_path,
         SCENE_FRAME_INTERVAL,
@@ -316,7 +317,8 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
         threshold=SCENE_THRESHOLD,
         skip_categories=skip_categories,
     )
-
+    _log.debug("Scene API metrics: %s", tempresult.metrics)
+    result = tempresult.result
     _log.debug("Scene API result: %s", result)
 
     if result is None:
