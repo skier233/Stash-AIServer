@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List
 from stash_ai_server.actions.registry import registry as action_registry, collect_actions
+from stash_ai_server.core.runtime import register_backend_refresh_handler
 
 from stash_ai_server.db.session import SessionLocal
 from stash_ai_server.models.plugin import PluginSetting
@@ -84,7 +85,7 @@ class ServiceRegistry:
 
     def register(self, service: ServiceBase):
         if service.name in self._services:
-            raise ValueError(f"Service already registered: {service.name}")
+            self.unregister(service.name)
         self._services[service.name] = service
         # Collect actions via decorator metadata
         for definition, handler in collect_actions(service):
@@ -98,6 +99,26 @@ class ServiceRegistry:
 
     def get(self, name: str) -> ServiceBase | None:
         return self._services.get(name)
+
+    def unregister(self, service_name: str) -> None:
+        service = self._services.pop(service_name, None)
+        if service is None:
+            return
+        action_registry.unregister_service(service.name)
+        pending = self._pending_task_configs
+        if service_name in pending:
+            pending.discard(service_name)
+        manager = self._task_manager
+        if manager is not None:
+            try:
+                manager.remove_service(service_name)
+            except Exception:
+                pass
+
+    def unregister_by_plugin(self, plugin_name: str) -> None:
+        targets = [name for name, svc in self._services.items() if getattr(svc, 'plugin_name', None) == plugin_name]
+        for service_name in targets:
+            self.unregister(service_name)
 
     def set_task_manager(self, manager) -> None:
         if manager is None:
@@ -144,3 +165,21 @@ class ServiceRegistry:
 
 
 services = ServiceRegistry()
+
+
+def _refresh_registered_services() -> None:
+    for service in services.list():
+        reload_cb = getattr(service, 'reload_settings', None)
+        if callable(reload_cb):
+            try:
+                reload_cb()
+            except Exception:  # pragma: no cover - defensive logging
+                _log.exception("service refresh failed for %s", service.name)
+                continue
+        try:
+            services._configure_service(service)
+        except Exception:  # pragma: no cover - defensive logging
+            _log.exception("service reconfiguration failed for %s", service.name)
+
+
+register_backend_refresh_handler('services', _refresh_registered_services)

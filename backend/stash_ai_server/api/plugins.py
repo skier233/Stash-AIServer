@@ -11,6 +11,7 @@ from stash_ai_server.db.session import SessionLocal
 from stash_ai_server.models.plugin import PluginMeta, PluginSource, PluginCatalog, PluginSetting
 from stash_ai_server.plugin_runtime import loader as plugin_loader
 from stash_ai_server.core.system_settings import SYSTEM_PLUGIN_NAME, get_value as sys_get_value, invalidate_cache as sys_invalidate_cache
+from stash_ai_server.core.runtime import schedule_backend_restart
 from stash_ai_server.utils.path_mutation import invalidate_path_mapping_cache
 
 router = APIRouter(prefix='/plugins', tags=['plugins'])
@@ -211,6 +212,7 @@ async def upsert_system_setting(key: str, payload: SettingUpsert, db: Session = 
     if not row:
         raise HTTPException(status_code=404, detail='NOT_FOUND')
     v = payload.value
+    previous_effective = row.value if row.value is not None else row.default_value
     if v is not None:
         if row.type == 'number':
             try: v = float(v)
@@ -229,6 +231,9 @@ async def upsert_system_setting(key: str, payload: SettingUpsert, db: Session = 
     sys_invalidate_cache()
     if key == 'PATH_MAPPINGS':
         invalidate_path_mapping_cache(system=True)
+    current_effective = row.value if row.value is not None else row.default_value
+    if key in {'STASH_URL', 'STASH_API_KEY'} and current_effective != previous_effective:
+        schedule_backend_restart()
     return {'status': 'ok'}
 
 

@@ -2,6 +2,7 @@ import logging
 from typing import Any, Dict
 from urllib.parse import urlparse
 from stash_ai_server.core.system_settings import get_value as sys_get
+from stash_ai_server.core.runtime import register_backend_refresh_handler
 from stashapi.stashapp import StashInterface
 
 _log = logging.getLogger(__name__)
@@ -14,12 +15,44 @@ class StashAPI:
     tag_name_cache: Dict[int, str] = {}
 
     def __init__(self) -> None:
-        self.stash_url = sys_get("STASH_URL")
-        self.api_key = sys_get("STASH_API_KEY")
-        if self.stash_url:
-            self.stash_interface = _construct_stash_interface(self.stash_url, self.api_key)
-        else:
-            _log.error("STASH_URL not configured; Stash interface not available")
+        self.tag_id_cache = {}
+        self.tag_name_cache = {}
+        self.stash_interface = None
+        self.stash_url = ''
+        self.api_key = None
+        self.refresh_configuration()
+
+    def refresh_configuration(self) -> None:
+        """Reload connection configuration from system settings."""
+
+        new_url = sys_get("STASH_URL")
+        new_key = sys_get("STASH_API_KEY")
+
+        if not new_url:
+            self.stash_url = ""
+            self.api_key = new_key
+            self.stash_interface = None
+            self.tag_id_cache.clear()
+            self.tag_name_cache.clear()
+            _log.warning("STASH_URL not configured; Stash interface unavailable")
+            return
+
+        try:
+            new_interface = _construct_stash_interface(new_url, new_key)
+        except Exception as exc:
+            _log.error(
+                "Failed to configure Stash API client with url=%s: %s",
+                new_url,
+                exc,
+            )
+            return
+
+        self.stash_url = new_url
+        self.api_key = new_key
+        self.stash_interface = new_interface
+        self.tag_id_cache.clear()
+        self.tag_name_cache.clear()
+        _log.info("Stash API client configured host=%s", self.stash_url)
 
     # Tags
     
@@ -179,3 +212,13 @@ def _construct_stash_interface(url: str, api_key: str = None) -> StashInterface:
     return StashInterface(conn)
 
 stash_api = StashAPI()
+
+
+def _refresh_stash_api() -> None:
+    try:
+        stash_api.refresh_configuration()
+    except Exception:  # pragma: no cover - defensive logging
+        _log.exception("Stash API refresh failed")
+
+
+register_backend_refresh_handler("stash_api", _refresh_stash_api)

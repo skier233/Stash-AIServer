@@ -6,6 +6,7 @@ import json
 from typing import Dict, List, Tuple, Optional, Any, Callable, Union
 import os
 from stash_ai_server.core.system_settings import get_value as sys_get
+from stash_ai_server.core.runtime import register_backend_refresh_handler
 import logging
 from stash_ai_server.tasks.models import TaskRecord, TaskStatus, TaskPriority, CancelToken, TaskSpec
 from stash_ai_server.actions.registry import registry as action_registry
@@ -59,21 +60,29 @@ class TaskManager:
         self._task_specs: Dict[str, TaskSpec] = {}
         self._handlers: Dict[str, Callable[..., Any]] = {}
         self._runner_started = False
-        # Values may be overridden at startup (main.py) after seeding system settings
-        try:
-            self._loop_interval = float(sys_get('TASK_LOOP_INTERVAL', 0.05))
-        except Exception:
-            self._loop_interval = 0.05
-        try:
-            dbg = sys_get('TASK_DEBUG', True)
-
-            #TODO: remove this and just use loglevel
-            self._debug = bool(dbg)
-        except Exception:
-            self._debug = False
+        self._loop_interval = 0.05
+        self._debug = False
+        self.reload_configuration()
         if self._debug:
             logging.basicConfig(level=logging.DEBUG, format='[TASK] %(message)s')
         self._log = logging.getLogger('task_manager')
+
+    def reload_configuration(self) -> None:
+        current_interval = getattr(self, '_loop_interval', 0.05)
+        prev_debug = getattr(self, '_debug', False)
+        try:
+            value = sys_get('TASK_LOOP_INTERVAL', current_interval)
+            if value is not None:
+                self._loop_interval = float(value)
+        except Exception:
+            self._loop_interval = current_interval
+        try:
+            dbg = sys_get('TASK_DEBUG', self._debug)
+            self._debug = bool(dbg)
+        except Exception:
+            pass
+        if self._debug and not prev_debug:
+            logging.basicConfig(level=logging.DEBUG, format='[TASK] %(message)s')
 
     def configure_service(self, service: str, max_concurrent: int, base_url: str | None):
         cfg = SERVICE_CONFIG.setdefault(service, {})
@@ -309,6 +318,12 @@ class TaskManager:
             if current > 0:
                 self.running_counts[service] = current - 1
 
+    def remove_service(self, service: str) -> None:
+        SERVICE_CONFIG.pop(service, None)
+        self.queues.pop(service, None)
+        self.running_counts.pop(service, None)
+        self._service_locks.pop(service, None)
+
     async def start(self):
         if self._runner_started:
             return
@@ -452,6 +467,13 @@ class TaskManager:
         return False
 
 manager = TaskManager()
+
+
+def _refresh_task_manager() -> None:
+    manager.reload_configuration()
+
+
+register_backend_refresh_handler('task_manager', _refresh_task_manager)
 
 try:
     from stash_ai_server.services.registry import services as _services_registry

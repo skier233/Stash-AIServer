@@ -17,6 +17,13 @@ class _RecommenderRegistry:
     def get(self, id: str) -> Tuple[RecommenderDefinition, RecommenderHandler] | None:
         return self._defs.get(id)
 
+    def unregister_by_module_prefix(self, prefix: str) -> None:
+        if not prefix:
+            return
+        remove_ids = [rid for rid, (_, handler) in self._defs.items() if getattr(handler, '__module__', '').startswith(prefix)]
+        for rid in remove_ids:
+            self._defs.pop(rid, None)
+
 recommender_registry = _RecommenderRegistry()
 
 def recommender(*, id: str, label: str, contexts: List[RecContext], description: str = "", config: List[Any] | None = None, **caps):

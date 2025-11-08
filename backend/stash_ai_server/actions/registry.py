@@ -46,6 +46,28 @@ class ActionRegistry:
     def all_for_id(self, action_id: str) -> List[ActionDefinition]:
         return self._actions.get(action_id, [])
 
+    def unregister_service(self, service_name: str) -> None:
+        if not service_name:
+            return
+        for action_id in list(self._actions.keys()):
+            defs = self._actions.get(action_id, [])
+            handlers = self._handlers.get(action_id, [])
+            if not defs:
+                continue
+            keep_defs: List[ActionDefinition] = []
+            keep_handlers: List[ActionHandler] = []
+            for definition, handler in zip(defs, handlers):
+                if getattr(definition, 'service', None) == service_name:
+                    continue
+                keep_defs.append(definition)
+                keep_handlers.append(handler)
+            if keep_defs:
+                self._actions[action_id] = keep_defs
+                self._handlers[action_id] = keep_handlers
+            else:
+                self._actions.pop(action_id, None)
+                self._handlers.pop(action_id, None)
+
 
 registry = ActionRegistry()
 

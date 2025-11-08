@@ -18,6 +18,9 @@ from stash_ai_server.db.session import SessionLocal, engine
 from stash_ai_server.core.config import settings
 from stash_ai_server.models.plugin import PluginMeta, PluginSetting, PluginSource, PluginCatalog
 from stash_ai_server.plugin_runtime.settings_registry import register_settings
+from stash_ai_server.services.registry import services
+from stash_ai_server.recommendations.registry import recommender_registry
+from stash_ai_server.core.runtime import register_backend_refresh_handler
 import httpx
 from io import BytesIO
 
@@ -292,6 +295,7 @@ def _import_files(manifest: PluginManifest):
                         _log.error("Plugin register() failed plugin=%s module=%s", manifest.name, full, exc_info=True)
                     except Exception:
                         pass
+                    raise
         except Exception as e:  # noqa: BLE001
             try:
                 print(f"[plugin] ERROR import {full}: {e}", flush=True)
@@ -687,6 +691,14 @@ def _unload_plugin(plugin_name: str):
     """Attempt to call unregister() for loaded plugin modules and remove them from sys.modules.
     This allows removals to take effect immediately without a server restart."""
     prefix = f"stash_ai_server.plugins.{plugin_name}"
+    try:
+        services.unregister_by_plugin(plugin_name)
+    except Exception:
+        pass
+    try:
+        recommender_registry.unregister_by_module_prefix(prefix)
+    except Exception:
+        pass
     # Collect keys first to avoid mutating while iterating
     keys = [k for k in list(sys.modules.keys()) if k == prefix or k.startswith(prefix + '.')]
     for k in keys:
@@ -707,6 +719,10 @@ def _unload_plugin(plugin_name: str):
             del sys.modules[k]
         except Exception:
             pass
+    try:
+        importlib.invalidate_caches()
+    except Exception:
+        pass
 
 
 def reload_plugin(db: Session, plugin_name: str) -> PluginMeta:
@@ -771,3 +787,44 @@ def reload_plugin(db: Session, plugin_name: str) -> PluginMeta:
             meta.last_error = str(exc)
         db.commit()
         raise
+
+
+def reload_all_plugins() -> None:
+    """Best-effort reload for every on-disk plugin manifest."""
+
+    manifests = sorted(PLUGIN_DIR.glob('*/plugin.yml'))
+    if not manifests:
+        return
+    db = SessionLocal()
+    try:
+        try:
+            _ensure_builtin_source(db)
+        except Exception:
+            pass
+        for manifest_path in manifests:
+            plugin_name = manifest_path.parent.name
+            try:
+                _unload_plugin(plugin_name)
+            except Exception:
+                _log.exception("failed unloading plugin %s before reload", plugin_name)
+            try:
+                reload_plugin(db, plugin_name)
+            except Exception:
+                db.rollback()
+                print(f"[plugin] reload failed for {plugin_name}", flush=True)
+                _log.exception("plugin reload failed for %s", plugin_name)
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+def _refresh_plugins() -> None:
+    try:
+        reload_all_plugins()
+    except Exception:
+        _log.exception("plugin refresh handler failed")
+
+
+register_backend_refresh_handler('all_plugins', _refresh_plugins, priority=100)
