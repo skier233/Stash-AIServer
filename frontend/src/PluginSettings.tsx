@@ -95,7 +95,7 @@ const PluginSettings = () => {
   const [catalog, setCatalog] = React.useState({} as Record<string, CatalogEntry[]>);
   const [pluginSettings, setPluginSettings] = React.useState({} as Record<string, any[]>);
   const [systemSettings, setSystemSettings] = React.useState([] as any[]);
-  const [systemOpen, setSystemOpen] = React.useState(false);
+  const [systemLoading, setSystemLoading] = React.useState(false);
   const [openConfig, setOpenConfig] = React.useState(null as string | null);
   const [selectedSource, setSelectedSource] = React.useState(null as string | null);
   const [loading, setLoading] = React.useState({installed:false, sources:false, catalog:false} as {installed:boolean; sources:boolean; catalog:boolean; action?:string});
@@ -159,6 +159,19 @@ const PluginSettings = () => {
     setLoading((l:any) => ({...l, catalog:true}));
     try { const data = await jfetch(`${backendBase}/api/v1/plugins/catalog/${name}`); setCatalog((c:any) => ({...c, [name]: Array.isArray(data)?data:[]})); } catch(e:any){ setError(e.message); }
     finally { setLoading((l:any) => ({...l, catalog:false})); }
+  }, [backendBase]);
+
+  const loadSystemSettings = React.useCallback(async () => {
+    setSystemLoading(true);
+    try {
+      const data = await jfetch(`${backendBase}/api/v1/plugins/system/settings`);
+      setSystemSettings(Array.isArray(data) ? data : []);
+    } catch (e: any) {
+      setError(e.message);
+      setSystemSettings([]);
+    } finally {
+      setSystemLoading(false);
+    }
   }, [backendBase]);
 
   const refreshSource = React.useCallback(async (name: string) => {
@@ -299,7 +312,7 @@ const PluginSettings = () => {
     })();
   }, [sources, catalog, refreshSource]);
   // System settings initial load
-  React.useEffect(() => { (async ()=> { try { const data = await jfetch(`${backendBase}/api/v1/plugins/system/settings`); setSystemSettings(Array.isArray(data)?data:[]); } catch(e:any){ /* ignore until user opens */ } })(); }, [backendBase]);
+  React.useEffect(() => { loadSystemSettings(); }, [loadSystemSettings]);
 
   // If selected source changes and we don't have catalog, load it
   React.useEffect(() => { if (selectedSource && !catalog[selectedSource]) loadCatalogFor(selectedSource); }, [selectedSource, catalog, loadCatalogFor]);
@@ -330,6 +343,7 @@ const PluginSettings = () => {
     localStorage.setItem(LS_BACKEND_URL, clean);
     // Reload data with new base
     setInstalled([]); setSources([]); setCatalog({}); setSelectedSource(null);
+    setSystemSettings([]); setSystemLoading(true);
     loadInstalled(); loadSources();
   }
 
@@ -1149,12 +1163,13 @@ const PluginSettings = () => {
       </div>
       <div style={sectionStyle}>
         <h3 style={headingStyle}>Backend System Settings</h3>
-        <div style={{margin:'4px 0 12px'}}>
-          <button style={smallBtn} onClick={()=>{ if (!systemSettings.length) { jfetch(`${backendBase}/api/v1/plugins/system/settings`).then(d=> setSystemSettings(Array.isArray(d)?d:[])).catch(e=>setError(e.message)); } setSystemOpen((o:boolean)=>!o); }}>{systemOpen ? 'Hide':'Show'} Values</button>
-        </div>
-        {systemOpen && <div style={{display:'flex', flexWrap:'wrap', gap:12}}>
-          {systemSettings.map((f:any)=><div key={f.key} style={{minWidth:220}}><SystemFieldRenderer f={f} /></div>)}
-        </div>}
+        {systemLoading && <div style={{fontSize:11, opacity:0.7, marginBottom:8}}>Loading system settings…</div>}
+        {!systemLoading && systemSettings.length === 0 && <div style={{fontSize:11, opacity:0.7}}>No system settings available.</div>}
+        {systemSettings.length > 0 && (
+          <div style={{display:'flex', flexWrap:'wrap', gap:12}}>
+            {systemSettings.map((f:any)=><div key={f.key} style={{minWidth:220}}><SystemFieldRenderer f={f} /></div>)}
+          </div>
+        )}
       </div>
       <div style={sectionStyle}>
         <h3 style={headingStyle}>Installed Plugins {loading.installed && <span style={{fontSize:11, opacity:0.7}}>loading…</span>}</h3>
