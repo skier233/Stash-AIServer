@@ -1220,8 +1220,17 @@
         if(j && Array.isArray(j.recommenders)){
           const defs = j.recommenders as RecommenderDef[];
           setRecommenders(defs);
+          setDiscoveryAttempted(true);
           if(defs.length === 0){
-            throw new Error('No recommenders available');
+            if (backendHealthApi && typeof backendHealthApi.reportOk === 'function') {
+              try { backendHealthApi.reportOk(backendBase); } catch (_) {}
+            }
+            setRecommenderId(null);
+            setScenes([]);
+            setTotal(0);
+            setHasMore(false);
+            setError(null);
+            return { success: true, recommenderId: null };
           }
           const existingMatch = recommenderId && defs.find(r => r.id === recommenderId);
           const defaultDef = (j.defaultRecommenderId && defs.find(r=>r.id===j.defaultRecommenderId)) || defs[0];
@@ -1236,7 +1245,6 @@
           if (backendHealthApi && typeof backendHealthApi.reportOk === 'function') {
             try { backendHealthApi.reportOk(backendBase); } catch (_) {}
           }
-          setDiscoveryAttempted(true);
           return { success: true, recommenderId: nextId || (defaultDef ? defaultDef.id : null) };
         }
         throw new Error('Unexpected discovery response');
@@ -1449,6 +1457,15 @@
     // While recommender discovery hasn't finished, suppress legacy UI to avoid flash
     if(!discoveryAttempted){
       return React.createElement('div',{ className:'text-center mt-4'}, 'Loading recommendation engine…');
+    }
+
+    if(discoveryAttempted && !backendNotice && Array.isArray(recommenders) && recommenders.length === 0){
+      return React.createElement('div',{ className:'ai-rec-empty-state text-center mt-4' },[
+        React.createElement('div',{ key:'no-recommenders', className:'alert alert-info d-inline-block text-left', style:{ maxWidth:520, margin:'12px auto' } },[
+          React.createElement('div',{ key:'title', style:{ fontWeight:600, marginBottom:6 }}, 'No recommendation plugins installed'),
+          React.createElement('div',{ key:'body' }, 'Install a recommender plugin under Settings → Tools → AI Overhaul Settings.')
+        ])
+      ]);
     }
 
     return React.createElement(React.Fragment,null,[
