@@ -262,11 +262,22 @@ export function detectPageContext(): PageContext {
 // Simple pub/sub for changes (future friendly)
 const listeners: Array<(ctx: PageContext) => void> = [];
 let currentContext: PageContext = detectPageContext();
+let refreshTimer: number | undefined;
 
 function notify() {
   listeners.forEach(l => {
     try { l(currentContext); } catch (_) { /* ignore */ }
   });
+}
+
+function scheduleRefresh(delay = 75) {
+  if (refreshTimer !== undefined) {
+    window.clearTimeout(refreshTimer);
+  }
+  refreshTimer = window.setTimeout(() => {
+    refreshTimer = undefined;
+    refreshContext();
+  }, delay);
 }
 
 function hashIds(ids?: string[]) {
@@ -300,9 +311,23 @@ export function subscribe(listener: (ctx: PageContext) => void) {
 }
 
 // Observe navigation changes
-window.addEventListener('popstate', () => setTimeout(refreshContext, 50));
-const mutationObserver = new MutationObserver(() => setTimeout(refreshContext, 100));
-mutationObserver.observe(document.body, { childList: true, subtree: true });
+window.addEventListener('popstate', () => scheduleRefresh(50));
+const mutationObserver = new MutationObserver(() => scheduleRefresh(100));
+mutationObserver.observe(document.body, {
+  childList: true,
+  subtree: true,
+  attributes: true,
+  attributeFilter: ['class', 'aria-selected', 'data-selected', 'data-id', 'checked']
+});
+
+// Selection toggles often fire only change events; ensure we refresh context after them.
+document.addEventListener('change', (event) => {
+  const target = event.target as HTMLElement | null;
+  if (!target) return;
+  if (target.matches('input[type="checkbox"], input[type="radio"], [data-id]')) {
+    scheduleRefresh(75);
+  }
+}, true);
 
 // Expose on window
 ;(window as any).AIPageContext = {

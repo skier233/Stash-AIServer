@@ -119,7 +119,8 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
     if not image_ids:
         return {"message": "No images to process"}
 
-    image_paths = stash_api.get_image_paths(image_ids)
+    # Stash API client is synchronous; use a worker thread so we don't block other tasks.
+    image_paths = await asyncio.to_thread(stash_api.get_image_paths, image_ids)
     missing_paths = [iid for iid, path in image_paths.items() if not path]
     for iid in missing_paths:
         image_paths.pop(iid, None)
@@ -171,7 +172,7 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
             response = await call_images_api(service, remote_paths)
         except Exception:
             _log.exception("Remote image tagging failed for %d images", len(remote_image_ids))
-            add_error_tag_to_images(remote_image_ids)
+            await asyncio.to_thread(add_error_tag_to_images, remote_image_ids)
             remote_failures.extend(remote_image_ids)
             response = None
 
@@ -182,7 +183,7 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
                 payload = result_payload[idx]
                 if payload.get("error"):
                     remote_failures.append(image_id)
-                    add_error_tag_to_images([image_id])
+                    await asyncio.to_thread(add_error_tag_to_images, [image_id])
                     continue
 
                 tags_by_category = extract_tags_from_response(payload if isinstance(payload, dict) else {})
@@ -216,9 +217,9 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
 
         try:
             if stored_tag_ids:
-                stash_api.remove_tags_from_images([image_id], stored_tag_ids)
+                await asyncio.to_thread(stash_api.remove_tags_from_images, [image_id], stored_tag_ids)
             if normalized_ids:
-                stash_api.add_tags_to_images([image_id], normalized_ids)
+                await asyncio.to_thread(stash_api.add_tags_to_images, [image_id], normalized_ids)
         except Exception:
             _log.exception("Failed to refresh tags for image_id=%s", image_id)
 
