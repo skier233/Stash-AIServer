@@ -60,6 +60,7 @@ def action(
     dialog_type: Optional[str] = None,
     contexts: Optional[list[ContextRule]] = None,
     input_schema: dict | None = None,
+    deduplicate_submissions: bool = True,
 ):
     """Decorator to declare an action on a service class method.
 
@@ -75,6 +76,7 @@ def action(
             dialog_type=dialog_type,
             contexts=contexts or [],
             input_schema=input_schema,
+            deduplicate_submissions=deduplicate_submissions,
         )
         # Attach metadata for later collection when service registers
         setattr(fn, '_action_definition', definition)

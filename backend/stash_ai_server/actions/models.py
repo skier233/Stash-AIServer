@@ -66,6 +66,7 @@ class ActionDefinition(BaseModel):
     dialog_type: Optional[str] = None
     contexts: List[ContextRule] = Field(default_factory=list)
     input_schema: Optional[dict] = None
+    deduplicate_submissions: bool = True
     # internal: handler callable stored out-of-band in registry
 
     def is_applicable(self, ctx: ContextInput) -> bool:

@@ -38,6 +38,8 @@ class TaskRecord(BaseModel):
     chunks: List[Any] = []  # for streaming accumulation (optional)
     group_id: str | None = None  # logical parent grouping (e.g., batch parent task id)
     skip_concurrency: bool = False  # controller/coordination tasks that shouldn't consume a slot
+    dedupe_ctx_key: str | None = None
+    dedupe_params_key: str | None = None
 
     class Config:
         arbitrary_types_allowed = True
@@ -77,6 +79,8 @@ def new_task(action_id: str, service: str, priority: TaskPriority, ctx: ContextI
         submitted_at=time.time(),
         context=ctx,
         params=params,
+        dedupe_ctx_key=None,
+        dedupe_params_key=None,
     )
 
 

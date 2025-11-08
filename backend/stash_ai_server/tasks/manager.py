@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import heapq
 import inspect
+import json
 from typing import Dict, List, Tuple, Optional, Any, Callable, Union
 import os
 from stash_ai_server.core.system_settings import get_value as sys_get
@@ -13,6 +14,9 @@ from stash_ai_server.db.session import SessionLocal
 from stash_ai_server.tasks.history import TaskHistory
 
 from stash_ai_server.services.base import RemoteServiceBase
+from pydantic import BaseModel
+from enum import Enum
+from decimal import Decimal
 
 _log = logging.getLogger(__name__)
 
@@ -194,6 +198,13 @@ class TaskManager:
             service = spec.service
         if not service:
             raise ValueError("Cannot determine service name for task")
+        ctx_key: str | None = None
+        params_key: str | None = None
+        try:
+            ctx_key, params_key = self._fingerprint_payload(ctx, params or {})
+        except Exception:
+            ctx_key = None
+            params_key = None
         task = TaskRecord(
             id=__import__('uuid').uuid4().hex,
             action_id=spec.id,
@@ -204,7 +215,9 @@ class TaskManager:
             context=ctx,
             params=params,
             group_id=group_id,
-            skip_concurrency=False
+            skip_concurrency=False,
+            dedupe_ctx_key=ctx_key,
+            dedupe_params_key=params_key,
         )
         self.tasks[task.id] = task
         self.cancel_tokens[task.id] = CancelToken()
@@ -218,6 +231,67 @@ class TaskManager:
         if self._debug:
             self._log.debug(f"SUBMIT service={service} id={task.id} priority={priority.name} skip_concurrency={task.skip_concurrency} group={group_id}")
         return task
+
+    @staticmethod
+    def _normalize_for_fingerprint(value: Any) -> Any:
+        if isinstance(value, BaseModel):
+            return TaskManager._normalize_for_fingerprint(value.model_dump(exclude_none=True))
+        if isinstance(value, Enum):
+            return value.value
+        if isinstance(value, Decimal):
+            return str(value)
+        if isinstance(value, dict):
+            return {str(k): TaskManager._normalize_for_fingerprint(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [TaskManager._normalize_for_fingerprint(v) for v in value]
+        if isinstance(value, set):
+            return sorted(TaskManager._normalize_for_fingerprint(v) for v in value)
+        return value
+
+    @staticmethod
+    def _fingerprint_payload(ctx: ContextInput, params: dict) -> tuple[str, str]:
+        ctx_dump = ctx.model_dump(by_alias=True, exclude_none=True, exclude_defaults=True)
+        normalized_ctx = TaskManager._normalize_for_fingerprint(ctx_dump)
+        normalized_params = TaskManager._normalize_for_fingerprint(params)
+        ctx_key = json.dumps(normalized_ctx, sort_keys=True, separators=(',', ':'))
+        params_key = json.dumps(normalized_params, sort_keys=True, separators=(',', ':'))
+        return ctx_key, params_key
+
+    def find_duplicate(self, definition, handler, ctx: ContextInput, params: dict) -> Optional[TaskRecord]:
+        spec = self._coerce_spec(definition)
+        service = None
+        if handler is not None:
+            inst = getattr(handler, '__self__', None)
+            if inst is not None:
+                svc_name = getattr(inst, 'name', None)
+                if isinstance(svc_name, str) and svc_name:
+                    service = svc_name
+        if not service:
+            service = spec.service
+        if not service:
+            return None
+        try:
+            wanted_ctx_key, wanted_params_key = self._fingerprint_payload(ctx, params or {})
+        except Exception:
+            # If serialization fails, skip dedupe to avoid blocking execution.
+            return None
+        for task in self.tasks.values():
+            if task.action_id != spec.id:
+                continue
+            if task.service != service:
+                continue
+            if task.status not in (TaskStatus.queued, TaskStatus.running, TaskStatus.streaming):
+                continue
+            ctx_key = task.dedupe_ctx_key
+            params_key = task.dedupe_params_key
+            if ctx_key is None or params_key is None:
+                try:
+                    ctx_key, params_key = self._fingerprint_payload(task.context, task.params or {})
+                except Exception:
+                    continue
+            if ctx_key == wanted_ctx_key and params_key == wanted_params_key:
+                return task
+        return None
 
     def mark_controller(self, task: TaskRecord) -> None:
         """Convert a running task into a controller so it stops consuming concurrency."""

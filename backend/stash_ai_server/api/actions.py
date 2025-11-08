@@ -43,6 +43,18 @@ async def submit_action(payload: SubmitActionRequest):
     definition, handler = resolved
     if not definition.is_applicable(ctx):
         raise HTTPException(status_code=400, detail='Action not applicable to provided context')
+    if definition.deduplicate_submissions:
+        duplicate = task_manager.find_duplicate(definition, handler, ctx, payload.params)
+        if duplicate is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    'code': 'ACTION_ALREADY_IN_PROGRESS',
+                    'task_id': duplicate.id,
+                    'status': duplicate.status.value,
+                    'message': f"Action '{definition.label}' is already processing for this selection.",
+                },
+            )
     # Infer priority (detail -> high, bulk -> low) unless overridden.
     inferred = 'high' if ctx.is_detail_view else 'low'
     if payload.priority in ('high', 'normal', 'low'):
