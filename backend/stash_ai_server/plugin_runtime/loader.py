@@ -142,6 +142,23 @@ def _catalog_human_name(row: PluginCatalog) -> Optional[str]:
     manifest = row.manifest_json or {}
     return row.human_name or manifest.get('humanName') or manifest.get('human_name') or None
 
+def _settings_definitions_from_raw(raw: dict | None) -> List[dict]:
+    if not isinstance(raw, dict):
+        return []
+    cfg = raw.get('settings') or raw.get('ui_settings') or raw.get('config') or []
+    definitions: List[dict] = []
+    if isinstance(cfg, dict):
+        for key, value in cfg.items():
+            if isinstance(value, dict):
+                definitions.append({'key': key, **value})
+            else:
+                definitions.append({'key': key, 'default': value})
+    elif isinstance(cfg, list):
+        for item in cfg:
+            if isinstance(item, dict):
+                definitions.append(item)
+    return definitions
+
 def _backend_version_ok(required: str) -> bool:
     try:
         cur = _v.parse(getattr(settings, 'version', '0.0.0'))
@@ -477,22 +494,16 @@ def initialize_plugins():
                     except Exception as e:
                         print(f"[plugin] dependency install attempt failed name={name}: {e}", flush=True)
                     raw = manifest_data_map.get(name, {})
-                    settings_defs = []
-                    cfg = raw.get('settings') or raw.get('ui_settings') or raw.get('config') or []
-                    if isinstance(cfg, dict):
-                        for k, v in cfg.items():
-                            if isinstance(v, dict): settings_defs.append({'key': k, **v})
-                            else: settings_defs.append({'key': k, 'default': v})
-                    elif isinstance(cfg, list):
-                        for item in cfg:
-                            if isinstance(item, dict): settings_defs.append(item)
+                    settings_defs = _settings_definitions_from_raw(raw)
                     if settings_defs:
-                        try: register_settings(db, mf.name, settings_defs)
+                        try:
+                            register_settings(db, mf.name, settings_defs)
                         except Exception as e:  # noqa: BLE001
                             print(f"[plugin] settings registration failed name={mf.name}: {e}", flush=True)
                     _import_files(mf)
                     meta.version = mf.version; meta.human_name = mf.human_name; meta.server_link = mf.server_link
-                    if meta.status != 'error': meta.status = 'active'
+                    meta.status = 'active'
+                    meta.last_error = None
                     db.commit(); active.add(name); remaining.remove(name); progressed = True
                     print(f"[plugin] name={name} status={meta.status}", flush=True)
                 except Exception:
@@ -606,9 +617,20 @@ def install_plugin_from_catalog(db: Session, source_row, catalog_row, overwrite:
             _ensure_pip_dependencies(manifest.pip_dependencies)
         except Exception as e:
             print(f"[plugin] dependency install attempt failed name={manifest.name}: {e}", flush=True)
+        try:
+            raw_manifest = yaml.safe_load(manifest_file.read_text()) or {}
+        except Exception:
+            raw_manifest = {}
+        settings_defs = _settings_definitions_from_raw(raw_manifest if isinstance(raw_manifest, dict) else {})
+        if settings_defs:
+            try:
+                register_settings(db, manifest.name, settings_defs)
+            except Exception as e:  # noqa: BLE001
+                print(f"[plugin] settings registration failed name={manifest.name}: {e}", flush=True)
         _import_files(manifest)
         meta.version = manifest.version; meta.human_name = manifest.human_name; meta.server_link = manifest.server_link
-        if meta.status != 'error': meta.status = 'active'
+        meta.status = 'active'
+        meta.last_error = None
         db.commit(); return meta
     except Exception as e:
         meta.status = 'error'; meta.last_error = str(e)
@@ -685,3 +707,67 @@ def _unload_plugin(plugin_name: str):
             del sys.modules[k]
         except Exception:
             pass
+
+
+def reload_plugin(db: Session, plugin_name: str) -> PluginMeta:
+    manifest_path = PLUGIN_DIR / plugin_name / 'plugin.yml'
+    if not manifest_path.exists():
+        raise FileNotFoundError(f'plugin manifest missing for {plugin_name}')
+    try:
+        raw = yaml.safe_load(manifest_path.read_text()) or {}
+    except Exception:
+        raw = {}
+    manifest = _parse_manifest(manifest_path)
+    if manifest is None:
+        raise RuntimeError(f'invalid manifest for plugin {plugin_name}')
+    meta = _load_or_create_meta(db, manifest)
+
+    if not _backend_version_ok(manifest.required_backend):
+        meta.status = 'incompatible'
+        meta.last_error = f"requires backend {manifest.required_backend}"
+        db.commit()
+        raise RuntimeError(f'backend version incompatible for {plugin_name}')
+
+    missing = [d for d in manifest.depends_on if not (PLUGIN_DIR / d / 'plugin.yml').exists()]
+    if missing:
+        meta.status = 'dependency_missing'
+        meta.last_error = f"missing deps: {missing}"
+        db.commit()
+        raise RuntimeError(f'missing dependencies {missing} for {plugin_name}')
+
+    try:
+        _ensure_catalog_entry_from_manifest(db, manifest=manifest, raw_manifest=raw if isinstance(raw, dict) else {})
+    except Exception:
+        pass
+
+    try:
+        _unload_plugin(plugin_name)
+    except Exception:
+        pass
+
+    try:
+        _apply_migrations(manifest, meta)
+        try:
+            _ensure_pip_dependencies(manifest.pip_dependencies)
+        except Exception as e:
+            print(f"[plugin] dependency install attempt failed name={plugin_name}: {e}", flush=True)
+        settings_defs = _settings_definitions_from_raw(raw if isinstance(raw, dict) else {})
+        if settings_defs:
+            try:
+                register_settings(db, manifest.name, settings_defs)
+            except Exception as e:  # noqa: BLE001
+                print(f"[plugin] settings registration failed name={manifest.name}: {e}", flush=True)
+        _import_files(manifest)
+        meta.version = manifest.version
+        meta.human_name = manifest.human_name
+        meta.server_link = manifest.server_link
+        meta.status = 'active'
+        meta.last_error = None
+        db.commit()
+        return meta
+    except Exception as exc:
+        if meta.status != 'error':
+            meta.status = 'error'
+            meta.last_error = str(exc)
+        db.commit()
+        raise

@@ -207,6 +207,15 @@ const PluginSettings = () => {
     try { await jfetch(`${backendBase}/api/v1/plugins/update`, { method:'POST', body: JSON.stringify({ source, plugin }) }); await loadInstalled(); } catch(e:any){ setError(e.message); }
   }, [backendBase, loadInstalled]);
 
+  const reloadPlugin = React.useCallback(async (plugin: string) => {
+    try {
+      await jfetch(`${backendBase}/api/v1/plugins/reload`, { method: 'POST', body: JSON.stringify({ plugin }) });
+      await loadInstalled();
+    } catch (e: any) {
+      setError(e.message);
+    }
+  }, [backendBase, loadInstalled]);
+
   const removePlugin = React.useCallback(async (plugin: string) => {
     try {
       const plan = await jfetch(`${backendBase}/api/v1/plugins/remove/plan`, { method:'POST', body: JSON.stringify({ plugin }) });
@@ -587,66 +596,149 @@ const PluginSettings = () => {
 
   // Compose installed plugin rows
   function renderInstalled() {
-    if (!installed.length) return <div style={{fontSize:12, opacity:0.7}}>No plugins installed.</div>;
+    if (!installed.length) {
+      return <div style={{ fontSize: 12, opacity: 0.7 }}>No plugins installed.</div>;
+    }
+
+    const findCatalogEntry = (pluginName: string, version?: string) => {
+      for (const [sourceName, entries] of Object.entries(catalog) as [string, any[]][]) {
+        for (const entry of entries) {
+          if (entry.plugin_name !== pluginName) continue;
+          if (version && entry.version !== version) continue;
+          return { source: sourceName, entry };
+        }
+      }
+      return null;
+    };
+
     return (
       <table style={tableStyle}>
-        <thead><tr>
-          <th style={thtd}>Plugin</th><th style={thtd}>Current Version</th><th style={thtd}>Latest Version</th><th style={thtd}>Actions</th>
-        </tr></thead>
-  <tbody>{installed.map((p:any) => {
-          const latest = latestVersions[p.name];
+        <thead>
+          <tr>
+            <th style={thtd}>Plugin</th>
+            <th style={thtd}>Version</th>
+            <th style={thtd}>Latest</th>
+            <th style={thtd}>Status</th>
+            <th style={thtd}>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {installed.map((p: any) => {
+            const latest = latestVersions[p.name];
             const updateAvailable = latest && isVersionNewer(latest, p.version);
-            // Reinstall conditions: status error|removed with matching catalog entry
-            const isInactive = p.status === 'removed' || p.status === 'error';
-            return <tr key={p.name} style={{background: updateAvailable? '#262214': (p.status==='removed' ? '#201818' : (p.status==='error' ? '#2a1a1a':'transparent'))}}>
-              <td style={thtd} title={p.name}>{p.human_name || p.name}</td>
-              <td style={thtd}>{p.version}</td>
-              <td style={thtd}>{latest || ''}</td>
-              <td style={thtd}>
-                  {updateAvailable && <button style={smallBtn} onClick={()=> {
-                  // need to find which source has that version; naive: iterate catalogs
-                  let sourceFor: string | null = null;
-                  for (const [srcName, entries] of Object.entries(catalog) as any) { if ((entries as any[]).find((e:any) => e.plugin_name===p.name && e.version===latest)) { sourceFor=srcName; break; } }
-                  if (sourceFor) updatePlugin(sourceFor, p.name); else alert('Latest version not found in loaded catalogs');
-                }}>Update</button>}{' '}
-                {isInactive && <button style={smallBtn} onClick={()=> {
-                  // find any catalog entry with same or newer version to reinstall (overwrite)
-                  let found: {source:string, version:string}|null = null;
-                  for (const [srcName, entries] of Object.entries(catalog) as any) {
-                    for (const e of (entries as any[])) {
-                      if (e.plugin_name === p.name) { found = {source: srcName, version: e.version}; break; }
-                    }
-                    if (found) break;
-                  }
-                  if (found) startInstall(found.source, p.name, true); else alert('No catalog entry found to reinstall');
-                }}>{p.status==='removed' ? 'Reinstall' : 'Retry'}</button>}{' '}
-                <button style={smallBtn} onClick={()=>removePlugin(p.name)}>Remove</button>
-                {' '}
-                <button style={smallBtn} onClick={async ()=>{
-                  if (openConfig === p.name) { setOpenConfig(null); return; }
-                  setOpenConfig(p.name);
-                  if (!pluginSettings[p.name]) await loadPluginSettings(p.name);
-                }}>{openConfig===p.name ? 'Close' : 'Configure'}</button>
-              </td>
-            </tr>;
-        })}</tbody>
+            const rowBackground = updateAvailable
+              ? '#262214'
+              : p.status === 'removed'
+              ? '#201818'
+              : p.status === 'error'
+              ? '#2a1a1a'
+              : 'transparent';
+
+            const handleUpdate = async () => {
+              const match = latest ? findCatalogEntry(p.name, latest) : null;
+              if (!match) {
+                alert('Latest version not found in loaded catalogs. Refresh sources and try again.');
+                return;
+              }
+              await updatePlugin(match.source, p.name);
+            };
+
+            const handleReinstall = async () => {
+              const match = findCatalogEntry(p.name, latest || undefined) || findCatalogEntry(p.name);
+              if (!match) {
+                alert('No catalog entry found to reinstall this plugin.');
+                return;
+              }
+              await startInstall(match.source, p.name, true);
+            };
+
+            const handleConfigure = async () => {
+              if (openConfig === p.name) {
+                setOpenConfig(null);
+                return;
+              }
+              setOpenConfig(p.name);
+              if (!pluginSettings[p.name]) {
+                await loadPluginSettings(p.name);
+              }
+            };
+
+            return (
+              <tr key={p.name} style={{ background: rowBackground }}>
+                <td style={thtd} title={p.name}>
+                  <div style={{ fontWeight: 600 }}>{p.human_name || p.name}</div>
+                  {p.human_name && p.human_name !== p.name && (
+                    <div style={{ fontSize: 10, opacity: 0.6 }}>{p.name}</div>
+                  )}
+                  {p.server_link && (
+                    <div style={{ marginTop: 4 }}>
+                      <a
+                        href={p.server_link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ fontSize: 10, color: '#4aa3ff', textDecoration: 'underline' }}
+                      >
+                        Docs
+                      </a>
+                    </div>
+                  )}
+                  {p.last_error && (
+                    <div style={{ fontSize: 10, color: '#ff928a', marginTop: 4 }}>
+                      Error: {p.last_error}
+                    </div>
+                  )}
+                </td>
+                <td style={thtd}>{p.version || '—'}</td>
+                <td style={thtd}>{latest || '—'}</td>
+                <td style={thtd}>
+                  <div>{p.status || 'unknown'}</div>
+                  {p.migration_head && (
+                    <div style={{ fontSize: 10, opacity: 0.6 }}>Migration: {p.migration_head}</div>
+                  )}
+                </td>
+                <td style={{ ...thtd, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                  {updateAvailable ? (
+                    <button style={smallBtn} onClick={handleUpdate}>Update</button>
+                  ) : null}
+                  {p.status === 'error' ? (
+                    <button style={smallBtn} onClick={() => reloadPlugin(p.name)}>Retry</button>
+                  ) : null}
+                  {p.status === 'removed' ? (
+                    <button style={smallBtn} onClick={handleReinstall}>Reinstall</button>
+                  ) : null}
+                  <button style={smallBtn} onClick={() => removePlugin(p.name)}>Remove</button>
+                  <button style={smallBtn} onClick={handleConfigure}>
+                    {openConfig === p.name ? 'Close' : 'Configure'}
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
       </table>
     );
   }
 
-  function FieldRenderer({f, pluginName}: {f:any, pluginName:string}) {
+  function FieldRenderer({ f, pluginName }: { f: any; pluginName: string }) {
     const t = f.type || 'string';
     const label = f.label || f.key;
     const savedValue = f.value === undefined ? f.default : f.value;
+
     if (t === 'path_map') {
-      const containerStyle: React.CSSProperties = { position:'relative', padding:'4px 4px 6px', border:'1px solid #2a2a2a', borderRadius:4, background:'#101010' };
+      const containerStyle: React.CSSProperties = {
+        position: 'relative',
+        padding: '4px 4px 6px',
+        border: '1px solid #2a2a2a',
+        borderRadius: 4,
+        background: '#101010',
+      };
       const storedNormalized = normalizePathMappingList(savedValue);
       const defaultNormalized = normalizePathMappingList(f.default);
       const changedMap = JSON.stringify(storedNormalized) !== JSON.stringify(defaultNormalized);
       return (
         <div style={containerStyle}>
-          <div style={{fontSize:12, marginBottom:6}}>
-            {label} {changedMap && <span style={{color:'#ffa657', fontSize:10}}>•</span>}
+          <div style={{ fontSize: 12, marginBottom: 6 }}>
+            {label} {changedMap && <span style={{ color: '#ffa657', fontSize: 10 }}>•</span>}
           </div>
           <PathMapEditor
             value={savedValue}
@@ -657,54 +749,37 @@ const PluginSettings = () => {
         </div>
       );
     }
+
     const changed = savedValue !== undefined && savedValue !== null && f.default !== undefined && savedValue !== f.default;
-    const inputStyle: React.CSSProperties = { padding:6, background:'#111', color:'#eee', border:'1px solid #333', minWidth:120 };
-    const wrap: React.CSSProperties = { position:'relative', padding:'4px 4px 6px', border:'1px solid #2a2a2a', borderRadius:4, background:'#101010' };
-    const resetStyle: React.CSSProperties = { position:'absolute', top:2, right:4, fontSize:9, padding:'1px 4px', cursor:'pointer' };
-    const labelEl = <span>{label} {changed && <span style={{color:'#ffa657', fontSize:10}}>•</span>}</span>;
+    const inputStyle: React.CSSProperties = { padding: 6, background: '#111', color: '#eee', border: '1px solid #333', minWidth: 120 };
+    const wrap: React.CSSProperties = { position: 'relative', padding: '4px 4px 6px', border: '1px solid #2a2a2a', borderRadius: 4, background: '#101010' };
+    const resetStyle: React.CSSProperties = { position: 'absolute', top: 2, right: 4, fontSize: 9, padding: '1px 4px', cursor: 'pointer' };
+    const labelEl = <span>{label} {changed && <span style={{ color: '#ffa657', fontSize: 10 }}>•</span>}</span>;
 
     if (t === 'boolean') {
-      return <div style={wrap}><label style={{fontSize:12, display:'flex', alignItems:'center', gap:8}}>
-        <input type="checkbox" checked={!!savedValue} onChange={e=>savePluginSetting(pluginName, f.key, (e.target as any).checked)} /> {labelEl}
-      </label>{changed ? <button style={resetStyle} onClick={()=>savePluginSetting(pluginName, f.key, null)}>Reset</button> : null}</div>;
+      return (
+        <div style={wrap}>
+          <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input type="checkbox" checked={!!savedValue} onChange={(e) => savePluginSetting(pluginName, f.key, (e.target as any).checked)} /> {labelEl}
+          </label>
+          {changed ? <button style={resetStyle} onClick={() => savePluginSetting(pluginName, f.key, null)}>Reset</button> : null}
+        </div>
+      );
     }
 
     if (t === 'number') {
-      const [draft, setDraft] = React.useState(() => (savedValue === undefined || savedValue === null ? '' : String(savedValue)));
-      const [dirty, setDirty] = React.useState(false);
-      React.useEffect(() => {
-        if (!dirty) {
-          setDraft(savedValue === undefined || savedValue === null ? '' : String(savedValue));
-        }
-      }, [savedValue, dirty]);
+      const display = savedValue === undefined || savedValue === null ? '' : String(savedValue);
+      const inputKey = `${pluginName}:${f.key}:${display}`;
 
-      const commit = React.useCallback(async () => {
-        if (!dirty) return;
-        const normalized = (draft ?? '').toString().trim();
-        const payload = normalized === '' ? null : Number(normalized);
+      const handleBlur = async (event: any) => {
+        const raw = (event.target as any).value;
+        if (raw === display) return;
+        const trimmed = (raw ?? '').toString().trim();
+        const payload = trimmed === '' ? null : Number(trimmed);
         if (payload !== null && Number.isNaN(payload)) {
           return;
         }
-        const ok = await savePluginSetting(pluginName, f.key, payload);
-        if (ok) {
-          setDirty(false);
-        }
-      }, [dirty, draft, pluginName, f.key]);
-
-      const handleReset = React.useCallback(async () => {
-        const prev = draft;
-        setDraft('');
-        setDirty(false);
-        const ok = await savePluginSetting(pluginName, f.key, null);
-        if (!ok) {
-          setDraft(prev);
-          setDirty(true);
-        }
-      }, [draft, pluginName, f.key]);
-
-      const handleChange = (event: any) => {
-        setDraft(event.target.value);
-        setDirty(true);
+        await savePluginSetting(pluginName, f.key, payload);
       };
 
       const handleKeyDown = (event: any) => {
@@ -714,15 +789,19 @@ const PluginSettings = () => {
         }
       };
 
+      const handleReset = async () => {
+        await savePluginSetting(pluginName, f.key, null);
+      };
+
       return (
         <div style={wrap}>
-          <label style={{fontSize:12}}>{labelEl}<br/>
+          <label style={{ fontSize: 12 }}>{labelEl}<br />
             <input
+              key={inputKey}
               style={inputStyle}
               type="number"
-              value={draft}
-              onChange={handleChange}
-              onBlur={commit}
+              defaultValue={display}
+              onBlur={handleBlur}
               onKeyDown={handleKeyDown}
             />
           </label>
@@ -735,12 +814,17 @@ const PluginSettings = () => {
       const handleReset = async () => {
         await savePluginSetting(pluginName, f.key, null);
       };
+
       return (
         <div style={wrap}>
-          <label style={{fontSize:12}}>{labelEl}<br/>
-            <select style={inputStyle} value={savedValue ?? ''} onChange={e=>savePluginSetting(pluginName, f.key, (e.target as any).value)}>
+          <label style={{ fontSize: 12 }}>{labelEl}<br />
+            <select style={inputStyle} value={savedValue ?? ''} onChange={(e) => savePluginSetting(pluginName, f.key, (e.target as any).value)}>
               <option value="">(unset)</option>
-              {(f.options||[]).map((o:any,i:number)=><option key={i} value={o}>{typeof o === 'object' ? (o.value ?? o.key ?? JSON.stringify(o)) : String(o)}</option>)}
+              {(f.options || []).map((o: any, i: number) => (
+                <option key={i} value={o}>
+                  {typeof o === 'object' ? (o.value ?? o.key ?? JSON.stringify(o)) : String(o)}
+                </option>
+              ))}
             </select>
           </label>
           {changed ? <button style={resetStyle} onClick={handleReset}>Reset</button> : null}
@@ -748,36 +832,13 @@ const PluginSettings = () => {
       );
     }
 
-    const [draft, setDraft] = React.useState(() => (savedValue === undefined || savedValue === null ? '' : String(savedValue)));
-    const [dirty, setDirty] = React.useState(false);
-    React.useEffect(() => {
-      if (!dirty) {
-        setDraft(savedValue === undefined || savedValue === null ? '' : String(savedValue));
-      }
-    }, [savedValue, dirty]);
+    const display = savedValue === undefined || savedValue === null ? '' : String(savedValue);
+    const inputKey = `${pluginName}:${f.key}:${display}`;
 
-    const commit = React.useCallback(async () => {
-      if (!dirty) return;
-      const ok = await savePluginSetting(pluginName, f.key, draft);
-      if (ok) {
-        setDirty(false);
-      }
-    }, [dirty, draft, pluginName, f.key]);
-
-    const handleReset = React.useCallback(async () => {
-      const prev = draft;
-      setDraft('');
-      setDirty(false);
-      const ok = await savePluginSetting(pluginName, f.key, null);
-      if (!ok) {
-        setDraft(prev);
-        setDirty(true);
-      }
-    }, [draft, pluginName, f.key]);
-
-    const handleChange = (event: any) => {
-      setDraft(event.target.value ?? '');
-      setDirty(true);
+    const handleBlur = async (event: any) => {
+      const next = (event.target as any).value ?? '';
+      if (next === display) return;
+      await savePluginSetting(pluginName, f.key, next);
     };
 
     const handleKeyDown = (event: any) => {
@@ -787,14 +848,18 @@ const PluginSettings = () => {
       }
     };
 
+    const handleReset = async () => {
+      await savePluginSetting(pluginName, f.key, null);
+    };
+
     return (
       <div style={wrap}>
-        <label style={{fontSize:12}}>{labelEl}<br/>
+        <label style={{ fontSize: 12 }}>{labelEl}<br />
           <input
+            key={inputKey}
             style={inputStyle}
-            value={draft}
-            onChange={handleChange}
-            onBlur={commit}
+            defaultValue={display}
+            onBlur={handleBlur}
             onKeyDown={handleKeyDown}
           />
         </label>

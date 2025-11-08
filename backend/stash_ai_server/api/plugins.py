@@ -80,6 +80,9 @@ class RemovePlanResponse(BaseModel):
     dependents: List[str]
     human_names: Dict[str, Optional[str]] = {}
 
+class ReloadRequest(BaseModel):
+    plugin: str
+
 @router.get('/installed', response_model=List[PluginMetaModel])
 async def list_installed(active_only: bool = False, include_removed: bool = False, db: Session = Depends(get_db)):
     """List plugin metadata rows.
@@ -103,7 +106,7 @@ async def list_installed(active_only: bool = False, include_removed: bool = Fals
 @router.get('/sources', response_model=List[PluginSourceModel])
 async def list_sources(db: Session = Depends(get_db)):
     rows = db.execute(select(PluginSource)).scalars().all()
-    return rows
+    return [row for row in rows if row.name != 'local']
 
 @router.post('/sources', response_model=PluginSourceModel)
 async def create_source(payload: PluginSourceCreate, db: Session = Depends(get_db)):
@@ -123,6 +126,8 @@ async def delete_source(source_name: str, db: Session = Depends(get_db)):
     row = db.execute(select(PluginSource).where(PluginSource.name == source_name)).scalar_one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail='NOT_FOUND')
+    if row.name == 'local':
+        raise HTTPException(status_code=400, detail='SOURCE_IMMUTABLE')
     db.delete(row)
     db.commit()
     return {'status': 'deleted'}
@@ -237,6 +242,8 @@ async def refresh_source(source_name: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail='NOT_FOUND')
     if not src.enabled:
         raise HTTPException(status_code=400, detail='SOURCE_DISABLED')
+    if src.name == 'local':
+        raise HTTPException(status_code=400, detail='SOURCE_IMMUTABLE')
 
     errors: List[str] = []
     fetched = 0
@@ -389,6 +396,20 @@ async def remove_plan(body: dict = Body(...), db: Session = Depends(get_db)):
         human_names=plan.human_names,
     )
 
+@router.post('/reload', response_model=PluginMetaModel)
+async def reload_plugin_endpoint(payload: ReloadRequest, db: Session = Depends(get_db)):
+    plugin_name = (payload.plugin or '').strip()
+    if not plugin_name:
+        raise HTTPException(status_code=400, detail='PLUGIN_REQUIRED')
+    try:
+        meta = plugin_loader.reload_plugin(db, plugin_name)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail='PLUGIN_NOT_FOUND')
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail='RELOAD_FAILED') from exc
+    return meta
 
 @router.post('/remove')
 async def remove_plugin_api(body: dict = Body(...), db: Session = Depends(get_db)):

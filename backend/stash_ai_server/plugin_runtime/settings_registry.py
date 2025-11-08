@@ -38,3 +38,44 @@ def register_settings(db: Session, plugin_name: str, definitions: Iterable[Mappi
             if meta_changed: changed = True
     if changed:
         db.commit()
+
+
+def load_plugin_settings(plugin_name: str) -> dict[str, Any]:
+    """Load current plugin settings from the database (value fallback to default).
+
+    This mirrors the logic used by service registration so plugins without a
+    dedicated service class can still consume their stored settings during
+    module import or initialization.
+    """
+    try:
+        from stash_ai_server.db.session import SessionLocal
+    except Exception:
+        return {}
+
+    session = None
+    try:
+        session = SessionLocal()
+    except Exception:
+        return {}
+
+    try:
+        rows = (
+            session.execute(
+                select(PluginSetting).where(PluginSetting.plugin_name == plugin_name)
+            ).scalars().all()
+        )
+        resolved: Dict[str, Any] = {}
+        for row in rows:
+            value = row.value if row.value is not None else row.default_value
+            if value is None:
+                continue
+            resolved[row.key] = value
+        return resolved
+    except Exception:
+        return {}
+    finally:
+        try:
+            if session is not None:
+                session.close()
+        except Exception:
+            pass
