@@ -60,13 +60,16 @@ function collectSelectedIds(page: PageContext['page']): string[] | undefined {
     const checkboxSelectors = [
       '.grid-card .card-check:checked',
       '.scene-card .card-check:checked',
+      '.scene-grid-card .card-check:checked',
+      '.scene-result input[type="checkbox"]:checked',
+      'tr[data-id] input[type="checkbox"]:checked',
       '.performer-card .card-check:checked',
       '.gallery-card .card-check:checked',
       '.image-card .card-check:checked'
     ].join(', ');
     const checked = document.querySelectorAll(checkboxSelectors);
     checked.forEach(cb => {
-      const card = cb.closest('.grid-card, .scene-card, .performer-card, .gallery-card, .image-card');
+      const card = cb.closest('.grid-card, .scene-card, .scene-grid-card, .scene-result, tr[data-id], li[data-id], .performer-card, .gallery-card, .image-card');
       if (!card) return;
 
       // Prefer extracting from inner anchor href (stable route pattern)
@@ -88,7 +91,7 @@ function collectSelectedIds(page: PageContext['page']): string[] | undefined {
 
     // 2. If none via checkboxes, look for cards explicitly marked selected with data-id
     if (ids.size === 0) {
-      const attrSelected = document.querySelectorAll('[data-id].selected, [data-id].is-selected, .is-selected [data-id]');
+      const attrSelected = document.querySelectorAll('[data-id].selected, [data-id].is-selected, .is-selected [data-id], tr[data-id].table-active, tr[data-id].selected');
       attrSelected.forEach(el => {
         const id = (el as HTMLElement).getAttribute('data-id');
         if (id && /^\d+$/.test(id)) ids.add(id);
@@ -135,7 +138,7 @@ function resolveElementId(card: Element, expectedPage?: PageContext['page']): st
 function collectVisibleIds(page: PageContext['page']): string[] | undefined {
   try {
     const ids = new Set<string>();
-    const cardSelectors = '.grid-card, .scene-card, .performer-card, .gallery-card, .image-card';
+    const cardSelectors = '.grid-card, .scene-card, .scene-grid-card, .scene-result, tr[data-id], li[data-id], .performer-card, .gallery-card, .image-card';
     document.querySelectorAll(cardSelectors).forEach(card => {
       const id = resolveElementId(card, page);
       if (id) ids.add(id);
