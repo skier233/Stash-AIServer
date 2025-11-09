@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from stash_ai_server.db.session import SessionLocal
 from stash_ai_server.models.plugin import PluginSetting
+from stash_ai_server.utils.string_utils import normalize_null_strings
 
 SYSTEM_PLUGIN_NAME = '__system__'
 
@@ -60,13 +61,24 @@ def seed_system_settings():
         for d in _DEFS:
             key = d['key']
             row = existing.get(key)
-            env_val = os.getenv(key)
+            env_val = normalize_null_strings(os.getenv(key))
+            default_val = normalize_null_strings(d.get('default'))
+            options_val = normalize_null_strings(d.get('options'))
             if row is None:
                 # establish row
                 val = None
                 if env_val is not None:
                     val = _coerce_value(d['type'], env_val)
-                row = PluginSetting(plugin_name=SYSTEM_PLUGIN_NAME, key=key, type=d.get('type','string'), label=d.get('label') or key, description=d.get('description'), default_value=d.get('default'), options=d.get('options'), value=(val if val is not None else d.get('default')))
+                row = PluginSetting(
+                    plugin_name=SYSTEM_PLUGIN_NAME,
+                    key=key,
+                    type=d.get('type','string'),
+                    label=d.get('label') or key,
+                    description=d.get('description'),
+                    default_value=default_val,
+                    options=options_val,
+                    value=(val if val is not None else default_val),
+                )
                 db.add(row)
                 changed = True
             else:
@@ -77,13 +89,13 @@ def seed_system_settings():
                 if (row.label or '') != label: row.label = label; meta_changed = True
                 desc = d.get('description')
                 if (row.description or '') != (desc or ''): row.description = desc; meta_changed = True
-                if row.default_value != d.get('default'):
+                if row.default_value != default_val:
                     # If transitioning STASH_PORT default from legacy 9999 to None and value still equals old default, clear it.
-                    if key == 'STASH_PORT' and row.value == 9999 and d.get('default') in (None, '', 0):
+                    if key == 'STASH_PORT' and row.value == 9999 and default_val in (None, '', 0):
                         row.value = None
-                    row.default_value = d.get('default')
+                    row.default_value = default_val
                     meta_changed = True
-                if row.options != d.get('options'): row.options = d.get('options'); meta_changed = True
+                if row.options != options_val: row.options = options_val; meta_changed = True
                 # If environment provides value and row has no explicit value (value==default), set it.
                 if env_val is not None and row.value in (None, row.default_value):
                     row.value = _coerce_value(d.get('type','string'), env_val)

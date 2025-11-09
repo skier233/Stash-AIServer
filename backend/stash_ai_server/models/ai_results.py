@@ -18,8 +18,8 @@ class AIModel(Base):
     name: Mapped[str] = mapped_column(sa.String(150), nullable=False)
     version: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
     model_type: Mapped[str | None] = mapped_column(sa.String(50), nullable=True)
-    categories: Mapped[list[str] | None] = mapped_column(sa.JSON, nullable=True)
-    extra: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
+    categories: Mapped[list[str] | None] = mapped_column(sa.JSON(none_as_null=True), nullable=True)
+    extra: Mapped[dict | None] = mapped_column(sa.JSON(none_as_null=True), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(
         sa.DateTime, nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")
     )
@@ -41,12 +41,12 @@ class AIModelRun(Base):
     entity_type: Mapped[str] = mapped_column(sa.String(20), nullable=False)
     entity_id: Mapped[int] = mapped_column(sa.Integer, nullable=False)
     status: Mapped[str] = mapped_column(sa.String(20), nullable=False, server_default="completed")
-    input_params: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
+    input_params: Mapped[dict | None] = mapped_column(sa.JSON(none_as_null=True), nullable=True)
     started_at: Mapped[dt.datetime] = mapped_column(
         sa.DateTime, nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")
     )
     completed_at: Mapped[dt.datetime | None] = mapped_column(sa.DateTime, nullable=True)
-    result_metadata: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
+    result_metadata: Mapped[dict | None] = mapped_column(sa.JSON(none_as_null=True), nullable=True)
 
     models: Mapped[list[AIModelRunModel]] = relationship(
         "AIModelRunModel", back_populates="run", cascade="all, delete-orphan"
@@ -70,7 +70,7 @@ class AIModelRunModel(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     run_id: Mapped[int] = mapped_column(sa.ForeignKey("ai_model_runs.id", ondelete="CASCADE"), nullable=False)
     model_id: Mapped[int | None] = mapped_column(sa.ForeignKey("ai_models.id", ondelete="SET NULL"), nullable=True)
-    input_params: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
+    input_params: Mapped[dict | None] = mapped_column(sa.JSON(none_as_null=True), nullable=True)
     frame_interval: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
     created_at: Mapped[sa.DateTime] = mapped_column(
         sa.DateTime, nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")
@@ -98,14 +98,14 @@ class AIResultTimespan(Base):
     value_id: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
     start_s: Mapped[float] = mapped_column(sa.Float, nullable=False)
     end_s: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
-    value_json: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
+    value_json: Mapped[dict | None] = mapped_column(sa.JSON(none_as_null=True), nullable=True)
 
     run: Mapped[AIModelRun] = relationship("AIModelRun", back_populates="timespans")
 
     __table_args__ = (
         sa.Index("ix_ai_timespans_entity", "entity_type", "entity_id"),
         sa.Index("ix_ai_timespans_run", "run_id"),
-    sa.Index("ix_ai_timespans_payload", "payload_type", "category", "str_value"),
+        sa.Index("ix_ai_timespans_payload", "payload_type", "category", "str_value"),
         sa.Index("ix_ai_timespans_start", "entity_type", "entity_id", "start_s"),
     )
 
@@ -123,7 +123,7 @@ class AIResultAggregate(Base):
     value_id: Mapped[int | None] = mapped_column(sa.Integer, nullable=True)
     metric: Mapped[str] = mapped_column(sa.String(50), nullable=False)
     value_float: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
-    value_json: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
+    value_json: Mapped[dict | None] = mapped_column(sa.JSON(none_as_null=True), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(
         sa.DateTime, nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")
     )
@@ -132,7 +132,7 @@ class AIResultAggregate(Base):
 
     __table_args__ = (
         sa.Index("ix_ai_aggregates_entity", "entity_type", "entity_id"),
-    sa.Index("ix_ai_aggregates_payload", "payload_type", "str_value", "metric"),
+        sa.Index("ix_ai_aggregates_payload", "payload_type", "str_value", "metric"),
     )
 
 

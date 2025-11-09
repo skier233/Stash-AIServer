@@ -15,7 +15,7 @@ class InteractionEvent(Base):
     # Store only client timestamp
     client_ts: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     # event metadata
-    event_metadata: Mapped[dict | None] = mapped_column('metadata', JSON, nullable=True)
+    event_metadata: Mapped[dict | None] = mapped_column('metadata', JSON(none_as_null=True), nullable=True)
 
     __table_args__ = (
         UniqueConstraint('client_event_id', name='uq_interaction_client_event_id'),
@@ -102,5 +102,5 @@ class InteractionLibrarySearch(Base):
     # raw search string
     query: Mapped[str | None] = mapped_column(String(512), nullable=True)
     # structured filters JSON (tags, performers, etc.)
-    filters: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    filters: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

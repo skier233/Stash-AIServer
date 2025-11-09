@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, selectinload
 
 from stash_ai_server.db.session import SessionLocal
@@ -51,6 +51,47 @@ def _extract_frame_interval_from_run_instance(run: AIModelRun) -> float | None:
 
 
 SceneTimespanBuckets = dict[str | None, dict[str | None, list[dict[str, Any]]]]
+
+
+def _prepare_input_params(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    normalized = _normalize_null_strings(value)
+    if isinstance(normalized, Mapping):
+        return dict(normalized)
+    return None
+
+
+def _clean_category_list(value: Any) -> list[str] | None:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return None
+    normalized = _normalize_null_strings(list(value))
+    if not isinstance(normalized, Iterable) or isinstance(normalized, (str, bytes, Mapping)):
+        return None
+    cleaned: list[str] = []
+    for item in normalized:
+        if item is None:
+            continue
+        text = item.strip() if isinstance(item, str) else str(item).strip()
+        if not text:
+            continue
+        lowered = text.lower()
+        if lowered in {"null", "none"}:
+            continue
+        cleaned.append(text)
+    return cleaned or None
+
+
+def _clean_category_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = value.strip() if isinstance(value, str) else str(value).strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    if lowered in {"null", "none"}:
+        return None
+    return text
 
 
 def get_scene_timespans(
@@ -244,11 +285,7 @@ def _upsert_models(
                 AIModel.name == normalized_name,
             )
         instance = session.execute(stmt).scalar_one_or_none()
-        categories = raw.get("categories")
-        if isinstance(categories, Sequence) and not isinstance(categories, (str, bytes)):
-            categories_list = list(categories)
-        else:
-            categories_list = None
+        categories_list = _clean_category_list(raw.get("categories"))
         version_value = raw.get("version")
         try:
             version = float(version_value) if version_value is not None else None
@@ -270,6 +307,10 @@ def _upsert_models(
         }
         # normalize string 'null' values (recursively) to None to avoid wasted storage
         payload_extra = _normalize_null_strings(payload_extra)
+        if isinstance(payload_extra, Mapping):
+            payload_extra = {k: v for k, v in payload_extra.items()}
+        else:
+            payload_extra = None
         if instance is None:
             instance = AIModel(
                 service=service,
@@ -279,7 +320,7 @@ def _upsert_models(
                 version=version,
                 model_type=raw.get("type"),
                 categories=categories_list,
-                extra=payload_extra or None,
+                extra=payload_extra,
             )
             session.add(instance)
             session.flush()
@@ -289,8 +330,7 @@ def _upsert_models(
             instance.version = version
             instance.model_type = raw.get("type")
             instance.categories = categories_list
-            if payload_extra:
-                instance.extra = payload_extra
+            instance.extra = payload_extra
         mapping[lookup_key] = instance
     return mapping
 
@@ -310,9 +350,9 @@ def _assign_run_models(
         normalized_name = name or (str(model_id) if model_id is not None else "unknown")
         lookup_key = _model_lookup_key(model_id, normalized_name)
         instance = model_records.get(lookup_key)
-        raw_params = raw.get("input_params")
-        if isinstance(raw_params, Mapping):
-            stored_params = dict(raw_params)
+        raw_params = _prepare_input_params(raw.get("input_params"))
+        if raw_params is not None:
+            stored_params = raw_params
         else:
             stored_params = dict(input_params) if input_params else None
         record = AIModelRunModel(
@@ -438,7 +478,7 @@ def _store_scene_timespans(
             if not isinstance(frames, Sequence):
                 continue
             label_name = str(label)
-            category_name = str(category) if category is not None else None
+            category_name = _clean_category_value(category)
             for frame in frames:
                 if isinstance(frame, Mapping):
                     start = float(frame.get("start", 0.0))
@@ -518,6 +558,7 @@ def store_scene_run(
 
     models_payload = result_payload.get("models") or []
     now = dt.datetime.utcnow()
+    normalized_input_params = _prepare_input_params(input_params)
     with SessionLocal() as session:
         model_records = _upsert_models(
             session,
@@ -533,11 +574,19 @@ def store_scene_run(
             )
         except (TypeError, ValueError):
             frame_interval_float = None
-        if frame_interval_float is None and input_params:
+        if frame_interval_float is None and normalized_input_params:
             try:
-                frame_interval_float = float(input_params.get("frame_interval"))  # type: ignore[arg-type]
+                frame_interval_float = float(normalized_input_params.get("frame_interval"))  # type: ignore[arg-type]
             except (TypeError, ValueError, AttributeError):
                 frame_interval_float = None
+
+        raw_metadata = {
+            "schema_version": result_payload.get("schema_version"),
+            "duration": result_payload.get("duration"),
+            "frame_interval": result_payload.get("frame_interval"),
+        }
+        normalized_metadata = _normalize_null_strings(raw_metadata)
+        metadata_dict = dict(normalized_metadata) if isinstance(normalized_metadata, Mapping) else None
 
         run = AIModelRun(
             service=service,
@@ -545,13 +594,9 @@ def store_scene_run(
             entity_type="scene",
             entity_id=scene_id_int,
             status="completed",
-            input_params=dict(input_params) if input_params else None,
+            input_params=normalized_input_params,
             completed_at=now,
-            result_metadata={
-                "schema_version": result_payload.get("schema_version"),
-                "duration": result_payload.get("duration"),
-                "frame_interval": result_payload.get("frame_interval"),
-            },
+            result_metadata=metadata_dict,
         )
         session.add(run)
         session.flush()
@@ -561,7 +606,7 @@ def store_scene_run(
             run=run,
             model_records=model_records,
             models=models_payload,
-            input_params=input_params,
+            input_params=normalized_input_params,
             frame_interval=frame_interval_float,
         )
 
@@ -622,9 +667,19 @@ def store_image_run(
     if image_id_int is None:
         raise ValueError("image_id must be an integer")
 
-    categories_to_clear = tag_records.keys()
+    normalized_tag_records: dict[str | None, Sequence[int]] = {}
+    categories_to_clear: list[str] = []
+    clear_null_category = False
+    for raw_category, ids in (tag_records or {}).items():
+        cleaned_category = _clean_category_value(raw_category)
+        if cleaned_category is None:
+            clear_null_category = True
+        else:
+            categories_to_clear.append(cleaned_category)
+        normalized_tag_records[cleaned_category] = ids
 
     now = dt.datetime.now(dt.timezone.utc)
+    normalized_input_params = _prepare_input_params(input_params)
     with SessionLocal() as session:
         model_records = _upsert_models(
             session,
@@ -639,13 +694,13 @@ def store_image_run(
             entity_type="image",
             entity_id=image_id_int,
             status="completed",
-            input_params=dict(input_params) if input_params else None,
+            input_params=normalized_input_params,
             completed_at=now,
         )
         session.add(run)
         session.flush()
 
-        if categories_to_clear:
+        if categories_to_clear or clear_null_category:
             stale_run_ids = (
                 select(AIModelRun.id)
                 .where(
@@ -655,12 +710,20 @@ def store_image_run(
                     AIModelRun.id != run.id,
                 )
             )
-            session.execute(
-                delete(AIResultAggregate).where(
-                    AIResultAggregate.run_id.in_(stale_run_ids),
-                    AIResultAggregate.category.in_(categories_to_clear),
+            if categories_to_clear:
+                session.execute(
+                    delete(AIResultAggregate).where(
+                        AIResultAggregate.run_id.in_(stale_run_ids),
+                        AIResultAggregate.category.in_(categories_to_clear),
+                    )
                 )
-            )
+            if clear_null_category:
+                session.execute(
+                    delete(AIResultAggregate).where(
+                        AIResultAggregate.run_id.in_(stale_run_ids),
+                        AIResultAggregate.category.is_(None),
+                    )
+                )
 
         if requested_models:
             _assign_run_models(
@@ -668,11 +731,11 @@ def store_image_run(
                 run=run,
                 model_records=model_records,
                 models=requested_models,
-                input_params=None,
+                input_params=normalized_input_params,
                 frame_interval=None,
             )
 
-        for category_value, tag_ids in tag_records.items():
+        for category_value, tag_ids in normalized_tag_records.items():
             for tag_id in tag_ids:
                 aggregate = AIResultAggregate(
                     run=run,

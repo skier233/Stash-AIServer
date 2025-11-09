@@ -10,13 +10,14 @@ Only path constant PLUGIN_DIR still points to the on-disk extensions folder
 """
 import os, pathlib, yaml, importlib, sys, traceback, tempfile, zipfile, shutil, types, logging
 from dataclasses import dataclass, field
-from typing import List, Dict, Set, Optional, Tuple
+from typing import List, Dict, Set, Optional, Tuple, Iterable, Any
 from packaging import version as _v
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from stash_ai_server.db.session import SessionLocal, engine
 from stash_ai_server.core.config import settings
 from stash_ai_server.models.plugin import PluginMeta, PluginSetting, PluginSource, PluginCatalog
+from stash_ai_server.utils.string_utils import normalize_null_strings
 from stash_ai_server.plugin_runtime.settings_registry import register_settings
 from stash_ai_server.services.registry import services
 from stash_ai_server.recommendations.registry import recommender_registry
@@ -25,6 +26,29 @@ import httpx
 from io import BytesIO
 
 _log = logging.getLogger("stash_ai_server.plugins.loader")
+
+
+def _sanitize_dependency_list(raw: Any) -> List[str]:
+    """Normalize dependency declarations by removing placeholder null strings."""
+    normalized = normalize_null_strings(raw)
+    if isinstance(normalized, (list, tuple, set)):
+        items: Iterable[Any] = normalized
+    elif normalized is None:
+        return []
+    else:
+        items = (normalized,)
+    cleaned: List[str] = []
+    for item in items:
+        if item is None:
+            continue
+        text = str(item).strip()
+        if not text:
+            continue
+        lowered = text.lower()
+        if lowered in {"null", "none"}:
+            continue
+        cleaned.append(text)
+    return cleaned
 
 # NOTE: We still load plugin python packages from stash_ai_server.plugins.<plugin_name> so
 # that individual plugin code remains in that namespace. The loader itself is
@@ -97,9 +121,7 @@ def _parse_manifest(path: pathlib.Path) -> PluginManifest | None:
         files = data.get('files', [])
         if not isinstance(files, list):
             files = []
-        depends_on = data.get('depends_on', []) or []
-        if not isinstance(depends_on, list):
-            depends_on = []
+        depends_on = _sanitize_dependency_list(data.get('depends_on'))
         human_name = data.get('human_name') or data.get('title') or data.get('label')
         server_link = data.get('server_link') or data.get('serverLink')
         pip_deps = data.get('pip_dependencies') or data.get('pip-dependencies') or data.get('python_dependencies') or []
@@ -111,7 +133,16 @@ def _parse_manifest(path: pathlib.Path) -> PluginManifest | None:
         if path.parent.name != name:
             print(f"[plugin] manifest name mismatch dir={path.parent.name} name={name}", flush=True)
             return None
-        return PluginManifest(name=name, version=str(ver), required_backend=str(req), files=[str(f) for f in files], depends_on=[str(d) for d in depends_on], human_name=human_name, server_link=server_link, pip_dependencies=[str(p) for p in pip_deps])
+        return PluginManifest(
+            name=name,
+            version=str(ver),
+            required_backend=str(req),
+            files=[str(f) for f in files],
+            depends_on=_sanitize_dependency_list(depends_on),
+            human_name=human_name,
+            server_link=server_link,
+            pip_dependencies=[str(p) for p in pip_deps],
+        )
     except Exception as e:  # noqa: BLE001
         print(f"[plugin] failed to parse {path}: {e}", flush=True)
         return None
@@ -130,15 +161,15 @@ def _load_catalog_row_for_plugin(db: Session, plugin_name: str, preferred_source
 def _catalog_dependencies(row: PluginCatalog) -> List[str]:
     try:
         deps_field = (row.dependencies_json or {}).get('plugins') if isinstance(row.dependencies_json, dict) else None
-        if isinstance(deps_field, list):
-            return [str(d) for d in deps_field]
+        cleaned = _sanitize_dependency_list(deps_field)
+        if cleaned:
+            return cleaned
     except Exception:
         pass
     manifest = row.manifest_json or {}
     raw = manifest.get('dependsOn') or manifest.get('depends_on') or []
-    if isinstance(raw, list):
-        return [str(d) for d in raw]
-    return []
+    cleaned_manifest = _sanitize_dependency_list(raw)
+    return cleaned_manifest
 
 
 def _catalog_human_name(row: PluginCatalog) -> Optional[str]:
@@ -222,7 +253,7 @@ def _ensure_catalog_entry_from_manifest(
         return
 
     src = _ensure_local_source(db)
-    dependencies = manifest.depends_on or []
+    dependencies = _sanitize_dependency_list(manifest.depends_on)
     dependencies_json = {'plugins': dependencies} if dependencies else None
     row = PluginCatalog(
         source_id=src.id,
@@ -232,7 +263,7 @@ def _ensure_catalog_entry_from_manifest(
         human_name=manifest.human_name,
         server_link=manifest.server_link,
         dependencies_json=dependencies_json,
-        manifest_json=raw_manifest if isinstance(raw_manifest, dict) else None,
+        manifest_json=normalize_null_strings(raw_manifest) if isinstance(raw_manifest, dict) else None,
     )
     db.add(row)
     db.commit()

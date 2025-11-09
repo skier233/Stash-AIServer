@@ -1022,8 +1022,8 @@ def _persist_library_search_events(db: Session, ev_list: list):
                 if not lib:
                     continue
                 meta = getattr(e, 'metadata', None) or {}
-                q = meta.get('query')
-                filters = meta.get('filters')
+                q = normalize_null_strings(meta.get('query'))
+                filters = normalize_null_strings(meta.get('filters'))
                 try:
                     db.add(InteractionLibrarySearch(session_id=e.session_id, library=lib, query=q, filters=filters))
                 except Exception:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 from datetime import datetime, timezone
+from typing import Any
 from sqlalchemy import Integer, String, DateTime, Text, Boolean, JSON, ForeignKey
 from sqlalchemy.orm import relationship
 from sqlalchemy.orm import Mapped, mapped_column
@@ -42,8 +43,8 @@ class PluginCatalog(Base):
     description: Mapped[str | None] = mapped_column(String(500), nullable=True)
     human_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
     server_link: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    dependencies_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # {"plugins": [..]}
-    manifest_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    dependencies_json: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)  # {"plugins": [..]}
+    manifest_json: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now(timezone.utc), onupdate=datetime.now(timezone.utc), nullable=False)
     source = relationship('PluginSource', back_populates='catalog_entries')
 
@@ -56,8 +57,8 @@ class PluginSetting(Base):
     type: Mapped[str] = mapped_column(String(32), nullable=False, default='string')
     label: Mapped[str | None] = mapped_column(String(150), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    default_value: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    options: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # store list or dict
-    value: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    default_value: Mapped[Any | None] = mapped_column(JSON(none_as_null=True), nullable=True)
+    options: Mapped[Any | None] = mapped_column(JSON(none_as_null=True), nullable=True)
+    value: Mapped[Any | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now(timezone.utc), onupdate=datetime.now(timezone.utc), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now(timezone.utc), nullable=False)

@@ -162,7 +162,7 @@ async def upsert_setting(plugin_name: str, key: str, payload: SettingUpsert, db:
         db.commit()
         db.refresh(row)
     # Basic validation by type
-    v = payload.value
+    v = normalize_null_strings(payload.value)
     if v is not None:
         if row.type == 'number':
             try:
@@ -182,8 +182,6 @@ async def upsert_setting(plugin_name: str, key: str, payload: SettingUpsert, db:
             opts = row.options if isinstance(row.options, list) else []
             if v not in opts:
                 raise HTTPException(status_code=400, detail='INVALID_OPTION')
-    # Normalize any 'null' string values
-    v = normalize_null_strings(v)
     # Null means reset to default
     row.value = v
     db.commit()
@@ -211,7 +209,7 @@ async def upsert_system_setting(key: str, payload: SettingUpsert, db: Session = 
     row = db.execute(select(PluginSetting).where(PluginSetting.plugin_name == SYSTEM_PLUGIN_NAME, PluginSetting.key == key)).scalar_one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail='NOT_FOUND')
-    v = payload.value
+    v = normalize_null_strings(payload.value)
     previous_effective = row.value if row.value is not None else row.default_value
     if v is not None:
         if row.type == 'number':
@@ -277,6 +275,24 @@ async def refresh_source(source_name: str, db: Session = Depends(get_db)):
                         plugin_name = entry.get('name') or entry.get('plugin_name')
                         if not plugin_name:
                             continue
+                        raw_dep = entry.get('dependsOn')
+                        if raw_dep is None:
+                            raw_dep = entry.get('depends_on')
+                        dep_normalized = normalize_null_strings(raw_dep)
+                        dependencies: list[str] = []
+                        if isinstance(dep_normalized, (list, tuple, set)):
+                            for dep in dep_normalized:
+                                if dep is None:
+                                    continue
+                                dep_text = str(dep).strip()
+                                if not dep_text or dep_text.lower() in ('null', 'none'):
+                                    continue
+                                dependencies.append(dep_text)
+                        elif dep_normalized:
+                            dep_text = str(dep_normalized).strip()
+                            if dep_text and dep_text.lower() not in ('null', 'none'):
+                                dependencies.append(dep_text)
+                        manifest_copy = normalize_null_strings(entry)
                         catalog = PluginCatalog(
                             source_id=src.id,
                             plugin_name=plugin_name,
@@ -284,8 +300,8 @@ async def refresh_source(source_name: str, db: Session = Depends(get_db)):
                             description=entry.get('description'),
                             human_name=entry.get('humanName') or entry.get('human_name'),
                             server_link=entry.get('serverLink') or entry.get('server_link'),
-                            dependencies_json={'plugins': entry.get('dependsOn') or entry.get('depends_on') or []},
-                            manifest_json=entry,
+                            dependencies_json={'plugins': dependencies} if dependencies else None,
+                            manifest_json=manifest_copy if isinstance(manifest_copy, dict) else None,
                         )
                         db.add(catalog)
                         fetched += 1
