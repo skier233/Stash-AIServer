@@ -751,7 +751,7 @@ const PluginSettings = () => {
       const changedMap = JSON.stringify(storedNormalized) !== JSON.stringify(defaultNormalized);
       return (
         <div style={containerStyle}>
-          <div style={{ fontSize: 12, marginBottom: 6 }}>
+          <div title={f && f.description ? String(f.description) : undefined} style={{ fontSize: 12, marginBottom: 6 }}>
             {label} {changedMap && <span style={{ color: '#ffa657', fontSize: 10 }}>•</span>}
           </div>
           <PathMapEditor
@@ -764,11 +764,12 @@ const PluginSettings = () => {
       );
     }
 
-    const changed = savedValue !== undefined && savedValue !== null && f.default !== undefined && savedValue !== f.default;
-    const inputStyle: React.CSSProperties = { padding: 6, background: '#111', color: '#eee', border: '1px solid #333', minWidth: 120 };
-    const wrap: React.CSSProperties = { position: 'relative', padding: '4px 4px 6px', border: '1px solid #2a2a2a', borderRadius: 4, background: '#101010' };
-    const resetStyle: React.CSSProperties = { position: 'absolute', top: 2, right: 4, fontSize: 9, padding: '1px 4px', cursor: 'pointer' };
-    const labelEl = <span>{label} {changed && <span style={{ color: '#ffa657', fontSize: 10 }}>•</span>}</span>;
+  const changed = savedValue !== undefined && savedValue !== null && f.default !== undefined && savedValue !== f.default;
+  const inputStyle: React.CSSProperties = { padding: 6, background: '#111', color: '#eee', border: '1px solid #333', minWidth: 120 };
+  const wrap: React.CSSProperties = { position: 'relative', padding: '4px 4px 6px', border: '1px solid #2a2a2a', borderRadius: 4, background: '#101010' };
+  const resetStyle: React.CSSProperties = { position: 'absolute', top: 2, right: 4, fontSize: 9, padding: '1px 4px', cursor: 'pointer' };
+  const labelTitle = f && f.description ? String(f.description) : undefined;
+  const labelEl = <span title={labelTitle}>{label} {changed && <span style={{ color: '#ffa657', fontSize: 10 }}>•</span>}</span>;
 
     if (t === 'boolean') {
       return (
@@ -893,7 +894,7 @@ const PluginSettings = () => {
       const changedMap = JSON.stringify(storedNormalized) !== JSON.stringify(defaultNormalized);
       return (
         <div style={containerStyle}>
-          <div style={{fontSize:12, marginBottom:6}}>
+          <div title={f && f.description ? String(f.description) : undefined} style={{fontSize:12, marginBottom:6}}>
             {label} {changedMap && <span style={{color:'#ffa657', fontSize:10}}>•</span>}
           </div>
           <PathMapEditor
@@ -905,11 +906,12 @@ const PluginSettings = () => {
         </div>
       );
     }
-    const changed = savedValue !== undefined && savedValue !== null && f.default !== undefined && savedValue !== f.default;
-    const inputStyle: React.CSSProperties = { padding:6, background:'#111', color:'#eee', border:'1px solid #333', minWidth:140 };
-    const wrap: React.CSSProperties = { position:'relative', padding:'4px 4px 6px', border:'1px solid #2a2a2a', borderRadius:4, background:'#101010' };
-    const resetStyle: React.CSSProperties = { position:'absolute', top:2, right:4, fontSize:9, padding:'1px 4px', cursor:'pointer' };
-    const labelEl = <span>{label} {changed && <span style={{color:'#ffa657', fontSize:10}}>•</span>}</span>;
+  const changed = savedValue !== undefined && savedValue !== null && f.default !== undefined && savedValue !== f.default;
+  const inputStyle: React.CSSProperties = { padding:6, background:'#111', color:'#eee', border:'1px solid #333', minWidth:140 };
+  const wrap: React.CSSProperties = { position:'relative', padding:'4px 4px 6px', border:'1px solid #2a2a2a', borderRadius:4, background:'#101010' };
+  const resetStyle: React.CSSProperties = { position:'absolute', top:2, right:4, fontSize:9, padding:'1px 4px', cursor:'pointer' };
+  const sysLabelTitle = f && f.description ? String(f.description) : undefined;
+  const labelEl = <span title={sysLabelTitle}>{label} {changed && <span style={{color:'#ffa657', fontSize:10}}>•</span>}</span>;
 
     if (t === 'boolean') {
       return <div style={wrap}><label style={{fontSize:12, display:'flex', alignItems:'center', gap:8}}><input type="checkbox" checked={!!savedValue} onChange={e=>saveSystemSetting(f.key, (e.target as any).checked)} /> {labelEl}</label>{changed ? <button style={resetStyle} onClick={()=>saveSystemSetting(f.key, null)}>Reset</button> : null}</div>;

@@ -138,7 +138,8 @@ async def delete_source(source_name: str, db: Session = Depends(get_db)):
 @router.get('/settings/{plugin_name}', response_model=List[PluginSettingModel])
 async def list_plugin_settings(plugin_name: str, db: Session = Depends(get_db)):
     """List stored plugin settings (definitions + current values)."""
-    rows = db.execute(select(PluginSetting).where(PluginSetting.plugin_name == plugin_name)).scalars().all()
+    # Ensure deterministic ordering (DB insertion order) so frontends can rely on plugin-defined order
+    rows = db.execute(select(PluginSetting).where(PluginSetting.plugin_name == plugin_name).order_by(PluginSetting.id)).scalars().all()
     return [PluginSettingModel(
         key=r.key,
         label=r.label or r.key,
@@ -193,7 +194,8 @@ async def upsert_setting(plugin_name: str, key: str, payload: SettingUpsert, db:
 
 @router.get('/system/settings', response_model=List[PluginSettingModel])
 async def list_system_settings(db: Session = Depends(get_db)):
-    rows = db.execute(select(PluginSetting).where(PluginSetting.plugin_name == SYSTEM_PLUGIN_NAME)).scalars().all()
+    # Keep system settings in deterministic order as well
+    rows = db.execute(select(PluginSetting).where(PluginSetting.plugin_name == SYSTEM_PLUGIN_NAME).order_by(PluginSetting.id)).scalars().all()
     return [PluginSettingModel(
         key=r.key,
         label=r.label or r.key,

@@ -16,19 +16,15 @@ from stash_ai_server.utils.string_utils import normalize_null_strings
 SYSTEM_PLUGIN_NAME = '__system__'
 
 _DEFS: List[Dict[str, Any]] = [
-    { 'key': 'TASK_LOOP_INTERVAL', 'type': 'number', 'label': 'Task Loop Interval (s)', 'default': 0.05, 'description': 'Scheduler main loop sleep interval.' },
-    { 'key': 'TASK_DEBUG', 'type': 'boolean', 'label': 'Task Debug Logging', 'default': False, 'description': 'Verbose task scheduler logging.' },
     { 'key': 'STASH_URL', 'type': 'string', 'label': 'Stash URL', 'default': 'http://localhost:3000', 'description': 'Base URL of the Stash instance.' },
     { 'key': 'STASH_API_KEY', 'type': 'string', 'label': 'Stash API Key', 'default': 'REPLACE_WITH_API_KEY', 'description': 'API key used to connect to Stash.' },
-    { 'key': 'STASH_PUBLIC_BASE', 'type': 'string', 'label': 'Public Base URL Rewrite', 'default': '', 'description': 'Optional public base applied to media asset URLs.' },
-    # STASH_PORT default changed to None so that an explicitly provided URL port is respected.
-    # Previously defaulted to 9999 which unintentionally overrode URLs like http://host.docker.internal:3000
-    { 'key': 'STASH_PORT', 'type': 'number', 'label': 'Stash Port Override', 'default': None, 'description': 'Explicit port override if different from URL (leave unset to use URL port).' },
     { 'key': 'PATH_MAPPINGS', 'type': 'path_map', 'label': 'AI Overhaul Path Mappings', 'default': [], 'description': 'Rewrite stash file paths for the AI Overhaul backend when accessing media directly.' },
-    { 'key': 'INTERACTION_MIN_SESSION_MINUTES', 'type': 'number', 'label': 'Interaction Min Session (min)', 'default': 10 },
-    { 'key': 'INTERACTION_MERGE_TTL_SECONDS', 'type': 'number', 'label': 'Interaction Merge TTL (s)', 'default': 120 },
+    { 'key': 'INTERACTION_MIN_SESSION_MINUTES', 'type': 'number', 'label': 'Interaction Min Session (min)', 'description': 'Minimum session duration in minutes for determining a derived o_count', 'default': 10 },
+    { 'key': 'INTERACTION_MERGE_TTL_SECONDS', 'type': 'number', 'label': 'Interaction Merge sessions TTL (s)', 'description': 'Time to merge sessions together if they occur less than this amount of seconds apart', 'default': 120 },
+    { 'key': 'SEGMENT_MERGE_GAP_SECONDS', 'type': 'number', 'label': 'Segment Merge Gap (s)', 'description': 'Merges interaction watch segments within this amount of seconds', 'default': 0.5 },
     { 'key': 'INTERACTION_SEGMENT_TIME_MARGIN_SECONDS', 'type': 'number', 'label': 'Interaction Segment Time Margin (s)', 'default': 2 },
-    { 'key': 'SEGMENT_MERGE_GAP_SECONDS', 'type': 'number', 'label': 'Segment Merge Gap (s)', 'default': 0.5 },
+    { 'key': 'TASK_LOOP_INTERVAL', 'type': 'number', 'label': 'Task Loop Interval (s)', 'default': 0.5, 'description': 'Scheduler main loop sleep interval.' },
+    { 'key': 'TASK_DEBUG', 'type': 'boolean', 'label': 'Task Debug Logging', 'default': False, 'description': 'Verbose task scheduler logging.' },
 ]
 
 _CACHE: Dict[str, Any] = {}
@@ -90,9 +86,6 @@ def seed_system_settings():
                 desc = d.get('description')
                 if (row.description or '') != (desc or ''): row.description = desc; meta_changed = True
                 if row.default_value != default_val:
-                    # If transitioning STASH_PORT default from legacy 9999 to None and value still equals old default, clear it.
-                    if key == 'STASH_PORT' and row.value == 9999 and default_val in (None, '', 0):
-                        row.value = None
                     row.default_value = default_val
                     meta_changed = True
                 if row.options != options_val: row.options = options_val; meta_changed = True

@@ -13,13 +13,13 @@ settings:
     type: string
     default: "http://localhost:8000"
     description: Base URL for the Skier tagging backend (e.g. https://example.com)
+  - key: path_mappings
+    label: Path Mappings
+    type: path_map
+    default: []
+    description: Rewrite stash file paths before calling the ai server; each mapping defines a source prefix, replacement, and slash mode
   - key: tag_suffix
     label: Tag Name Suffix
     type: string
     default: "_AI"
     description: Suffix appended to backend tag names when creating Stash tags (if not explicitly defined in tag_settings.csv)
-  - key: path_mappings
-    label: Path Mappings
-    type: path_map
-    default: []
-    description: Rewrite stash file paths before calling the remote service; each mapping defines a source prefix, replacement, and slash mode
