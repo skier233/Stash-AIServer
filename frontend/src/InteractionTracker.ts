@@ -193,8 +193,6 @@ export class InteractionTracker {
   private pendingVideoJsPlayers: Set<any> = new Set();
   private trackedVideoJsPlayers: WeakSet<any> = new WeakSet();
   private videoJsDomObserver: MutationObserver | null = null;
-  private videoJsFallbackActiveFor: string | null = null;
-  private videoJsFallbackTimer: number | null = null;
   private readonly videoJsPrimaryIds: string[] = ['VideoJsPlayer'];
 
   private ensureSession(): string {
@@ -422,133 +420,40 @@ export class InteractionTracker {
 
   private installVideoJsHooks() {
     if (this.videoJsHooksInstalled) return;
-
-    const attachIfReady = (candidate: any): boolean => {
-      if (!candidate || typeof candidate.hook !== 'function') return false;
-      if (this.videoJsHooksInstalled) return true;
-
+    const attempt = (tries: number) => {
+      const vjs = (window as any).videojs;
+      if (!vjs || typeof vjs.hook !== 'function') {
+        if (tries < 40) setTimeout(() => attempt(tries + 1), 250);
+        return;
+      }
+      if (this.videoJsHooksInstalled) return;
       this.videoJsHooksInstalled = true;
       try {
-        candidate.hook('setup', (player: any) => {
-          try {
-            this.handleVideoJsPlayerRegistration(player);
-          } catch (err) {
-            if (this.cfg.debug) this.log('videojs setup hook error', err);
-          }
+        vjs.hook('setup', (player: any) => {
+          try { this.handleVideoJsPlayerRegistration(player); } catch (err) { if (this.cfg.debug) this.log('videojs setup hook error', err); }
         });
       } catch (err) {
         if (this.cfg.debug) this.log('videojs hook registration failed', err);
       }
       this.instrumentExistingVideoJsPlayers();
-      return true;
     };
-
-    if (attachIfReady((window as any).videojs)) return;
-
-    const descriptor = Object.getOwnPropertyDescriptor(window, 'videojs');
-    if (descriptor && !descriptor.configurable) {
-      window.addEventListener('videojsready', (event: any) => {
-        const value = event?.detail ?? (window as any).videojs;
-        attachIfReady(value);
-      });
-    } else {
-      let stored = descriptor?.value;
-      const originalGetter = descriptor?.get;
-      const originalSetter = descriptor?.set;
-
-      Object.defineProperty(window, 'videojs', {
-        configurable: true,
-        enumerable: descriptor?.enumerable ?? true,
-        get() {
-          if (originalGetter) return originalGetter.call(window);
-          return stored;
-        },
-        set(value) {
-          if (originalSetter) {
-            originalSetter.call(window, value);
-          } else {
-            stored = value;
-          }
-          const current = originalGetter ? originalGetter.call(window) : value;
-          attachIfReady(current);
-        },
-      });
-
-      const initial = originalGetter ? originalGetter.call(window) : stored;
-      attachIfReady(initial);
-    }
-
-    if (!this.videoJsHooksInstalled) {
-      let tries = 0;
-      const maxTries = 40;
-      const retry = () => {
-        if (attachIfReady((window as any).videojs)) return;
-        if (tries >= maxTries) return;
-        tries += 1;
-        setTimeout(retry, 250);
-      };
-      retry();
-    }
-
+    attempt(0);
+    this.installVideoJsDomObserver();
   }
 
-  private activateVideoJsFallbackMonitor(sceneId?: string) {
-    const requested = sceneId ?? null;
-    const scope = () => document.body || document.documentElement;
-
-    const observerHandler = (mutations: MutationRecord[]) => {
-      for (const mut of mutations) {
-        mut.addedNodes.forEach(node => this.scanNodeForVideoJsPlayers(node));
-      }
-    };
-
-    if (this.videoJsDomObserver) {
-      this.videoJsFallbackActiveFor = requested;
-      const target = scope();
-      if (target) this.scanNodeForVideoJsPlayers(target);
-      this.refreshVideoJsFallbackTimer();
-      return;
-    }
-
+  private installVideoJsDomObserver() {
+    if (this.videoJsDomObserver) return;
     try {
-      const target = scope();
-      if (!target) return;
-      this.videoJsDomObserver = new MutationObserver(observerHandler);
-      this.videoJsDomObserver.observe(target, { childList: true, subtree: true });
-      this.videoJsFallbackActiveFor = requested;
-      this.scanNodeForVideoJsPlayers(target);
-      this.refreshVideoJsFallbackTimer();
+      this.videoJsDomObserver = new MutationObserver((mutations) => {
+        for (const mut of mutations) {
+          mut.addedNodes.forEach(node => this.scanNodeForVideoJsPlayers(node));
+        }
+      });
+      this.videoJsDomObserver.observe(document.documentElement, { childList: true, subtree: true });
+      this.scanNodeForVideoJsPlayers(document.documentElement);
     } catch (err) {
-      if (this.cfg.debug) this.log('videoJs fallback observer attach failed', err);
+      if (this.cfg.debug) this.log('videoJsDomObserver attach failed', err);
     }
-  }
-
-  private deactivateVideoJsFallbackMonitor(sceneId?: string) {
-    if (!this.videoJsDomObserver) return;
-    if (sceneId && this.videoJsFallbackActiveFor && this.videoJsFallbackActiveFor !== sceneId) return;
-    try {
-      this.videoJsDomObserver.disconnect();
-    } catch {}
-    this.videoJsDomObserver = null;
-    this.videoJsFallbackActiveFor = null;
-    if (this.videoJsFallbackTimer !== null) {
-      window.clearTimeout(this.videoJsFallbackTimer);
-      this.videoJsFallbackTimer = null;
-    }
-  }
-
-  private refreshVideoJsFallbackTimer() {
-    if (this.videoJsFallbackTimer !== null) {
-      window.clearTimeout(this.videoJsFallbackTimer);
-    }
-    this.videoJsFallbackTimer = window.setTimeout(() => {
-      this.videoJsFallbackTimer = null;
-      if (this.pendingVideoJsPlayers.size > 0) {
-        this.refreshVideoJsFallbackTimer();
-        return;
-      }
-      this.deactivateVideoJsFallbackMonitor();
-    }, 30000);
   }
 
   private scanNodeForVideoJsPlayers(node: Node) {
@@ -561,7 +466,7 @@ export class InteractionTracker {
     for (const root of roots) {
       const player = this.extractVideoJsPlayer(root);
       if (player && this.shouldInstrumentVideoJsPlayer(player, { root })) {
-  this.handleVideoJsPlayerRegistration(player, { root });
+        this.handleVideoJsPlayerRegistration(player);
       }
     }
   }
@@ -669,8 +574,7 @@ export class InteractionTracker {
     try {
       const players = this.collectVideoJsPlayers();
       for (const player of players) {
-        const root = this.getVideoJsRootFromPlayer(player);
-        if (!this.shouldInstrumentVideoJsPlayer(player, { root })) continue;
+        if (!this.shouldInstrumentVideoJsPlayer(player)) continue;
         this.handleVideoJsPlayerRegistration(player);
       }
     } catch (err) {
@@ -678,10 +582,9 @@ export class InteractionTracker {
     }
   }
 
-  private handleVideoJsPlayerRegistration(player: any, ctx?: { root?: HTMLElement | null }) {
+  private handleVideoJsPlayerRegistration(player: any) {
     if (!player) return;
-    const initialRoot = ctx?.root ?? this.getVideoJsRootFromPlayer(player);
-    if (!this.shouldInstrumentVideoJsPlayer(player, { root: initialRoot })) {
+    if (!this.shouldInstrumentVideoJsPlayer(player)) {
       if (this.cfg.debug) this.log('skipping non-primary videojs player', { playerId: this.getVideoJsPlayerId(player) });
       return;
     }
@@ -693,11 +596,6 @@ export class InteractionTracker {
       });
     } catch {}
     player.ready(() => {
-      const readyRoot = this.getVideoJsRootFromPlayer(player) ?? initialRoot;
-      if (!this.shouldInstrumentVideoJsPlayer(player, { root: readyRoot })) {
-        if (this.cfg.debug) this.log('skipping non-primary videojs player (ready)', { playerId: this.getVideoJsPlayerId(player) });
-        return;
-      }
       const sceneId = this.resolveSceneIdFromContext();
       if (!sceneId) {
         this.pendingVideoJsPlayers.add(player);
@@ -785,11 +683,7 @@ export class InteractionTracker {
     this.flushPendingVideoJsPlayers(sceneId);
     const existing = this.currentScene;
     if (existing && existing.sceneId === sceneId && existing.video && existing.player) return;
-    if (this.instrumentSceneWithVideoJs(sceneId)) {
-      this.deactivateVideoJsFallbackMonitor(sceneId);
-      return;
-    }
-    this.activateVideoJsFallbackMonitor(sceneId);
+    if (this.instrumentSceneWithVideoJs(sceneId)) return;
     this.scheduleSceneVideoRetry(sceneId, 1);
   }
 
@@ -801,10 +695,8 @@ export class InteractionTracker {
       if (typeof console !== 'undefined' && console.error) {
         console.error('[InteractionTracker] videojs instrumentation failed', { sceneId, attempt });
       }
-      this.deactivateVideoJsFallbackMonitor(sceneId);
       return;
     }
-    this.activateVideoJsFallbackMonitor(sceneId);
     const delay = Math.min(1200, 150 * attempt);
     const handle = window.setTimeout(() => {
       this.videoJsRetryTimers.delete(sceneId);
@@ -823,8 +715,8 @@ export class InteractionTracker {
   }
 
   private instrumentSceneWithVideoJs(sceneId: string, opts?: { player?: any; attempt?: number }): boolean {
-    const attempt = opts?.attempt ?? 0;
-    const player = opts?.player ?? this.getDefaultVideoJsPlayer() ?? this.resolveActiveVideoJsPlayer();
+  const attempt = opts?.attempt ?? 0;
+  const player = opts?.player ?? this.getDefaultVideoJsPlayer() ?? this.resolveActiveVideoJsPlayer();
     if (!player) {
       if (attempt > 0) this.log('videojs player unavailable', { sceneId, attempt });
       return false;
@@ -840,7 +732,6 @@ export class InteractionTracker {
     }
     this.cancelSceneVideoRetry(sceneId);
     this.instrumentSceneVideo(sceneId, tech, player);
-    this.deactivateVideoJsFallbackMonitor(sceneId);
     return true;
   }
 
@@ -1106,7 +997,6 @@ export class InteractionTracker {
   private queuePlayerReinstrument(sceneId: string, player: any, attempt = 0) {
     if (!player) return;
     this.cancelPlayerReinstrument(player);
-    this.activateVideoJsFallbackMonitor(sceneId);
     try {
       if (this.currentScene && this.currentScene.sceneId === sceneId) {
         // Close out any active segment before the tech swap replaces the <video> element
