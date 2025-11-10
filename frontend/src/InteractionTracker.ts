@@ -1213,7 +1213,8 @@ export class InteractionTracker {
     state.completed = false;
     state.lastPlayTs = undefined;
     state.lastProgressEmit = undefined;
-    const initialTime = isFinite(video.currentTime) ? video.currentTime : undefined;
+    const playerInitial = this.readCurrentTime(state.player, video);
+    const initialTime = playerInitial ?? (Number.isFinite(video.currentTime) ? video.currentTime : undefined);
     if (initialTime !== undefined) {
       if (state.lastPosition == null || Math.abs(state.lastPosition - initialTime) > 0.25) {
         state.lastPosition = initialTime;
@@ -1266,7 +1267,8 @@ export class InteractionTracker {
     };
 
     const onTimeUpdate = () => {
-      const current = video.currentTime;
+      const current = this.readCurrentTime(state.player, video) ?? (Number.isFinite(video.currentTime) ? video.currentTime : null);
+      if (current == null) return;
       const prev = state.lastPosition;
       if (prev != null) {
         const delta = current - prev;
