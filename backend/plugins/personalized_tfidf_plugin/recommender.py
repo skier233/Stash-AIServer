@@ -44,6 +44,14 @@ def _coerce_int(value: Any, fallback: int) -> int:
         return fallback
 
 
+def _ensure_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def _load_watch_history(
     *,
     recent_cutoff: datetime | None,
@@ -76,7 +84,8 @@ def _load_watch_history(
             if watched_s <= 0:
                 continue
             scene_id = int(row.scene_id)
-            last_seen = row.last_left or row.last_entered or row.last_segment
+            last_seen_raw = row.last_left or row.last_entered or row.last_segment
+            last_seen = _ensure_utc(last_seen_raw)
             history.append(
                 {
                     "scene_id": scene_id,
@@ -473,8 +482,10 @@ async def personalized_tfidf(ctx: Dict[str, Any], request: RecommendationRequest
                 stash_views = stash_entry.get("view_count") or 0
                 if stash_views:
                     existing["view_count"] = (existing.get("view_count") or 0) + stash_views
-                existing_last_seen = existing.get("last_seen")
-                stash_last_seen = stash_entry.get("last_seen")
+                    existing_last_seen = _ensure_utc(existing.get("last_seen"))
+                    if existing_last_seen is not None:
+                        existing["last_seen"] = existing_last_seen
+                    stash_last_seen = _ensure_utc(stash_entry.get("last_seen"))
                 if stash_last_seen and (existing_last_seen is None or stash_last_seen > existing_last_seen):
                     existing["last_seen"] = stash_last_seen
                 combined_source = existing.get("source") or "plugin"
@@ -486,6 +497,7 @@ async def personalized_tfidf(ctx: Dict[str, Any], request: RecommendationRequest
                 if stash_entry.get("weight_mode"):
                     existing["stash_weight_mode"] = stash_entry.get("weight_mode")
             else:
+                stash_entry["last_seen"] = _ensure_utc(stash_entry.get("last_seen"))
                 history.append(stash_entry)
                 history_by_scene[sid] = stash_entry
                 appended += 1
