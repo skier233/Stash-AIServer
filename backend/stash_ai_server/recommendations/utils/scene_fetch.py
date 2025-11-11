@@ -4,7 +4,7 @@ import logging
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, Iterable, List, Sequence, Set, Tuple
 from urllib.parse import urlencode
 
 import sqlalchemy as sa
@@ -29,6 +29,7 @@ def _stub_scene(scene_id: int) -> Dict[str, Any]:
         "performers": [],
         "tags": [],
         "files": [],
+        "series": [],
     }
 
 
@@ -42,6 +43,7 @@ def _normalize_scene_payload(scene: Dict[str, Any]) -> Dict[str, Any]:
     scene.setdefault("performers", [])
     scene.setdefault("tags", [])
     scene.setdefault("files", [])
+    scene.setdefault("series", [])
     return scene
 
 
@@ -143,6 +145,73 @@ def _build_performer_image_url(performer_id: int, *, updated_at: Any = None) -> 
     query_string = urlencode(query) if query else ""
     suffix = f"?{query_string}" if query_string else ""
     return f"{base}/performer/{performer_id}/image{suffix}"
+
+
+def fetch_scene_candidates_by_performers(
+    *,
+    performer_ids: Sequence[int],
+    exclude_scene_ids: Iterable[int] | None = None,
+    limit: int | None = 400,
+) -> List[Tuple[int, Set[int]]]:
+    """Return candidate scene ids keyed by matching performers.
+
+    Results are sorted by descending number of shared performers and then by
+    scene id. ``exclude_scene_ids`` can be used to strip out already-watched or
+    otherwise ineligible scenes before scoring downstream.
+    """
+
+    normalized_performer_ids = [int(pid) for pid in performer_ids if pid is not None]
+    if not normalized_performer_ids:
+        return []
+
+    exclude_set = {int(sid) for sid in exclude_scene_ids or [] if sid is not None}
+
+    session_factory = stash_db.get_stash_sessionmaker()
+    if session_factory is None:
+        return []
+
+    link_table = stash_db.get_first_available_table(
+        "performers_scenes",
+        "scene_performers",
+        "performer_scenes",
+        "performers_scene",
+    )
+    if link_table is None:
+        return []
+
+    scene_col = _pick_column(link_table, "scene_id", "sceneId")
+    performer_col = _pick_column(link_table, "performer_id", "performerId")
+    if scene_col is None or performer_col is None:
+        return []
+
+    stmt = sa.select(
+        scene_col.label("scene_id"),
+        performer_col.label("performer_id"),
+    ).where(performer_col.in_(normalized_performer_ids))
+
+    if limit is not None and limit > 0:
+        approx_limit = limit * max(2, len(normalized_performer_ids))
+        stmt = stmt.limit(approx_limit)
+
+    candidate_map: Dict[int, Set[int]] = defaultdict(set)
+    with session_factory() as session:
+        for row in session.execute(stmt):
+            try:
+                scene_id = int(row.scene_id)
+                performer_id = int(row.performer_id)
+            except (TypeError, ValueError):
+                continue
+            if exclude_set and scene_id in exclude_set:
+                continue
+            candidate_map[scene_id].add(performer_id)
+
+    if not candidate_map:
+        return []
+
+    ordered = sorted(candidate_map.items(), key=lambda item: (len(item[1]), item[0]), reverse=True)
+    if limit is not None and limit > 0:
+        ordered = ordered[:limit]
+    return ordered
 
 
 def _fetch_scenes_via_db(scene_ids: Sequence[int]) -> Dict[int, Dict[str, Any]]:
@@ -248,6 +317,7 @@ def _fetch_scenes_via_db(scene_ids: Sequence[int]) -> Dict[int, Dict[str, Any]]:
                     "performers": [],
                     "tags": [],
                     "files": [],
+                    "series": [],
                 }
                 if studio_id is not None:
                     scenes[scene_id]["_studio_id"] = studio_id
@@ -374,6 +444,46 @@ def _fetch_scenes_via_db(scene_ids: Sequence[int]) -> Dict[int, Dict[str, Any]]:
                     if scene is None:
                         continue
                     scene["tags"].append({"id": tid, "name": row.name})
+
+            group_link = stash_db.get_first_available_table(
+                "scene_groups_scenes",
+                "scene_group_scenes",
+                "scene_groups_scene",
+                "scene_group_map",
+                "scene_collections_scenes",
+            )
+            groups_table = stash_db.get_first_available_table(
+                "scene_groups",
+                "scene_group",
+                "scene_collections",
+                "collections",
+            )
+            if group_link is not None and groups_table is not None:
+                scene_col = _pick_column(group_link, "scene_id", "sceneId")
+                group_col = _pick_column(group_link, "scene_group_id", "group_id", "collection_id", "series_id")
+                target_group_id = _pick_column(groups_table, "id", "scene_group_id", "collection_id", "series_id")
+                target_group_name = _pick_column(groups_table, "name", "title")
+                if scene_col is not None and group_col is not None and target_group_id is not None and target_group_name is not None:
+                    group_stmt = (
+                        sa.select(
+                            scene_col.label("scene_id"),
+                            target_group_id.label("group_id"),
+                            target_group_name.label("group_name"),
+                        )
+                        .select_from(group_link.join(groups_table, target_group_id == group_col))
+                        .where(scene_col.in_(normalized_ids))
+                    )
+                    scene_groups_map: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+                    for row in session.execute(group_stmt):
+                        try:
+                            sid = int(row.scene_id)
+                            gid = int(row.group_id)
+                        except Exception:
+                            continue
+                        scene_groups_map[sid].append({"id": gid, "name": row.group_name})
+                    for scene_id, scene in scenes.items():
+                        if scene_groups_map.get(scene_id):
+                            scene["series"] = scene_groups_map[scene_id]
 
             # Flexible files table detection (column names vary between Stash versions)
             files_populated = False

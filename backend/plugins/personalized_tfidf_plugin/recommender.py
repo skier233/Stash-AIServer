@@ -13,6 +13,7 @@ from stash_ai_server.models.interaction import SceneWatch, SceneWatchSegment
 from stash_ai_server.recommendations.models import RecContext, RecommendationRequest
 from stash_ai_server.recommendations.registry import recommender
 from stash_ai_server.recommendations.utils.scene_fetch import fetch_scenes_by_ids
+from stash_ai_server.recommendations.utils.tag_profiles import fetch_tag_durations_for_scenes
 from stash_ai_server.utils import stash_db
 
 _log = logging.getLogger(__name__)
@@ -29,6 +30,66 @@ DEFAULT_TOP_CONTRIBS = 5
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _summarize_duration_map(values: Mapping[int, float] | None, *, limit: int = 8) -> List[Dict[str, float]]:
+    if not values:
+        return []
+    ordered = sorted(values.items(), key=lambda item: item[1], reverse=True)
+    summary: List[Dict[str, float]] = []
+    for key, value in ordered[:limit]:
+        summary.append({"tag_id": int(key), "weight": round(float(value), 4)})
+    return summary
+
+
+def _summarize_history_entries(history: Sequence[Dict[str, Any]], *, limit: int = 5) -> List[Dict[str, Any]]:
+    preview: List[Dict[str, Any]] = []
+    for entry in history[:limit]:
+        preview.append(
+            {
+                "scene_id": entry.get("scene_id"),
+                "watched_s": round(float(entry.get("watched_s") or 0.0), 3),
+                "last_seen": _ensure_utc(entry.get("last_seen")),
+                "source": entry.get("source"),
+            }
+        )
+    for item in preview:
+        if isinstance(item.get("last_seen"), datetime):
+            item["last_seen"] = item["last_seen"].isoformat()
+    return preview
+
+
+def _summarize_candidate_preview(
+    ranked_candidates: Sequence[Tuple[int, float]],
+    *,
+    candidate_contribs: Mapping[int, Sequence[Tuple[int, float]]],
+    tag_weights: Mapping[int, float],
+    limit: int = 3,
+) -> List[Dict[str, Any]]:
+    preview: List[Dict[str, Any]] = []
+    for scene_id, score in ranked_candidates[:limit]:
+        contribs = candidate_contribs.get(scene_id, [])
+        top_contribs = []
+        for tag_id, duration_s in sorted(
+            contribs,
+            key=lambda item: tag_weights.get(item[0], 0.0) * item[1],
+            reverse=True,
+        )[:DEFAULT_TOP_CONTRIBS]:
+            top_contribs.append(
+                {
+                    "tag_id": tag_id,
+                    "duration_s": round(duration_s, 3),
+                    "weight": round(tag_weights.get(tag_id, 0.0), 4),
+                }
+            )
+        preview.append(
+            {
+                "scene_id": scene_id,
+                "score": round(float(score), 6),
+                "contributors": top_contribs,
+            }
+        )
+    return preview
 
 def _coerce_float(value: Any, fallback: float) -> float:
     try:
@@ -237,46 +298,6 @@ def _load_stash_watch_history(
     return results
 
 
-def _fetch_tag_durations_for_scenes(
-    *,
-    service: str,
-    scene_ids: Sequence[int],
-) -> Tuple[Dict[int, Dict[int, float]], set[int]]:
-    if not scene_ids:
-        return {}, set()
-    stmt = (
-        sa.select(
-            AIResultAggregate.entity_id.label("scene_id"),
-            AIResultAggregate.value_id.label("tag_id"),
-            sa.func.sum(AIResultAggregate.value_float).label("duration_s"),
-        )
-        .join(AIModelRun, AIResultAggregate.run_id == AIModelRun.id)
-        .where(
-            AIModelRun.service == service,
-            AIModelRun.entity_type == "scene",
-            AIResultAggregate.payload_type == "tag",
-            AIResultAggregate.metric == "duration_s",
-            AIResultAggregate.value_id.isnot(None),
-            AIResultAggregate.entity_id.in_(scene_ids),
-        )
-        .group_by(AIResultAggregate.entity_id, AIResultAggregate.value_id)
-    )
-    per_scene: Dict[int, Dict[int, float]] = defaultdict(dict)
-    tag_ids: set[int] = set()
-    with SessionLocal() as session:
-        for row in session.execute(stmt):
-            tag = row.tag_id
-            if tag is None:
-                continue
-            scene_id = int(row.scene_id)
-            tag_id = int(tag)
-            duration_val = float(row.duration_s or 0.0)
-            if duration_val <= 0:
-                continue
-            per_scene[scene_id][tag_id] = duration_val
-            tag_ids.add(tag_id)
-    return per_scene, tag_ids
-
 
 def _fetch_corpus_stats(
     *,
@@ -455,6 +476,18 @@ async def personalized_tfidf(ctx: Dict[str, Any], request: RecommendationRequest
     candidate_pool = max(20, _coerce_int(cfg.get("candidate_pool"), DEFAULT_CANDIDATE_POOL))
     service_name = DEFAULT_SERVICE
 
+    _log.info(
+        "personalized_tfidf: resolved configuration",
+        extra={
+            "seed_count": len(seed_ids),
+            "recent_days": round(recent_days, 2),
+            "min_watch_seconds": round(min_watch_seconds, 3),
+            "history_limit": history_limit,
+            "profile_tag_limit": profile_tag_limit,
+            "candidate_pool": candidate_pool,
+        },
+    )
+
     history = _load_watch_history(
         recent_cutoff=recent_cutoff,
         min_watch_seconds=min_watch_seconds,
@@ -502,7 +535,7 @@ async def personalized_tfidf(ctx: Dict[str, Any], request: RecommendationRequest
                 history_by_scene[sid] = stash_entry
                 appended += 1
         if appended or plugin_history_count == 0:
-            _log.debug(
+            _log.info(
                 "personalized_tfidf: incorporated stash watch history",
                 extra={
                     "plugin_history_count": plugin_history_count,
@@ -521,6 +554,15 @@ async def personalized_tfidf(ctx: Dict[str, Any], request: RecommendationRequest
     if history_limit > 0 and len(history) > history_limit:
         history = history[:history_limit]
         history_by_scene = {entry["scene_id"]: entry for entry in history}
+
+    if history:
+        _log.info(
+            "personalized_tfidf: watch history summary",
+            extra={
+                "history_count": len(history),
+                "history_preview": _summarize_history_entries(history, limit=6),
+            },
+        )
 
     if not history and seed_ids:
         _log.info("personalized_tfidf: watch history empty, seeding profile from provided seeds", extra={"seed_count": len(seed_ids)})
@@ -552,9 +594,9 @@ async def personalized_tfidf(ctx: Dict[str, Any], request: RecommendationRequest
     history_scene_ids = [entry["scene_id"] for entry in history]
     combined_scene_ids = list(dict.fromkeys(history_scene_ids + seed_ids))
 
-    tag_durations, tag_ids = _fetch_tag_durations_for_scenes(service=service_name, scene_ids=combined_scene_ids)
+    tag_durations, tag_ids = fetch_tag_durations_for_scenes(service=service_name, scene_ids=combined_scene_ids)
     if tag_durations:
-        _log.debug(
+        _log.info(
             "personalized_tfidf: fetched tag durations",
             extra={
                 "scenes_with_tags": len(tag_durations),
@@ -686,6 +728,14 @@ async def personalized_tfidf(ctx: Dict[str, Any], request: RecommendationRequest
         _log.info("personalized_tfidf: profile empty after applying tag limit", extra={"profile_tag_limit": profile_tag_limit})
         return {"scenes": [], "total": 0, "has_more": False}
 
+    _log.info(
+        "personalized_tfidf: profile tag weights",
+        extra={
+            "profile_size": len(profile_weights),
+            "top_tags": _summarize_duration_map(dict(top_profile), limit=profile_tag_limit),
+        },
+    )
+
     requested_offset = request.offset if isinstance(request.offset, int) and request.offset is not None else 0
     if requested_offset < 0:
         requested_offset = 0
@@ -694,7 +744,7 @@ async def personalized_tfidf(ctx: Dict[str, Any], request: RecommendationRequest
     per_tag_limit = max(10, pool_target // max(1, len(top_profile)))
 
     limited_weights = {tag_id: profile_weights[tag_id] for tag_id, _ in top_profile}
-    _log.debug(
+    _log.info(
         "personalized_tfidf: generating candidates",
         extra={
             "history_count": len(history),
@@ -774,7 +824,7 @@ async def personalized_tfidf(ctx: Dict[str, Any], request: RecommendationRequest
         scenes_out.append(scene_copy)
 
     if skipped_payload:
-        _log.debug("personalized_tfidf: skipped candidates without payload", extra={"skipped": skipped_payload})
+        _log.info("personalized_tfidf: skipped candidates without payload", extra={"skipped": skipped_payload})
 
     total_available = len(scenes_out)
     if total_available == 0:
@@ -786,7 +836,7 @@ async def personalized_tfidf(ctx: Dict[str, Any], request: RecommendationRequest
     page = scenes_out[start:end]
     has_more = end < total_available
 
-    _log.debug(
+    _log.info(
         "personalized_tfidf: returning page",
         extra={
             "page_size": len(page),
@@ -794,6 +844,12 @@ async def personalized_tfidf(ctx: Dict[str, Any], request: RecommendationRequest
             "has_more": has_more,
             "offset": start,
             "limit": requested_limit,
+            "candidate_preview": _summarize_candidate_preview(
+                ranked_candidates,
+                candidate_contribs=candidate_contribs,
+                tag_weights=limited_weights,
+                limit=3,
+            ),
         },
     )
 

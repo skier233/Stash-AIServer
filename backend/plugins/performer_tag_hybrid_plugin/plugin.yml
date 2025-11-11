@@ -1,0 +1,8 @@
+name: performer_tag_hybrid_plugin
+human_name: Performer + Tag Hybrid
+server_link: https://github.com/example/performer-tag-hybrid
+version: 0.1.0
+required_backend: '>=0.0.0'
+files:
+  - recommender
+depends_on: ["skier_aitagging_plugin"]

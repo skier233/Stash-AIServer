@@ -8,6 +8,7 @@ import sqlalchemy as sa
 from stash_ai_server.db.session import SessionLocal
 from stash_ai_server.models.ai_results import AIModelRun, AIResultAggregate
 from stash_ai_server.db.ai_results_store import get_scene_timespans
+from stash_ai_server.models.interaction import SceneWatchSegment
 
 
 TagDurationMap = Dict[int, Dict[int, float]]
@@ -118,10 +119,9 @@ def compute_cooccurrence_duration(
     if not tag_list:
         return 0.0
 
-    timespan_data = get_scene_timespans(service=service, scene_id=int(scene_id))
-    if not timespan_data:
+    bucket_map = get_scene_timespans(service=service, scene_id=int(scene_id))
+    if not bucket_map:
         return 0.0
-    _, bucket_map = timespan_data
 
     interval_groups: List[List[Interval]] = []
     for tag_id in tag_list:
@@ -144,3 +144,114 @@ def compute_cooccurrence_duration(
 
     overlap = intersect_all(interval_groups)
     return sum(max(0.0, end - start) for start, end in overlap)
+
+
+def _fetch_scene_watch_intervals(scene_id: int) -> List[Interval]:
+    """Load and merge watch intervals for the requested scene."""
+    stmt = (
+        sa.select(
+            SceneWatchSegment.start_s,
+            SceneWatchSegment.end_s,
+            SceneWatchSegment.watched_s,
+        )
+        .where(SceneWatchSegment.scene_id == int(scene_id))
+        .order_by(SceneWatchSegment.start_s.asc())
+    )
+    intervals: List[Interval] = []
+    with SessionLocal() as session:
+        for start, end, watched in session.execute(stmt):
+            try:
+                start_f = float(start or 0.0)
+            except (TypeError, ValueError):
+                continue
+            try:
+                end_f = float(end or 0.0)
+            except (TypeError, ValueError):
+                end_f = start_f
+            if end_f <= start_f:
+                try:
+                    watched_val = float(watched or 0.0)
+                except (TypeError, ValueError):
+                    watched_val = 0.0
+                if watched_val > 0:
+                    end_f = start_f + watched_val
+            if end_f <= start_f:
+                continue
+            intervals.append((start_f, end_f))
+    return merge_intervals(intervals)
+
+
+def collect_watched_segment_tag_durations(
+    *,
+    service: str,
+    scene_id: int,
+    min_confidence: float | None = None,
+) -> Tuple[Dict[int, float], float]:
+    """Compute tag coverage limited to segments actually watched for a scene.
+
+    Returns a tuple ``(tag_duration_map, watched_total)`` where
+    ``tag_duration_map`` maps tag ids to the number of seconds that overlap the
+    user's merged watch segments and ``watched_total`` is the total seconds
+    covered by those merged watch segments. When no overlap exists the
+    dictionary is empty and ``watched_total`` is zero.
+    """
+
+    watch_intervals = _fetch_scene_watch_intervals(scene_id)
+    if not watch_intervals:
+        return {}, 0.0
+
+    total_watched = sum(max(0.0, end - start) for start, end in watch_intervals)
+    bucket_map = get_scene_timespans(service=service, scene_id=int(scene_id))
+    if not bucket_map:
+        return {}, total_watched
+    min_conf = None
+    if min_confidence is not None:
+        try:
+            min_conf = float(min_confidence)
+        except (TypeError, ValueError):
+            min_conf = None
+
+    tag_durations: Dict[int, float] = {}
+
+    for category_map in bucket_map.values():
+        for tag_key, entries in category_map.items():
+            try:
+                tag_id = int(tag_key)
+            except (TypeError, ValueError):
+                continue
+            if not entries:
+                continue
+            tag_intervals: List[Interval] = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    start = float(entry.get("start") or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                end_value = entry.get("end")
+                try:
+                    end = float(end_value) if end_value is not None else start
+                except (TypeError, ValueError):
+                    continue
+                if end <= start:
+                    continue
+                if min_conf is not None:
+                    confidence_raw = entry.get("confidence")
+                    try:
+                        confidence_val = float(confidence_raw)
+                    except (TypeError, ValueError):
+                        confidence_val = None
+                    if confidence_val is None or confidence_val < min_conf:
+                        continue
+                tag_intervals.append((start, end))
+            if not tag_intervals:
+                continue
+            merged_tag = merge_intervals(tag_intervals)
+            overlap_intervals = intersect_two(merged_tag, watch_intervals)
+            overlap_duration = sum(max(0.0, interval_end - interval_start) for interval_start, interval_end in overlap_intervals)
+            if overlap_duration <= 0:
+                continue
+            tag_durations[tag_id] = tag_durations.get(tag_id, 0.0) + overlap_duration
+
+    return tag_durations, total_watched

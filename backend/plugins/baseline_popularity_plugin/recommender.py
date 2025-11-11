@@ -1,6 +1,6 @@
 from stash_ai_server.recommendations.registry import recommender
 from stash_ai_server.recommendations.models import RecContext, RecommendationRequest
-from stash_ai_server.utils.stash import fetch_scenes_by_tag_paginated
+from stash_ai_server.utils.stash_api import stash_api
 from typing import Dict, Any
 
 @recommender(
@@ -27,7 +27,7 @@ async def baseline_popularity(ctx: Dict[str, Any], request: RecommendationReques
     cfg = request.config or {}
     limit = request.limit or 40
     offset = request.offset or 0
-    scenes, approx_total, has_more = fetch_scenes_by_tag_paginated(118, offset, limit)
+    scenes, approx_total, has_more = stash_api.fetch_scenes_by_tag_paginated(118, offset, limit)
     min_score = cfg.get('min_score')
     if isinstance(min_score, (int, float)) and min_score > 0:
         scenes = [s for s in scenes if (s.get('rating100') or 0) >= min_score]

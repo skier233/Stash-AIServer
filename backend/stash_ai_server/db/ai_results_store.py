@@ -98,12 +98,13 @@ def get_scene_timespans(
     *,
     service: str,
     scene_id: int,
-) -> tuple[float | None, SceneTimespanBuckets] | None:
+) -> SceneTimespanBuckets | None:
     """
     Retrieve ALL timespans for a scene across all runs, ordered for merge processing.
-    
-    Returns tuple of (frame_interval, timespan_map) where timespans are pre-ordered
-    by category, label, and start time for efficient merging.
+
+    Returns a mapping of timespans by category and label where each entry is a
+    pre-ordered list of timespan dicts (start, end, confidence). Frame interval
+    is deliberately not returned — callers should not rely on it.
     """
     scene_id_int = _ensure_int(scene_id)
     if scene_id_int is None:
@@ -153,28 +154,14 @@ def get_scene_timespans(
             }
             bucket.setdefault(label_key, []).append(entry)
 
-        # Get frame_interval from the most recent run
-        # TODO we can't assume this is the frame interval used for all timespans
-        latest_run_stmt = (
-            select(AIModelRun)
-            .where(
-                AIModelRun.service == service,
-                AIModelRun.entity_type == "scene",
-                AIModelRun.entity_id == scene_id_int,
-            )
-            .order_by(AIModelRun.completed_at.desc().nullslast(), AIModelRun.id.desc())
-            .limit(1)
-        )
-        latest_run = session.execute(latest_run_stmt).scalar_one_or_none()
-        frame_interval = _extract_frame_interval_from_run_instance(latest_run) if latest_run else None
-        return (frame_interval, timespan_map)
+        return timespan_map
 
 
 async def get_scene_timespans_async(
     *,
     service: str,
     scene_id: int,
-) -> tuple[float | None, SceneTimespanBuckets] | None:
+) -> SceneTimespanBuckets | None:
     return await asyncio.to_thread(get_scene_timespans, service=service, scene_id=scene_id)
 
 

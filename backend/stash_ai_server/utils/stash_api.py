@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, List
 from urllib.parse import urlparse
 from stash_ai_server.core.system_settings import get_value as sys_get
 from stash_ai_server.core.runtime import register_backend_refresh_handler
@@ -136,6 +136,70 @@ class StashAPI:
         duration = scene_result['files'][0].get('duration')
         tags = [tag['id'] for tag in scene_result.get('tags', []) if 'id' in tag]
         return path, tags, duration
+
+    def fetch_scenes_by_tag_paginated(self, tag_id: int, offset: int, limit: int) -> tuple[List[Dict[str, Any]], int, bool]:
+        """Offset-based pagination for tag scenes.
+
+        Stash GraphQL offers page/per_page semantics; to emulate offset we compute
+        the starting page and may need to fetch additional pages if offset not aligned.
+        For simplicity we over-fetch up to two pages and then slice locally.
+        Returns (scenes_slice, total_estimate, has_more) where total_estimate is best-effort.
+        """
+        if offset < 0:
+            offset = 0
+        if limit <= 0:
+            return [], 0, False
+        client = self.stash_interface
+        _SCENE_FRAGMENT = (
+            # Minimal but includes studio for UI badge and preview/screenshot URLs
+            'id title rating100 '
+            'paths { screenshot preview } '
+            'studio { id name } '
+            'performers { id name image_path } '
+            'tags { id name } '
+            'files { width height duration size path fingerprints { type value } }'
+        )
+        try:
+            per_page = max(limit, 1)
+            start_page = (offset // per_page) + 1
+            aggregated: List[Dict[str, Any]] = []
+            last_page_full = False
+            # Always fetch the start page
+            for p in (start_page, start_page + 1):
+                if p < start_page:
+                    continue
+                res = client.find_scenes(
+                    f={'tags': {'value': [tag_id], 'modifier': 'INCLUDES'}},
+                    filter={'per_page': per_page, 'page': p},
+                    fragment=_SCENE_FRAGMENT
+                ) or []
+                aggregated.extend(res)
+                last_page_full = len(res) == per_page
+                if len(res) < per_page:
+                    break  # no further pages
+            # Probe one extra page only if last fetched page was full and we still need to know
+            has_more = False
+            if last_page_full:
+                probe_page = start_page + 2
+                res_probe = client.find_scenes(
+                    f={'tags': {'value': [tag_id], 'modifier': 'INCLUDES'}},
+                    filter={'per_page': 1, 'page': probe_page},  # minimal probe
+                    fragment='id'
+                ) or []
+                has_more = len(res_probe) > 0
+            approx_total = offset + len(aggregated)
+            if has_more:
+                approx_total += limit  # optimistic extension
+            slice_start = offset - ((start_page - 1) * per_page)
+            if slice_start < 0:
+                slice_start = 0
+            slice_end = slice_start + limit
+            page_slice = aggregated[slice_start:slice_end]
+            return page_slice, approx_total, has_more
+        except Exception as e:
+            print(f"[stash] paginated tag query failure tag={tag_id}: {e}", flush=True)
+            return [], 0, False
+
 
     def add_tags_to_scene(self, scene_id: int, tag_ids: list[int]) -> None:
         if not tag_ids:

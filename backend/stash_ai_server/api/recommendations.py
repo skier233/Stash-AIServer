@@ -127,6 +127,10 @@ async def query_recommendations(payload: RecommendationQueryBody = Body(...)):
     try:
         raw_result = await handler({}, req)
     except Exception as e:
+        # Log full traceback for debugging and return a controlled 500 to client
+        import traceback as _tb
+        _log = __import__('logging').getLogger(__name__)
+        _log.exception("recommender execution failed for %s", payload.recommenderId)
         raise HTTPException(status_code=500, detail=f'recommender_execution_failed: {e}')
 
     if isinstance(raw_result, dict):
