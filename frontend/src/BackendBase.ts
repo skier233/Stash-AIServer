@@ -34,7 +34,10 @@ function applyPluginConfig(base: string | null | undefined, captureEvents: boole
   if (base !== undefined) {
     const normalized = normalizeBase(base);
     if (normalized !== null) {
-      try { (window as any).AI_BACKEND_URL = normalized; } catch {}
+      try {
+        (window as any).AI_BACKEND_URL = normalized;
+        window.dispatchEvent(new CustomEvent('AIBackendBaseUpdated', { detail: normalized }));
+      } catch {}
     }
   }
   if (captureEvents !== undefined && captureEvents !== null) {

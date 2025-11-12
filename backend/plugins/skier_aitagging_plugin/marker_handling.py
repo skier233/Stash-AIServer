@@ -14,9 +14,8 @@ _log = logging.getLogger(__name__)
 def merge_spans_for_tag(
     spans: Sequence[TagTimeFrame],
     settings: TagSettings,
-    frame_interval: float | None,
 ) -> list[TagTimeFrame]:
-    normalized = [normalize_timeframe(entry, frame_interval) for entry in spans]
+    normalized = [normalize_timeframe(entry) for entry in spans]
     normalized = [entry for entry in normalized if _span_duration(entry) > 0.0]
     if not normalized:
         return []
@@ -38,7 +37,7 @@ def merge_spans_for_tag(
         _log.warning("Unknown merge strategy '%s'; falling back to 'default'", settings.merge_strategy)
         strategy = _merge_contiguous
 
-    merged = strategy(normalized, settings, frame_interval)
+    merged = strategy(normalized, settings)
 
     # Filter out markers shorter than min_marker_duration
     min_duration = settings.min_marker_duration
@@ -96,9 +95,7 @@ async def apply_scene_markers(
         )
         if stored_timespans is None:
             return {}
-        
-        stored_interval, stored_map = stored_timespans
-        frame_interval, timespan_map = _timespans_from_storage(stored_interval, stored_map)
+        timespan_map = _timespans_from_storage(stored_timespans)
     except Exception:
         _log.exception("Failed to collect timespans for scene_id=%s", scene_id)
         return {}
@@ -136,7 +133,7 @@ async def apply_scene_markers(
             if not settings.markers_enabled:
                 continue
 
-            merged_spans = merge_spans_for_tag(spans, settings, frame_interval)
+            merged_spans = merge_spans_for_tag(spans, settings)
             
             if merged_spans:
                 result[tag_id] = merged_spans
@@ -172,7 +169,6 @@ async def apply_scene_markers(
 def _merge_contiguous(
     spans: Sequence[TagTimeFrame],
     settings: TagSettings,
-    frame_interval: float | None,
 ) -> list[TagTimeFrame]:
     """
     Merge contiguous or nearby spans with intelligent gap handling.
@@ -253,12 +249,12 @@ def _merge_contiguous(
 def _no_merge_strategy(
     spans: Sequence[TagTimeFrame],
     settings: TagSettings,
-    frame_interval: float | None,
 ) -> list[TagTimeFrame]:
-    return [normalize_timeframe(frame, frame_interval) for frame in spans]
+    return [normalize_timeframe(frame) for frame in spans]
 
 
-def normalize_timeframe(frame: TagTimeFrame, frame_interval: float | None) -> TagTimeFrame:
+
+def normalize_timeframe(frame: TagTimeFrame) -> TagTimeFrame:
     start_value = float(frame.start or 0.0)
     end_value = float(frame.end)
     confidence = _safe_float(frame.confidence)
@@ -302,12 +298,11 @@ def _get_merge_param(settings: TagSettings, index: int) -> float | None:
 
 
 def _timespans_from_storage(
-    frame_interval: float | None,
     raw_timespans: Mapping[str | None, Mapping[str | None, Sequence[Mapping[str, Any]]]] | None,
 ) -> tuple[float | None, dict[str | None, dict[str, list[TagTimeFrame]]]]:
     result: dict[str | None, dict[str, list[TagTimeFrame]]] = {}
     if not raw_timespans:
-        return frame_interval, result
+        return result
     for category_key, tag_map in raw_timespans.items():
         if not isinstance(tag_map, Mapping):
             continue
@@ -327,7 +322,7 @@ def _timespans_from_storage(
                 bucket[label_value] = entries
         if not bucket:
             result.pop(category_key, None)
-    return frame_interval, result
+    return result
 
 def _normalize_label(label: object) -> str | None:
     if label is None:

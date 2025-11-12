@@ -8,6 +8,7 @@ import ssl
 import sys
 import urllib.error
 import urllib.request
+import urllib.parse
 import gzip
 import zlib
 from typing import Any, Dict, Optional
@@ -36,18 +37,35 @@ def _normalize_backend_base(raw: Any) -> Optional[str]:
     return None
 
 
-def _coerce_bool(raw: Any) -> Optional[bool]:
-    if isinstance(raw, bool):
-        return raw
-    if isinstance(raw, (int, float)):
-        return bool(raw)
-    if isinstance(raw, str):
-        lowered = raw.strip().lower()
-        if lowered in {"1", "true", "yes", "on"}:
-            return True
-        if lowered in {"0", "false", "no", "off"}:
-            return False
-    return None
+def _format_base_url(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+    if cleaned.endswith('/'):
+        cleaned = cleaned.rstrip('/')
+    return cleaned or None
+
+def _build_backend_setting_url(base: str, key: str) -> str:
+    clean_base = _format_base_url(base) or ''
+    if not clean_base:
+        raise ValueError('backend base URL is required')
+    return f"{clean_base}/api/v1/plugins/system/settings/{urllib.parse.quote(key, safe='')}"
+
+
+def _push_backend_setting(base: str, key: str, value: Any, timeout: float = 10.0) -> None:
+    url = _build_backend_setting_url(base, key)
+    payload = json.dumps({"value": value}).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="PUT",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        # Drain response body to allow connection reuse; backend returns small JSON.
+        response.read()
 
 
 def _build_logger():
@@ -154,43 +172,24 @@ def plugin_setup(json_input: Dict[str, Any]) -> Dict[str, Any]:
     api_key = None
     absolute_db_path = None
     db_exists = False
+    plugin_entries: Dict[str, Any] = {}
 
-    plugins_section: Optional[Dict[str, Any]] = None
-    plugin_entry: Optional[Dict[str, Any]] = None
     if isinstance(config, dict):
-        general = config.get("general") or {}
-        database_path_raw = general.get("databasePath")
-        api_key = general.get("apiKey")
-        candidate_plugins = config.get("plugins")
-        if isinstance(candidate_plugins, dict):
-            plugins_section = candidate_plugins
-        elif plugin_id and plugin_id in config and isinstance(config[plugin_id], dict):
-            plugins_section = config  # plugins map returned directly
+        if 'general' in config or 'plugins' in config:
+            general = config.get("general") or {}
+            database_path_raw = general.get("databasePath")
+            api_key = general.get("apiKey")
+            raw_plugins = config.get("plugins")
+            log.info(f"Resolved raw plugins entry: {raw_plugins!r}")
+            if isinstance(raw_plugins, dict):
+                plugin_entries = raw_plugins
+        else:
+            general = {}
+            plugin_entries = config
     elif isinstance(config, list):
         general = {}
     else:
         general = {}
-
-    if plugins_section is None and isinstance(config, dict):
-        # Fallback when configuration call only returned plugins map.
-        plugins_section = {k: v for k, v in config.items() if isinstance(v, dict)}
-
-    if isinstance(plugins_section, dict):
-        lookup_keys = []
-        if plugin_id:
-            lookup_keys.append(plugin_id)
-        plugin_name = plugin_info.get("name") if isinstance(plugin_info, dict) else None
-        if plugin_name:
-            lookup_keys.append(plugin_name)
-        for key in lookup_keys:
-            entry = plugins_section.get(key)
-            if isinstance(entry, dict):
-                plugin_entry = entry
-                break
-        if plugin_entry is None and len(plugins_section) == 1:
-            only_value = next(iter(plugins_section.values()))
-            if isinstance(only_value, dict):
-                plugin_entry = only_value
 
     if database_path_raw:
         if os.path.isabs(database_path_raw):
@@ -203,30 +202,64 @@ def plugin_setup(json_input: Dict[str, Any]) -> Dict[str, Any]:
 
         db_exists = os.path.isabs(absolute_db_path) and os.path.exists(absolute_db_path)
 
+    plugin_entry: Optional[Dict[str, Any]] = None
+    if isinstance(plugin_entries, dict) and plugin_entries:
+        entry = plugin_entries.get("AIOverhaul")
+        if isinstance(entry, dict):
+            plugin_entry = entry
+
     backend_base_override = None
-    capture_events_enabled = None
     if isinstance(plugin_entry, dict):
-        backend_base_override = (
-            plugin_entry.get("backend_base_url")
-            or plugin_entry.get("backendBaseUrl")
-            or plugin_entry.get("backendBaseURL")
-        )
-        backend_base_override = _normalize_backend_base(backend_base_override)
-        capture_events_raw = (
-            plugin_entry.get("capture_events")
-            or plugin_entry.get("captureEvents")
-            or plugin_entry.get("captureEventsEnabled")
-        )
-        capture_events_enabled = _coerce_bool(capture_events_raw)
+        backend_base_override = plugin_entry.get("backend_base_url")
+
+    backend_base_override = _normalize_backend_base(backend_base_override)
+    normalized_api_key = api_key
+    if isinstance(normalized_api_key, str):
+        trimmed = normalized_api_key.strip()
+        if not trimmed:
+            normalized_api_key = ''
+        elif trimmed.upper() == 'REPLACE_WITH_API_KEY':
+            normalized_api_key = None
+
+    backend_base_url = _format_base_url(backend_base_override) or _format_base_url(os.getenv('AI_BACKEND_BASE_URL'))
+    stash_base_url = target
+    if stash_base_url.endswith('/graphql'):
+        stash_base_url = stash_base_url[:-len('/graphql')]
+    stash_base_url = _format_base_url(stash_base_url)
+
+    if backend_base_url:
+        log.info(f"Syncing Stash connection metadata to AI backend at {backend_base_url}")
+        try:
+            if stash_base_url:
+                _push_backend_setting(backend_base_url, 'STASH_URL', stash_base_url)
+            else:
+                log.warning('Unable to derive Stash base URL; skipping STASH_URL sync')
+
+            if normalized_api_key is None:
+                log.info('No Stash API key detected; clearing backend value')
+                _push_backend_setting(backend_base_url, 'STASH_API_KEY', None)
+            else:
+                if str(normalized_api_key):
+                    log.info(f'Setting Stash API key in backend (length={len(str(normalized_api_key))})')
+                else:
+                    log.info('Setting empty Stash API key in backend')
+                _push_backend_setting(backend_base_url, 'STASH_API_KEY', normalized_api_key)
+
+            if db_exists and absolute_db_path:
+                _push_backend_setting(backend_base_url, 'STASH_DB_PATH', absolute_db_path)
+            else:
+                log.info('No valid Stash database path detected; skipping STASH_DB_PATH sync')
+        except Exception as exc:
+            log.warning(f"Failed to sync configuration to AI backend {backend_base_url}: {exc}")
+    else:
+        log.warning('No backend base URL could be determined; skipping AI backend configuration sync')
 
     result_payload = {
         "configuration": config,
         "databasePath": absolute_db_path,
         "databaseExists": db_exists,
         "apiKey": api_key,
-        "pluginConfiguration": plugin_entry,
-        "backendBaseOverride": backend_base_override,
-        "captureEventsEnabled": capture_events_enabled,
+        "backendBaseOverride": backend_base_override
     }
     log.info(f"Plugin setup completed successfully: {json.dumps(result_payload, default=str)}")
     return {"output": result_payload, "error": None}
@@ -234,8 +267,8 @@ def plugin_setup(json_input: Dict[str, Any]) -> Dict[str, Any]:
 
 def _build_graphql_url(connection: Dict[str, Any]) -> str:
     host = connection.get("Host", "localhost")
-    if host == "0.0.0.0":
-        host = "127.0.0.1"
+    if host == "0.0.0.0" or host == "127.0.0.1":
+        host = "localhost"
 
     port = connection.get("Port", 9999)
     scheme = connection.get("Scheme", "http")
