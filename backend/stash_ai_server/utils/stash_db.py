@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from stash_ai_server.core.runtime import register_backend_refresh_handler
 from stash_ai_server.utils.stash_api import stash_api
+from stash_ai_server.core.system_settings import get_value as sys_get
+from stash_ai_server.utils.path_mutation import mutate_path_for_backend
 
 _log = logging.getLogger(__name__)
 
@@ -25,60 +27,30 @@ _TABLE_CACHE: Dict[str, sa.Table] = {}
 
 def _resolve_db_path() -> Path | None:
     """Return the configured path (or URL) to the Stash database."""
-
-    client = stash_api.stash_interface
-    if not client:
-        _log.debug("Stash interface unavailable; cannot resolve database path")
-        return None
     try:
-        config = client.get_configuration() or {}
-    except Exception:  # pragma: no cover - defensive
-        _log.exception("Failed to retrieve Stash configuration for database path")
-        return None
+        configured = sys_get("STASH_DB_PATH")
+    except Exception:
+        configured = None
 
-    general_cfg = config.get("general") if isinstance(config, dict) else None
-    #_log.debug("Stash general configuration: %s", config)
-    db_path = None
-
-    # TODO: figure out best way to get the db path. (probably need to use a setting for the db path)
-    return Path("C:\\Coding\\Testing\\Stash-PornServer\\stash-go.sqlite")
-    if isinstance(general_cfg, dict):
-        # Use generatedPath + databasePath when available (Stash provides generatedPath as a base dir)
-        generated = general_cfg.get("generatedPath") or general_cfg.get("generated_path")
-        relative = general_cfg.get("databasePath") or general_cfg.get("database_path")
-        if generated and relative:
-            try:
-                candidate = Path(generated) / relative
-                try:
-                    resolved = candidate.expanduser()
-                    try:
-                        resolved = resolved.resolve(strict=False)
-                    except Exception:
-                        # best-effort normalization; file may not exist yet
-                        pass
-                    _log.debug("Resolved Stash database path via generatedPath: %s, base: %s, relative: %s", resolved, candidate, relative)
-                    return resolved
-                except Exception:
-                    _log.warning("Could not interpret generatedPath+databasePath: %s + %s", generated, relative)
-            except Exception:
-                _log.exception("Failed to join generatedPath and databasePath from Stash configuration")
-
-        # Fallback to legacy single-field values
-        db_path = relative or general_cfg.get("databasePath") or general_cfg.get("database_path")
-    if not db_path:
-        _log.debug("Stash configuration missing general.databasePath")
-        return None
-    _log.debug("Resolved Stash database path (legacy): %s", db_path)
-    try:
-        resolved = Path(db_path).expanduser()
+    if configured:
         try:
-            resolved = resolved.resolve(strict=False)
-        except Exception:  # pragma: no cover - path may not exist yet
-            pass
-        return resolved
-    except Exception:  # pragma: no cover - defensive
-        _log.warning("Could not interpret Stash database path: %s", db_path)
-        return None
+            raw = str(configured)
+            if raw.strip() and not raw.strip().upper().startswith("REPLACE_WITH"):
+                mutated = mutate_path_for_backend(raw)
+                resolved = Path(mutated).expanduser()
+                try:
+                    resolved = resolved.resolve(strict=False)
+                except Exception:
+                    pass
+                if resolved.exists():
+                    _log.info("Using STASH_DB_PATH from system settings: %s", resolved)
+                    return resolved
+                _log.warning("Configured STASH_DB_PATH (after mutation) does not exist: %s", resolved)
+        except Exception:
+            _log.exception("Failed to interpret STASH_DB_PATH system setting: %r", configured)
+
+    _log.debug("No valid STASH_DB_PATH system setting available; not resolving DB path")
+    return None
 
 
 def _dispose_locked() -> None:
