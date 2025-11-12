@@ -1,0 +1,35 @@
+name: AIOverhaulCore
+description: Core AI action button with Similar Scenes tab
+version: 0.4.0-core-min
+ui:
+  javascript:
+    - BackendBase.js
+    - BackendHealth.js
+    - PageContext.js
+    - RecommendationUtils.js
+    - AIButton.js
+    - TaskDashboard.js
+    - PluginSettings.js      # ensure settings component registers before integration
+    - RecommendedScenes.js
+    - SimilarScenes.js
+    - SimilarTabIntegration.js
+    - InteractionTracker.js
+    - AIButtonIntegration.js # integration last after components
+  css:
+    - AIOverhaul.css
+    - css/recommendedscenes.css
+    - css/SimilarScenes.css
+  csp:
+    connect-src:
+      - http://localhost:4153
+      - ws://localhost:4153
+      - https://localhost:4153
+interface: raw
+exec:
+  - python
+  - "{pluginDir}/plugin_setup.py"
+tasks:
+  - name: Setup AI Overhaul Plugin settings
+    description: Use to set automatically set AI Overhaul Plugin settings
+    defaultArgs:
+      mode: plugin_setup
