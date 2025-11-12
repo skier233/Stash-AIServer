@@ -9,11 +9,22 @@ interface HistoryItem { task_id: string; action_id: string; service: string; sta
 
 defaultBackendBase(); // hoist helper for potential tree-shake clarity (no effect at runtime)
 function defaultBackendBase() {
+  const globalFn = (window as any).AIDefaultBackendBase;
+  if (typeof globalFn === 'function') return globalFn();
   const explicit = (window as any).AI_BACKEND_URL as string | undefined;
   if (explicit) return explicit.replace(/\/$/, '');
-  const loc = (location && location.origin) || '';
-  try { const u = new URL(loc); if (u.port === '3000') { u.port = '4153'; return u.toString().replace(/\/$/, ''); } } catch {}
-  return (loc || 'http://localhost:4153').replace(/\/$/, '');
+  if (typeof location !== 'undefined' && location.origin) {
+    try {
+      const u = new URL(location.origin);
+      if (u.hostname && u.hostname !== 'localhost') {
+        return '';
+      }
+      return u.origin.replace(/\/$/, '');
+    } catch {
+      return '';
+    }
+  }
+  return '';
 }
 const debug = () => !!(window as any).AIDebug;
 const dlog = (...a:any[]) => { if (debug()) console.debug('[TaskDashboard]', ...a); };

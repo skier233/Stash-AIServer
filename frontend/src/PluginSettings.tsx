@@ -22,9 +22,105 @@ const PATH_SLASH_MODE_LABELS: Record<string, string> = {
 };
 const PATH_SLASH_MODE_SET = new Set(PATH_SLASH_MODES);
 
-// LocalStorage keys
-const LS_BACKEND_URL = 'AI_BACKEND_URL_OVERRIDE';
-const LS_INTERACTIONS = 'AI_INTERACTIONS_ENABLED';
+// Legacy localStorage keys retained for one-time migration.
+const LEGACY_BACKEND_URL = 'AI_BACKEND_URL_OVERRIDE';
+const LEGACY_INTERACTIONS = 'AI_INTERACTIONS_ENABLED';
+const THIS_PLUGIN_NAME = 'AIOverhaul';
+type SelfSettingDefinition = {
+  key: string;
+  label: string;
+  type: 'string' | 'boolean';
+  default: any;
+  description?: string;
+  options?: any;
+};
+
+const SELF_SETTING_DEFS: SelfSettingDefinition[] = [
+  {
+    key: 'backend_base_url',
+    label: 'Backend Base URL Override',
+    type: 'string',
+    default: '',
+    description: 'Override the base URL the AI Overhaul frontend uses when calling the AI backend.',
+  },
+  {
+    key: 'capture_events',
+    label: 'Capture Interaction Events',
+    type: 'boolean',
+    default: false,
+    description: 'Mirror Stash interaction events to the AI backend for training and analytics.',
+  },
+];
+
+const SELF_SETTING_DEF_BY_KEY: Record<string, SelfSettingDefinition> = SELF_SETTING_DEFS.reduce((acc, def) => {
+  acc[def.key] = def;
+  return acc;
+}, {} as Record<string, SelfSettingDefinition>);
+
+const STASH_PLUGIN_CONFIG_QUERY = `query AIOverhaulPluginConfig($ids: [ID!]) {
+  configuration {
+    plugins(include: $ids)
+  }
+}`;
+
+const STASH_PLUGIN_CONFIG_MUTATION = `mutation ConfigureAIOverhaulPlugin($plugin_id: ID!, $input: Map!) {
+  configurePlugin(plugin_id: $plugin_id, input: $input)
+}`;
+
+function buildSelfSettingFields(config: Record<string, any>): any[] {
+  const fields: any[] = [];
+  for (const def of SELF_SETTING_DEFS) {
+    let value = config?.[def.key];
+    if (value === undefined || value === null) {
+      value = def.default;
+    } else if (def.type === 'boolean') {
+      value = coerceBoolean(value, !!def.default);
+    } else if (def.type === 'string') {
+      value = typeof value === 'string' ? value : String(value);
+    }
+    fields.push({
+      key: def.key,
+      label: def.label,
+      type: def.type,
+      default: def.default,
+      options: def.options,
+      description: def.description,
+      value,
+    });
+  }
+  return fields;
+}
+
+function normalizeSelfSettingValue(def: SelfSettingDefinition, raw: any) {
+  if (raw === null) return null;
+  if (def.type === 'boolean') {
+    return coerceBoolean(raw, !!def.default);
+  }
+  if (def.type === 'string') {
+    if (typeof raw === 'string') return raw;
+    if (raw === undefined) return '';
+    return String(raw ?? '');
+  }
+  return raw;
+}
+
+const normalizeBaseValue = (raw: any): string => {
+  if (typeof raw !== 'string') return '';
+  const trimmed = raw.trim();
+  return trimmed ? trimmed.replace(/\/$/, '') : '';
+};
+
+const coerceBoolean = (raw: any, defaultValue = false): boolean => {
+  if (typeof raw === 'boolean') return raw;
+  if (typeof raw === 'number') return raw !== 0;
+  if (typeof raw === 'string') {
+    const lowered = raw.trim().toLowerCase();
+    if (!lowered) return defaultValue;
+    if (['1','true','yes','on'].includes(lowered)) return true;
+    if (['0','false','no','off'].includes(lowered)) return false;
+  }
+  return defaultValue;
+};
 
 // Use shared backend base helper when available. The build outputs each file as
 // an IIFE so we also support the global `window.AIDefaultBackendBase` for
@@ -55,7 +151,9 @@ async function jfetch(url: string, opts: any = {}): Promise<any> {
     if (health && typeof health.reportChecking === 'function') {
       try { health.reportChecking(baseHint); } catch (_) {}
     }
-    const res = await fetch(url, { headers: { 'content-type': 'application/json', ...(opts.headers||{}) }, ...opts });
+  const fetchOpts = { headers: { 'content-type': 'application/json', ...(opts.headers||{}) }, credentials: opts.credentials ?? 'same-origin', ...opts };
+  if ((window as any).AIDebug) console.debug('[jfetch] url=', url, 'opts=', fetchOpts);
+  const res = await fetch(url, fetchOpts);
     const ct = (res.headers.get('content-type')||'').toLowerCase();
     if (ct.includes('application/json')) { try { body = await res.json(); } catch { body = null; } }
     if (!res.ok) {
@@ -102,7 +200,15 @@ const PluginSettings = () => {
   const [error, setError] = React.useState(null as string | null);
   const [addSrcName, setAddSrcName] = React.useState('');
   const [addSrcUrl, setAddSrcUrl] = React.useState('');
-  const [interactionsEnabled, setInteractionsEnabled] = React.useState(() => localStorage.getItem(LS_INTERACTIONS) === '1');
+  const [interactionsEnabled, setInteractionsEnabled] = React.useState(() => {
+    const globalFlag = (window as any).__AI_INTERACTIONS_ENABLED__;
+    return typeof globalFlag === 'boolean' ? globalFlag : false;
+  });
+  const [selfSettingsInitialized, setSelfSettingsInitialized] = React.useState(false);
+  const [selfMigrationAttempted, setSelfMigrationAttempted] = React.useState(false);
+  const [backendSaving, setBackendSaving] = React.useState(false);
+  const [interactionsSaving, setInteractionsSaving] = React.useState(false);
+  const selfConfigRef = React.useRef({} as any);
 
   const backendHealthApi: any = (window as any).AIBackendHealth;
   const backendHealthEvent = backendHealthApi?.EVENT_NAME || 'AIBackendHealthChange';
@@ -113,6 +219,10 @@ const PluginSettings = () => {
     try { window.addEventListener(backendHealthEvent, handler as any); } catch (_) {}
     return () => { try { window.removeEventListener(backendHealthEvent, handler as any); } catch (_) {}; };
   }, [backendHealthApi, backendHealthEvent]);
+  const backendBaseRef = React.useRef(backendBase);
+  React.useEffect(() => { backendBaseRef.current = backendBase; }, [backendBase]);
+  const interactionsRef = React.useRef(interactionsEnabled);
+  React.useEffect(() => { interactionsRef.current = interactionsEnabled; }, [interactionsEnabled]);
   const backendHealthState = React.useMemo(() => {
     if (backendHealthApi && typeof backendHealthApi.getState === 'function') {
       return backendHealthApi.getState();
@@ -247,14 +357,88 @@ const PluginSettings = () => {
     } catch(e:any){ setError(e.message); }
   }, [backendBase, loadInstalled, installed]);
 
+  const loadSelfPluginSettings = React.useCallback(async () => {
+    try {
+      if ((window as any).AIDebug) console.debug('[PluginSettings] loading AIOverhaul settings via GraphQL');
+      const resp = await fetch('/graphql', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ query: STASH_PLUGIN_CONFIG_QUERY, variables: { ids: [THIS_PLUGIN_NAME] } }),
+      });
+      if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status}`);
+      }
+      const payload = await resp.json().catch(() => null);
+      const plugins = payload?.data?.configuration?.plugins;
+      const rawEntry = plugins && typeof plugins === 'object' ? plugins[THIS_PLUGIN_NAME] : null;
+      const config = rawEntry && typeof rawEntry === 'object' ? rawEntry : {};
+      selfConfigRef.current = { ...(config as any) };
+      setPluginSettings((p:any) => ({ ...p, [THIS_PLUGIN_NAME]: buildSelfSettingFields(selfConfigRef.current) }));
+      return config;
+    } catch (e: any) {
+      setError(e?.message || 'Failed to load AI Overhaul plugin settings');
+      setPluginSettings((p:any) => ({ ...p, [THIS_PLUGIN_NAME]: buildSelfSettingFields(selfConfigRef.current || {}) }));
+      return null;
+    }
+  }, [setPluginSettings, setError]);
+
+  const saveSelfPluginSetting = React.useCallback(async (key: string, rawValue: any) => {
+    const def = SELF_SETTING_DEF_BY_KEY[key];
+    if (!def) return false;
+    const prevConfig = selfConfigRef.current ? { ...(selfConfigRef.current as any) } : {};
+    const nextConfig = { ...prevConfig };
+    const normalized = normalizeSelfSettingValue(def, rawValue);
+    if (normalized === null) {
+      delete nextConfig[key];
+    } else {
+      nextConfig[key] = normalized;
+    }
+    if ((window as any).AIDebug) console.debug('[PluginSettings] saving via GraphQL', key, normalized, nextConfig);
+    setPluginSettings((p:any) => {
+      const current = p[THIS_PLUGIN_NAME] || buildSelfSettingFields(prevConfig);
+      const updated = current.map((field:any) => field.key === key ? ({ ...field, value: normalized === null ? def.default : normalized }) : field);
+      return { ...p, [THIS_PLUGIN_NAME]: updated };
+    });
+    try {
+      const resp = await fetch('/graphql', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ query: STASH_PLUGIN_CONFIG_MUTATION, variables: { plugin_id: THIS_PLUGIN_NAME, input: nextConfig } }),
+      });
+      if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status}`);
+      }
+      const payload = await resp.json().catch(() => null);
+      const updatedConfig = payload?.data?.configurePlugin;
+      const finalConfig = updatedConfig && typeof updatedConfig === 'object' ? updatedConfig : nextConfig;
+      selfConfigRef.current = { ...(finalConfig as any) };
+      setPluginSettings((p:any) => ({ ...p, [THIS_PLUGIN_NAME]: buildSelfSettingFields(selfConfigRef.current) }));
+      return true;
+    } catch (e: any) {
+      setError(e?.message || 'Failed to update AI Overhaul plugin settings');
+      selfConfigRef.current = prevConfig;
+      setPluginSettings((p:any) => ({ ...p, [THIS_PLUGIN_NAME]: buildSelfSettingFields(prevConfig) }));
+      return false;
+    }
+  }, [setPluginSettings, setError]);
+
   const loadPluginSettings = React.useCallback(async (pluginName: string) => {
+    if (pluginName === THIS_PLUGIN_NAME) {
+      await loadSelfPluginSettings();
+      return;
+    }
     try {
       const data = await jfetch(`${backendBase}/api/v1/plugins/settings/${pluginName}`);
       setPluginSettings((p:any) => ({...p, [pluginName]: Array.isArray(data)?data:[]}));
     } catch(e:any) { setError(e.message); }
-  }, [backendBase]);
+  }, [backendBase, loadSelfPluginSettings]);
 
-  const savePluginSetting = React.useCallback(async (pluginName: string, key: string, value: any) => {
+  const savePluginSetting = React.useCallback(async (pluginName: string, key: string, value: any, baseOverride?: string) => {
+    if (pluginName === THIS_PLUGIN_NAME) {
+      return saveSelfPluginSetting(key, value);
+    }
     let previousValue: any;
     let capturedPrev = false;
     setPluginSettings((p:any) => {
@@ -270,8 +454,12 @@ const PluginSettings = () => {
       return {...p, [pluginName]: cur};
     });
     try {
-      await jfetch(`${backendBase}/api/v1/plugins/settings/${pluginName}/${encodeURIComponent(key)}`, { method:'PUT', body: JSON.stringify({ value }) });
-      return true;
+      const base = baseOverride !== undefined ? baseOverride : (backendBaseRef.current ?? backendBase);
+      const targetBase = typeof base === 'string' ? base : backendBase;
+  if ((window as any).AIDebug) console.debug('[savePluginSetting] saving', pluginName, key, value, 'to', targetBase || '(relative)');
+  await jfetch(`${targetBase}/api/v1/plugins/settings/${pluginName}/${encodeURIComponent(key)}`, { method:'PUT', body: JSON.stringify({ value }) });
+  try { await loadPluginSettings(pluginName); } catch (_) {}
+  return true;
     } catch(e:any) {
       setError(e.message);
       if (capturedPrev) {
@@ -282,7 +470,32 @@ const PluginSettings = () => {
       }
       return false;
     }
-  }, [backendBase]);
+  }, [backendBase, saveSelfPluginSetting]);
+  const updateInteractions = React.useCallback(async (next: boolean) => {
+    // Always attempt to persist boolean value; avoid null/undefined to keep server-value explicit
+    const normalized = !!next;
+    if (normalized === interactionsRef.current && selfSettingsInitialized) return;
+    const prev = interactionsRef.current;
+    setInteractionsSaving(true);
+    setInteractionsEnabled(next);
+    try {
+      const ok = await savePluginSetting(THIS_PLUGIN_NAME, 'capture_events', next ? true : null);
+      if (!ok) {
+        setInteractionsEnabled(prev);
+        return;
+      }
+      try {
+        const helper = (window as any).AIDefaultBackendBase;
+        if (helper && typeof helper.applyPluginConfig === 'function') helper.applyPluginConfig(undefined, next);
+        else (window as any).__AI_INTERACTIONS_ENABLED__ = next;
+      } catch {}
+      try { await loadPluginSettings(THIS_PLUGIN_NAME); } catch {}
+    } catch {
+      setInteractionsEnabled(prev);
+    } finally {
+      setInteractionsSaving(false);
+    }
+  }, [loadPluginSettings, savePluginSetting, selfSettingsInitialized]);
 
   const retryBackendProbe = React.useCallback(() => {
     loadInstalled();
@@ -295,9 +508,92 @@ const PluginSettings = () => {
   }, [loadInstalled, loadSources, loadCatalogFor, selectedSource, sources]);
 
   // Initial loads
+  React.useEffect(() => { loadPluginSettings(THIS_PLUGIN_NAME); }, [loadPluginSettings]);
   React.useEffect(() => { loadInstalled(); loadSources(); }, [loadInstalled, loadSources]);
   // After sources load first time, auto refresh each source once to populate catalog
   const autoRefreshed = React.useRef(false);
+  React.useEffect(() => {
+    const rows = pluginSettings[THIS_PLUGIN_NAME];
+    if (!rows) return;
+    const lookup = (key: string) => {
+      const field = rows.find((f: any) => f.key === key);
+      if (!field) return undefined;
+      return field.value !== undefined && field.value !== null ? field.value : field.default;
+    };
+    const remoteBase = normalizeBaseValue(lookup('backend_base_url'));
+    const remoteInteractions = coerceBoolean(lookup('capture_events'), false);
+
+    try {
+      const helper = (window as any).AIDefaultBackendBase;
+      if (helper && typeof helper.applyPluginConfig === 'function') helper.applyPluginConfig(remoteBase, remoteInteractions);
+      else {
+        (window as any).AI_BACKEND_URL = remoteBase;
+        (window as any).__AI_INTERACTIONS_ENABLED__ = remoteInteractions;
+      }
+    } catch {}
+
+    const editingDraft = normalizeBaseValue(backendDraft) !== backendBaseRef.current;
+    if (!selfSettingsInitialized) {
+      if (remoteBase !== backendBaseRef.current) {
+        setBackendBase(remoteBase);
+        setBackendDraft(remoteBase);
+      }
+      if (remoteInteractions !== interactionsRef.current) {
+        setInteractionsEnabled(remoteInteractions);
+      }
+      setSelfSettingsInitialized(true);
+    } else {
+      if (!editingDraft) {
+        if (remoteBase !== backendBaseRef.current) {
+          setBackendBase(remoteBase);
+          setBackendDraft(remoteBase);
+        }
+      } else if (remoteBase !== backendBaseRef.current) {
+        setBackendBase(remoteBase);
+      }
+      if (remoteInteractions !== interactionsRef.current) {
+        setInteractionsEnabled(remoteInteractions);
+      }
+    }
+
+    if (!selfMigrationAttempted) {
+      setSelfMigrationAttempted(true);
+      (async () => {
+        let updated = false;
+        try {
+          let legacyBase = '';
+          try { legacyBase = normalizeBaseValue(localStorage.getItem(LEGACY_BACKEND_URL)); } catch {}
+          if (!remoteBase && legacyBase) {
+            const ok = await savePluginSetting(THIS_PLUGIN_NAME, 'backend_base_url', legacyBase);
+            if (ok) {
+              updated = true;
+              setBackendBase(legacyBase);
+              setBackendDraft(legacyBase);
+            }
+          }
+          let legacyInteractionsRaw: string | null = null;
+          try { legacyInteractionsRaw = localStorage.getItem(LEGACY_INTERACTIONS); } catch {}
+          const legacyInteractions = coerceBoolean(legacyInteractionsRaw, false);
+          if (!remoteInteractions && legacyInteractions) {
+            const ok = await savePluginSetting(THIS_PLUGIN_NAME, 'capture_events', true);
+            if (ok) {
+              updated = true;
+              setInteractionsEnabled(true);
+            }
+          }
+        } catch {}
+        finally {
+          try {
+            localStorage.removeItem(LEGACY_BACKEND_URL);
+            localStorage.removeItem(LEGACY_INTERACTIONS);
+          } catch {}
+          if (updated) {
+            try { await loadPluginSettings(THIS_PLUGIN_NAME); } catch {}
+          }
+        }
+      })();
+    }
+  }, [backendDraft, pluginSettings, savePluginSetting, loadPluginSettings, selfMigrationAttempted, selfSettingsInitialized]);
   React.useEffect(() => {
     (async () => {
       if (autoRefreshed.current) return; // only once
@@ -326,26 +622,50 @@ const PluginSettings = () => {
   }, [sources, selectedSource]);
 
   // Interaction toggle persistence
-  React.useEffect(() => { 
-    if (interactionsEnabled) localStorage.setItem(LS_INTERACTIONS,'1'); else localStorage.removeItem(LS_INTERACTIONS);
+  React.useEffect(() => {
+    try { (window as any).__AI_INTERACTIONS_ENABLED__ = !!interactionsEnabled; } catch {}
     // Propagate to tracker runtime if already loaded
     try {
       const tracker = (window as any).stashAIInteractionTracker;
       if (tracker) {
-        if (typeof tracker.setEnabled === 'function') tracker.setEnabled(!!interactionsEnabled); else if (typeof tracker.configure === 'function') tracker.configure({ enabled: !!interactionsEnabled });
+        if (typeof tracker.setEnabled === 'function') tracker.setEnabled(!!interactionsEnabled);
+        else if (typeof tracker.configure === 'function') tracker.configure({ enabled: !!interactionsEnabled });
       }
     } catch {}
   }, [interactionsEnabled]);
 
-  function saveBackendBase() {
-    const clean = backendDraft.trim().replace(/\/$/, '');
+  const saveBackendBase = React.useCallback(async () => {
+    const clean = normalizeBaseValue(backendDraft);
+    const prev = backendBaseRef.current;
+    if (clean === prev && selfSettingsInitialized) return;
+    setBackendSaving(true);
     setBackendBase(clean);
-    localStorage.setItem(LS_BACKEND_URL, clean);
-    // Reload data with new base
-    setInstalled([]); setSources([]); setCatalog({}); setSelectedSource(null);
-    setSystemSettings([]); setSystemLoading(true);
-    loadInstalled(); loadSources();
-  }
+    try {
+      const payloadValue = clean ? clean : null;
+      const ok = await savePluginSetting(THIS_PLUGIN_NAME, 'backend_base_url', payloadValue, prev);
+      if (!ok) {
+        setBackendBase(prev);
+        setBackendDraft(prev);
+        return;
+      }
+      setBackendDraft(clean);
+      try {
+        const helper = (window as any).AIDefaultBackendBase;
+        if (helper && typeof helper.applyPluginConfig === 'function') helper.applyPluginConfig(clean || '', undefined);
+        else (window as any).AI_BACKEND_URL = clean;
+      } catch {}
+      setInstalled([]); setSources([]); setCatalog({}); setSelectedSource(null);
+      setSystemSettings([]); setSystemLoading(true);
+      await loadInstalled();
+      await loadSources();
+      try { await loadPluginSettings(THIS_PLUGIN_NAME); } catch {}
+    } catch {
+      setBackendBase(prev);
+      setBackendDraft(prev);
+    } finally {
+      setBackendSaving(false);
+    }
+  }, [backendDraft, loadInstalled, loadSources, savePluginSetting, loadPluginSettings, selfSettingsInitialized]);
 
   // UI helpers
   const sectionStyle: React.CSSProperties = { border: '1px solid #444', padding: '12px 14px', borderRadius: 6, marginBottom: 16, background: '#1e1e1e' };
@@ -1137,6 +1457,8 @@ const PluginSettings = () => {
   const backendNotice = backendHealthApi && typeof backendHealthApi.buildNotice === 'function'
     ? backendHealthApi.buildNotice(backendHealthState, { onRetry: retryBackendProbe, retryLabel: 'Retry backend request' })
     : null;
+  const backendDraftClean = normalizeBaseValue(backendDraft);
+  const backendDraftChanged = backendDraftClean !== backendBase;
 
   return (
     <div style={{padding:16, color:'#ddd', fontFamily:'sans-serif'}}>
@@ -1146,18 +1468,34 @@ const PluginSettings = () => {
         <strong>Error:</strong> {error} <button style={smallBtn} onClick={()=>setError(null)}>x</button>
       </div>}
       <div style={sectionStyle}>
-        <h3 style={headingStyle}>Local UI Settings</h3>
+        <h3 style={headingStyle}>AI Overhaul Plugin Settings</h3>
         <div style={{display:'flex', flexDirection:'column', gap:8, maxWidth:500}}>
           <label style={{fontSize:12, display:'flex', flexDirection:'column', gap:4}}>Backend Base URL
             <div style={{display:'flex', gap:4}}>
-              <input value={backendDraft} onChange={e=>setBackendDraft((e.target as any).value)} style={{flex:1, padding:6, background:'#111', color:'#eee', border:'1px solid #333'}} />
-              <button style={smallBtn} onClick={saveBackendBase} disabled={backendDraft.trim().replace(/\/$/,'')===backendBase}>Save</button>
+              <input
+                value={backendDraft}
+                onChange={e=>setBackendDraft((e.target as any).value)}
+                style={{flex:1, padding:6, background:'#111', color:'#eee', border:'1px solid #333'}}
+                disabled={!selfSettingsInitialized || backendSaving}
+              />
+              <button
+                style={smallBtn}
+                onClick={() => { void saveBackendBase(); }}
+                disabled={!selfSettingsInitialized || backendSaving || !backendDraftChanged}
+              >{backendSaving ? 'Saving...' : 'Save'}</button>
             </div>
-            <span style={{fontSize:10, opacity:0.7}}>Overrides autodetected base. Stored locally only.</span>
+            <span style={{fontSize:10, opacity:0.7}}>Stored in Stash plugin configuration. Leave blank to auto-detect the backend service.</span>
           </label>
           <label style={{fontSize:12}}>
-            <input type="checkbox" checked={interactionsEnabled} onChange={e=>setInteractionsEnabled((e.target as any).checked)} style={{marginRight:6}} />
-            Capture interaction events (local only)
+            <input
+              type="checkbox"
+              checked={interactionsEnabled}
+              disabled={!selfSettingsInitialized || interactionsSaving}
+              onChange={e=>{ void updateInteractions((e.target as any).checked); }}
+              style={{marginRight:6}}
+            />
+            Capture interaction events
+            {interactionsSaving && <span style={{fontSize:10, marginLeft:6, opacity:0.7}}>saving...</span>}
           </label>
           <div style={{fontSize:10, opacity:0.7}}>Task dashboard: <a href="plugins/ai-tasks" style={{color:'#9cf'}}>Open</a></div>
           <div style={{fontSize:10, opacity:0.5}}>Restart backend button not yet implemented (needs backend endpoint).</div>

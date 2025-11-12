@@ -1,6 +1,6 @@
-name: AIOverhaulCore
-description: Core AI action button with Similar Scenes tab
-version: 0.4.0-core-min
+name: AIOverhaul
+description: AI Overhaul for Stash
+version: 0.5.0
 ui:
   javascript:
     - BackendBase.js
@@ -33,3 +33,10 @@ tasks:
     description: Use to set automatically set AI Overhaul Plugin settings
     defaultArgs:
       mode: plugin_setup
+settings:
+  backend_base_url:
+    displayName: Backend Base URL Override
+    type: STRING
+  capture_events:
+    displayName: Capture Interaction Events
+    type: BOOLEAN

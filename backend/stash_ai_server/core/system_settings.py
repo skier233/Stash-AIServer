@@ -16,7 +16,7 @@ from stash_ai_server.utils.string_utils import normalize_null_strings
 SYSTEM_PLUGIN_NAME = '__system__'
 
 _DEFS: List[Dict[str, Any]] = [
-    { 'key': 'STASH_URL', 'type': 'string', 'label': 'Stash URL', 'default': 'http://localhost:3000', 'description': 'Base URL of the Stash instance.' },
+    { 'key': 'STASH_URL', 'type': 'string', 'label': 'Stash URL', 'default': 'http://localhost:9999', 'description': 'Base URL of the Stash instance.' },
     { 'key': 'STASH_API_KEY', 'type': 'string', 'label': 'Stash API Key', 'default': 'REPLACE_WITH_API_KEY', 'description': 'API key used to connect to Stash.' },
     { 'key': 'PATH_MAPPINGS', 'type': 'path_map', 'label': 'AI Overhaul Path Mappings', 'default': [], 'description': 'Rewrite stash file paths for the AI Overhaul backend when accessing media directly.' },
     { 'key': 'INTERACTION_MIN_SESSION_MINUTES', 'type': 'number', 'label': 'Interaction Min Session (min)', 'description': 'Minimum session duration in minutes for determining a derived o_count', 'default': 10 },
@@ -88,6 +88,11 @@ def seed_system_settings():
                 if row.default_value != default_val:
                     row.default_value = default_val
                     meta_changed = True
+                if key == 'STASH_URL':
+                    legacy_defaults = {'http://localhost:3000', 'http://127.0.0.1:3000'}
+                    if row.value in (None, '') or row.value in legacy_defaults:
+                        row.value = default_val
+                        meta_changed = True
                 if row.options != options_val: row.options = options_val; meta_changed = True
                 # If environment provides value and row has no explicit value (value==default), set it.
                 if env_val is not None and row.value in (None, row.default_value):

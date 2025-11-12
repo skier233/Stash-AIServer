@@ -27,6 +27,29 @@ query Configuration($pluginIds: [ID!]) {
 """
 
 
+def _normalize_backend_base(raw: Any) -> Optional[str]:
+    if isinstance(raw, str):
+        trimmed = raw.strip()
+        if not trimmed:
+            return ""
+        return trimmed.rstrip("/")
+    return None
+
+
+def _coerce_bool(raw: Any) -> Optional[bool]:
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    if isinstance(raw, str):
+        lowered = raw.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return None
+
+
 def _build_logger():
     try:
         import stashapi.log as stash_log  # type: ignore
@@ -132,10 +155,42 @@ def plugin_setup(json_input: Dict[str, Any]) -> Dict[str, Any]:
     absolute_db_path = None
     db_exists = False
 
+    plugins_section: Optional[Dict[str, Any]] = None
+    plugin_entry: Optional[Dict[str, Any]] = None
     if isinstance(config, dict):
         general = config.get("general") or {}
         database_path_raw = general.get("databasePath")
         api_key = general.get("apiKey")
+        candidate_plugins = config.get("plugins")
+        if isinstance(candidate_plugins, dict):
+            plugins_section = candidate_plugins
+        elif plugin_id and plugin_id in config and isinstance(config[plugin_id], dict):
+            plugins_section = config  # plugins map returned directly
+    elif isinstance(config, list):
+        general = {}
+    else:
+        general = {}
+
+    if plugins_section is None and isinstance(config, dict):
+        # Fallback when configuration call only returned plugins map.
+        plugins_section = {k: v for k, v in config.items() if isinstance(v, dict)}
+
+    if isinstance(plugins_section, dict):
+        lookup_keys = []
+        if plugin_id:
+            lookup_keys.append(plugin_id)
+        plugin_name = plugin_info.get("name") if isinstance(plugin_info, dict) else None
+        if plugin_name:
+            lookup_keys.append(plugin_name)
+        for key in lookup_keys:
+            entry = plugins_section.get(key)
+            if isinstance(entry, dict):
+                plugin_entry = entry
+                break
+        if plugin_entry is None and len(plugins_section) == 1:
+            only_value = next(iter(plugins_section.values()))
+            if isinstance(only_value, dict):
+                plugin_entry = only_value
 
     if database_path_raw:
         if os.path.isabs(database_path_raw):
@@ -148,11 +203,30 @@ def plugin_setup(json_input: Dict[str, Any]) -> Dict[str, Any]:
 
         db_exists = os.path.isabs(absolute_db_path) and os.path.exists(absolute_db_path)
 
+    backend_base_override = None
+    capture_events_enabled = None
+    if isinstance(plugin_entry, dict):
+        backend_base_override = (
+            plugin_entry.get("backend_base_url")
+            or plugin_entry.get("backendBaseUrl")
+            or plugin_entry.get("backendBaseURL")
+        )
+        backend_base_override = _normalize_backend_base(backend_base_override)
+        capture_events_raw = (
+            plugin_entry.get("capture_events")
+            or plugin_entry.get("captureEvents")
+            or plugin_entry.get("captureEventsEnabled")
+        )
+        capture_events_enabled = _coerce_bool(capture_events_raw)
+
     result_payload = {
         "configuration": config,
         "databasePath": absolute_db_path,
         "databaseExists": db_exists,
         "apiKey": api_key,
+        "pluginConfiguration": plugin_entry,
+        "backendBaseOverride": backend_base_override,
+        "captureEventsEnabled": capture_events_enabled,
     }
     log.info(f"Plugin setup completed successfully: {json.dumps(result_payload, default=str)}")
     return {"output": result_payload, "error": None}

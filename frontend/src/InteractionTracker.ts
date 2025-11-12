@@ -166,25 +166,30 @@ export class InteractionTracker {
 
   private buildConfig(partial: Partial<InteractionTrackerConfig>): Required<InteractionTrackerConfig> {
     const resolved = (partial.endpoint ?? _resolveBackendBase()).replace(/\/$/, '');
-  // Determine persisted enabled flag from localStorage used by settings UI
-  let storedEnabled = true;
-  try { storedEnabled = localStorage.getItem('AI_INTERACTIONS_ENABLED') === '1'; } catch {}
-  const base: Required<InteractionTrackerConfig> = {
-  endpoint: resolved,
+    let storedEnabled = false;
+    try {
+      const flag = (window as any).__AI_INTERACTIONS_ENABLED__;
+      if (typeof flag === 'boolean') storedEnabled = flag;
+    } catch {}
+    const base: Required<InteractionTrackerConfig> = {
+      endpoint: resolved,
       batchPath: '/api/v1/interactions/sync',
       sendIntervalMs: 5000,
       maxBatchSize: 40,
-  progressThrottleMs: 5000,
-  immediateTypes: ['session_start','scene_watch_complete'],
+      progressThrottleMs: 5000,
+      immediateTypes: ['session_start','scene_watch_complete'],
       localStorageKey: 'ai_overhaul_event_queue',
       maxQueueLength: 1000,
-  debug: false, // default off; can be toggled via enableInteractionDebug()
+      debug: false, // default off; can be toggled via enableInteractionDebug()
       autoDetect: true,
       integratePageContext: true,
       videoAutoInstrument: true,
       enabled: storedEnabled
     };
-    return { ...base, ...partial };
+    const merged: Required<InteractionTrackerConfig> = { ...base, ...partial } as Required<InteractionTrackerConfig>;
+    if (partial.enabled !== undefined) merged.enabled = !!partial.enabled;
+    try { (window as any).__AI_INTERACTIONS_ENABLED__ = merged.enabled; } catch {}
+    return merged;
   }
   private lastDetailKey: string | null = null; // prevent duplicate view events
   private videoJsRetryTimers: Map<string, number> = new Map();
@@ -1400,7 +1405,13 @@ export class InteractionTracker {
   // Runtime toggle for console debugging so integrators can verify events
   public enableDebug() { this.cfg.debug = true; this.log('debug enabled'); }
   public disableDebug() { this.log('debug disabled'); this.cfg.debug = false; }
-  public setEnabled(v: boolean) { this.cfg.enabled = v; this.log('enabled set to '+v); }
+  public setEnabled(v: boolean) {
+    // No-op when value unchanged to avoid feedback loops from multiple callers
+    if (this.cfg && this.cfg.enabled === !!v) return;
+    this.cfg.enabled = !!v;
+    try { (window as any).__AI_INTERACTIONS_ENABLED__ = !!v; } catch {}
+    this.log('enabled set to ' + !!v);
+  }
 
   // --------------------------- Internal Helpers ----------------------------
   private trackInternal(type: InteractionEventType, entityType: InteractionEvent['entity_type'], entityId: string | number, metadata?: any) {
