@@ -14,6 +14,12 @@ from stash_ai_server.recommendations.models import RecContext, RecommendationReq
 from stash_ai_server.recommendations.registry import recommender
 from stash_ai_server.recommendations.utils.scene_fetch import fetch_scenes_by_ids
 from stash_ai_server.recommendations.utils.tag_profiles import fetch_tag_durations_for_scenes
+from stash_ai_server.recommendations.utils.pagination import (
+    get_cached_page,
+    paginate_items,
+    resolve_pagination,
+    store_cache,
+)
 from stash_ai_server.utils import stash_db
 
 _log = logging.getLogger(__name__)
@@ -43,6 +49,14 @@ def _coerce_int(value: Any, fallback: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return fallback
+
+
+def _freeze_config(value: Any) -> Any:
+    if isinstance(value, dict):
+        return tuple(sorted((key, _freeze_config(val)) for key, val in value.items()))
+    if isinstance(value, (list, tuple, set)):
+        return tuple(_freeze_config(item) for item in value)
+    return value
 
 
 def _ensure_utc(dt: datetime | None) -> datetime | None:
@@ -411,6 +425,22 @@ async def personalized_tfidf(ctx: Dict[str, Any], request: RecommendationRequest
     cfg = request.config or {}
     seed_ids = [int(sid) for sid in request.seedSceneIds or [] if sid is not None]
 
+    offset, limit = resolve_pagination(request)
+    cache_key = (
+        "personalized_tfidf",
+        _freeze_config(cfg),
+        tuple(seed_ids),
+    )
+
+    cached = get_cached_page(ctx=ctx, cache_key=cache_key, offset=offset, limit=limit)
+    if cached is not None:
+        page, total_cached, has_more_cached = cached
+        return {
+            "scenes": page,
+            "total": total_cached,
+            "has_more": has_more_cached,
+        }
+
     # Step 1: normalise configuration and derive the time window.
     recent_days = _coerce_float(cfg.get("recent_days"), DEFAULT_RECENT_DAYS)
     recent_cutoff = _utc_now() - timedelta(days=recent_days) if recent_days > 0 else None
@@ -624,11 +654,7 @@ async def personalized_tfidf(ctx: Dict[str, Any], request: RecommendationRequest
     limited_weights = {tag_id: profile_weights[tag_id] for tag_id, _ in top_profile}
 
     # Step 7: pull candidates for the profile and rank them.
-    requested_offset = request.offset if isinstance(request.offset, int) and request.offset is not None else 0
-    if requested_offset < 0:
-        requested_offset = 0
-    requested_limit = request.limit if isinstance(request.limit, int) and request.limit and request.limit > 0 else 40
-    pool_target = max(candidate_pool, requested_limit + requested_offset + 20)
+    pool_target = max(candidate_pool, (limit or candidate_pool) + offset + 20)
     per_tag_limit = max(10, pool_target // max(1, len(top_profile)))
 
     ranked_candidates, candidate_contribs = _rank_candidates(
@@ -699,15 +725,18 @@ async def personalized_tfidf(ctx: Dict[str, Any], request: RecommendationRequest
     if not scenes_out:
         return {"scenes": [], "total": 0, "has_more": False}
 
-    # Step 9: paginate the ranked set to honour the request.
+    # Step 9: paginate the ranked set to honour the request and cache the pool.
     total_available = len(scenes_out)
-    start = min(requested_offset, total_available)
-    end = start + requested_limit if requested_limit > 0 else total_available
-    page = scenes_out[start:end]
-    has_more = end < total_available
+    store_cache(ctx=ctx, cache_key=cache_key, items=scenes_out)
+
+    page, total_return, has_more = paginate_items(
+        scenes_out,
+        offset=offset,
+        limit=limit or total_available,
+    )
 
     return {
         "scenes": page,
-        "total": total_available,
+        "total": total_return,
         "has_more": has_more,
     }
