@@ -16,7 +16,7 @@ ui:
     - InteractionTracker.js
     - AIButtonIntegration.js # integration last after components
   css:
-    - AIOverhaul.css
+    - css/AIOverhaul.css
     - css/recommendedscenes.css
     - css/SimilarScenes.css
   csp:

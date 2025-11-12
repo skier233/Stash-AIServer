@@ -22,7 +22,7 @@ let files = [
   'src/plugin_setup.py',
   'src/css/recommendedscenes.css',
   'src/css/SimilarScenes.css',
-  'src/AIOverhaul.css',
+  'src/css/AIOverhaul.css',
   'src/AIOverhaul.yml'
 ].sort();
 const verbose = !!process.env.BUILD_VERBOSE;
