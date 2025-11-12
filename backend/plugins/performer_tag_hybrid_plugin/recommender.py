@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+import math
 from typing import Any, Dict, List, Set, Tuple
 
 from stash_ai_server.recommendations.models import RecContext, RecommendationRequest
@@ -10,7 +11,11 @@ from stash_ai_server.recommendations.utils.scene_fetch import (
     fetch_scene_candidates_by_performers,
     fetch_scenes_by_ids,
 )
-from stash_ai_server.recommendations.utils.tag_profiles import fetch_tag_durations_for_scenes
+from stash_ai_server.recommendations.utils.tag_profiles import (
+    build_watched_tag_profile,
+    fetch_tag_document_frequencies,
+    fetch_total_tagged_scene_count,
+)
 from stash_ai_server.recommendations.utils.timespan_metrics import collect_tag_durations
 from stash_ai_server.recommendations.utils.watch_history import load_watch_history_summary
 
@@ -25,17 +30,6 @@ DEFAULT_CANDIDATE_POOL = 250
 DEFAULT_PERFORMER_WEIGHT = 0.6
 DEFAULT_TAG_WEIGHT = 0.3
 DEFAULT_STUDIO_BONUS = 0.05
-DEFAULT_SERIES_BONUS = 0.05
-
-
-def _summarize_scores(value_map: Dict[int, float] | None, *, limit: int = 6) -> List[Dict[str, float]]:
-    if not value_map:
-        return []
-    ordered = sorted(value_map.items(), key=lambda item: item[1], reverse=True)
-    preview: List[Dict[str, float]] = []
-    for key, value in ordered[:limit]:
-        preview.append({"id": int(key), "score": round(float(value), 4)})
-    return preview
 
 
 def _coerce_float(value: Any, fallback: float) -> float:
@@ -52,10 +46,10 @@ def _coerce_int(value: Any, fallback: int) -> int:
         return fallback
 
 
-def _normalize_seed_values(payloads: Dict[int, Dict[str, Any]]) -> Tuple[Set[int], Set[int], Set[int]]:
+def _normalize_seed_values(payloads: Dict[int, Dict[str, Any]]) -> Tuple[Set[int], Set[int]]:
+    """Collect performer and studio identifiers from the seed payloads."""
     performer_ids: Set[int] = set()
     studio_ids: Set[int] = set()
-    series_ids: Set[int] = set()
     for scene in payloads.values():
         for performer in scene.get("performers", []):
             pid = performer.get("id")
@@ -71,18 +65,11 @@ def _normalize_seed_values(payloads: Dict[int, Dict[str, Any]]) -> Tuple[Set[int
                 studio_ids.add(int(studio_id))
             except (TypeError, ValueError):
                 pass
-        for series in scene.get("series", []) or []:
-            sid = series.get("id") if isinstance(series, dict) else None
-            if sid is None:
-                continue
-            try:
-                series_ids.add(int(sid))
-            except (TypeError, ValueError):
-                continue
-    return performer_ids, studio_ids, series_ids
+    return performer_ids, studio_ids
 
 
 def _normalize_datetime(days: float) -> datetime | None:
+    """Translate a floating day window into an absolute UTC cutoff."""
     if days <= 0:
         return None
     return datetime.now(timezone.utc) - timedelta(days=days)
@@ -94,28 +81,38 @@ def _build_tag_profile(
     history_summary: List[Dict[str, Any]],
     profile_limit: int,
 ) -> Dict[int, float]:
+    """Aggregate tag durations from watch history into a capped preference profile."""
+
     if not history_summary:
         return {}
 
-    scene_ids = [entry["scene_id"] for entry in history_summary]
-    per_scene_tags, _ = fetch_tag_durations_for_scenes(service=service, scene_ids=scene_ids)
-    if not per_scene_tags:
-        return {}
+    # Maintain stable ordering of history scenes so the helper can process each watch
+    # once; duplicates are filtered out.
+    ordered_scene_ids: List[int] = []
+    seen: Set[int] = set()
 
-    watched_lookup = {entry["scene_id"]: float(entry.get("watched_s") or 0.0) for entry in history_summary}
-    aggregated: Dict[int, float] = {}
+    for entry in history_summary:
+        scene_id = entry.get("scene_id")
+        if scene_id is None:
+            continue
+        try:
+            scene_key = int(scene_id)
+        except (TypeError, ValueError):
+            continue
+        if scene_key in seen:
+            continue
+        seen.add(scene_key)
+        ordered_scene_ids.append(scene_key)
 
-    for scene_id, tag_map in per_scene_tags.items():
-        watched_total = watched_lookup.get(scene_id, 0.0)
-        for tag_id, duration in tag_map.items():
-            duration_val = float(duration or 0.0)
-            if duration_val <= 0:
-                continue
-            if watched_total > 0:
-                contribution = min(duration_val, watched_total)
-            else:
-                contribution = duration_val
-            aggregated[tag_id] = aggregated.get(tag_id, 0.0) + contribution
+    # ``build_watched_tag_profile`` returns a tuple of
+    # (aggregated_tag_seconds, total_watched_seconds, per_scene_breakdown). The breakdown
+    # is not required here, but the aggregated map already prioritises watched segments
+    # for these history scenes, giving us a consistent preference profile.
+    aggregated, _, _ = build_watched_tag_profile(
+        service=service,
+        scene_ids=ordered_scene_ids,
+        prefer_full_scene=False,
+    )
 
     if not aggregated:
         return {}
@@ -135,41 +132,42 @@ def _score_performer_tag_candidate(
     seed_performers: Set[int],
     tag_profile: Dict[int, float],
     tag_overlap_map: Dict[int, Dict[int, float]],
+    tag_interest_weights: Dict[int, float],
+    tag_normalization_base: float,
     tag_weight: float,
     studio_ids: Set[int],
     studio_bonus: float,
-    series_ids: Set[int],
-    series_bonus: float,
 ) -> Tuple[float, Dict[str, Any]]:
+    """Compute the blended performer/tag score for a single candidate scene."""
+
     performer_component = 0.0
     if seed_performers:
         unit = performer_weight / len(seed_performers)
         performer_component = unit * len(matched_performers)
 
-    candidate_tags = tag_overlap_map.get(scene_id, {}) if tag_profile else {}
+    candidate_tags = tag_overlap_map.get(scene_id, {}) if tag_interest_weights else {}
     tag_component = 0.0
     tag_hits: List[Dict[str, Any]] = []
-    overlap_sum = 0.0
-    if tag_profile and candidate_tags:
-        normalization = sum(tag_profile.values()) or 1.0
-        for tag_id, watched_value in tag_profile.items():
+    weighted_sum = 0.0
+    if tag_interest_weights and candidate_tags:
+        normalization = tag_normalization_base or 1.0
+        for tag_id, weight in tag_interest_weights.items():
             candidate_duration = float(candidate_tags.get(tag_id, 0.0))
             if candidate_duration <= 0:
                 continue
-            overlap = min(candidate_duration, watched_value)
-            if overlap <= 0:
-                continue
-            overlap_sum += overlap
+            contribution = candidate_duration * weight
+            weighted_sum += contribution
             tag_hits.append(
                 {
                     "tag_id": tag_id,
-                    "overlap_seconds": round(overlap, 3),
+                    "interest_weight": round(weight, 4),
                     "candidate_seconds": round(candidate_duration, 3),
-                    "watched_seconds": round(watched_value, 3),
+                    "watched_seconds": round(tag_profile.get(tag_id, 0.0), 3),
+                    "weighted_contribution": round(contribution, 4),
                 }
             )
-        if overlap_sum > 0:
-            tag_component = tag_weight * (overlap_sum / normalization)
+        if weighted_sum > 0:
+            tag_component = tag_weight * min(1.0, weighted_sum / normalization)
 
     studio_component = 0.0
     studio = candidate_payload.get("studio") or {}
@@ -177,26 +175,12 @@ def _score_performer_tag_candidate(
     if studio_id is not None and studio_ids and int(studio_id) in studio_ids:
         studio_component = studio_bonus
 
-    series_component = 0.0
-    if series_ids:
-        for series in candidate_payload.get("series", []) or []:
-            sid = series.get("id") if isinstance(series, dict) else None
-            if sid is None:
-                continue
-            try:
-                if int(sid) in series_ids:
-                    series_component = series_bonus
-                    break
-            except (TypeError, ValueError):
-                continue
-
-    score = performer_component + tag_component + studio_component + series_component
+    score = performer_component + tag_component + studio_component
     debug = {
         "performer_component": round(performer_component, 4),
         "tag_component": round(tag_component, 4),
-        "tag_overlap_seconds": round(overlap_sum, 3),
+        "tag_weight_sum": round(weighted_sum, 4),
         "studio_bonus": round(studio_component, 4) if studio_component else 0.0,
-        "series_bonus": round(series_component, 4) if series_component else 0.0,
         "performer_matches": sorted(int(pid) for pid in matched_performers),
         "tag_hits": tag_hits[:6],
     }
@@ -206,7 +190,7 @@ def _score_performer_tag_candidate(
 @recommender(
     id="performer_tag_hybrid",
     label="Performer + Tag Hybrid",
-    description="Blend performer overlap with historical tag preferences plus studio/series cues.",
+    description="Blend performer overlap with historical tag preferences plus studio cues.",
     contexts=[RecContext.similar_scene],
     config=[
         {
@@ -276,15 +260,6 @@ def _score_performer_tag_candidate(
             "max": 0.3,
             "step": 0.01,
         },
-        {
-            "name": "series_bonus",
-            "label": "Series Bonus",
-            "type": "number",
-            "default": DEFAULT_SERIES_BONUS,
-            "min": 0,
-            "max": 0.3,
-            "step": 0.01,
-        },
     ],
     supports_pagination=True,
     exposes_scores=True,
@@ -292,8 +267,11 @@ def _score_performer_tag_candidate(
     allows_multi_seed=True,
 )
 async def performer_tag_hybrid(ctx: Dict[str, Any], request: RecommendationRequest):
+    """Blend performer overlap with historical tag preferences and optional studio bonuses."""
+
     cfg = request.config or {}
 
+    # Step 1: extract seed ids and resolve configuration with guard rails.
     seed_ids = [int(sid) for sid in request.seedSceneIds or [] if sid is not None]
     if not seed_ids:
         return {"scenes": [], "total": 0, "has_more": False}
@@ -307,75 +285,71 @@ async def performer_tag_hybrid(ctx: Dict[str, Any], request: RecommendationReque
     performer_weight = max(0.0, _coerce_float(cfg.get("performer_weight"), DEFAULT_PERFORMER_WEIGHT))
     tag_weight = max(0.0, _coerce_float(cfg.get("tag_weight"), DEFAULT_TAG_WEIGHT))
     studio_bonus = max(0.0, _coerce_float(cfg.get("studio_bonus"), DEFAULT_STUDIO_BONUS))
-    series_bonus = max(0.0, _coerce_float(cfg.get("series_bonus"), DEFAULT_SERIES_BONUS))
 
-    _log.info(
-        "performer_tag_hybrid: resolved configuration",
-        extra={
-            "seed_count": len(seed_ids),
-            "performer_weight": round(performer_weight, 4),
-            "tag_weight": round(tag_weight, 4),
-            "studio_bonus": round(studio_bonus, 4),
-            "series_bonus": round(series_bonus, 4),
-            "recent_days": round(recent_days, 2),
-            "history_limit": history_limit,
-            "candidate_pool": candidate_pool,
-        },
-    )
-
+    # Step 2: fetch seed payloads so we can extract performer/studio anchors for scoring.
+    # ``fetch_scenes_by_ids`` returns a ``{scene_id: scene_payload}`` mapping containing
+    # performer, studio, and other metadata used later in the scorer.
     seed_payloads = fetch_scenes_by_ids(seed_ids)
     if not seed_payloads:
-        _log.info("performer_tag_hybrid: no seed payloads available", extra={"seed_ids": seed_ids})
         return {"scenes": [], "total": 0, "has_more": False}
+    seed_performers, studio_ids = _normalize_seed_values(seed_payloads)
 
-    seed_performers, studio_ids, series_ids = _normalize_seed_values(seed_payloads)
-    if not seed_performers:
-        _log.info("performer_tag_hybrid: seed scenes do not list performers", extra={"seed_ids": seed_ids})
-
-    _log.info(
-        "performer_tag_hybrid: normalized seed context",
-        extra={
-            "seed_performers": len(seed_performers),
-            "seed_studios": len(studio_ids),
-            "seed_series": len(series_ids),
-        },
-    )
-
+    # Step 3: load recent watch history to anchor preferences.
     recent_cutoff = _normalize_datetime(recent_days)
+
+    # ``load_watch_history_summary`` yields a list of dict entries with fields such as
+    # ``scene_id``, ``watched_s``, and ``last_seen`` ordered from most to least recent.
     history_summary = load_watch_history_summary(
         recent_cutoff=recent_cutoff,
         min_watch_seconds=min_watch_seconds,
         limit=history_limit,
     )
-
     watched_scene_ids = {entry["scene_id"] for entry in history_summary}
     exclude_set = watched_scene_ids | set(seed_ids)
 
-    _log.info(
-        "performer_tag_hybrid: loaded watch summary",
-        extra={
-            "history_rows": len(history_summary),
-            "watched_overlap": len(watched_scene_ids & set(seed_ids)),
-        },
+    # Step 4: turn the history into a tag preference profile and derive TF-IDF weights.
+    tag_profile = (
+        _build_tag_profile(
+            service=service_name,
+            history_summary=history_summary,
+            profile_limit=tag_profile_limit,
+        )
+        if tag_weight > 0
+        else {}
     )
 
-    tag_profile = _build_tag_profile(
-        service=service_name,
-        history_summary=history_summary,
-        profile_limit=tag_profile_limit,
-    ) if tag_weight > 0 else {}
-
+    tag_interest_weights: Dict[int, float] = {}
+    tag_normalization_base = 1.0
     if tag_profile:
-        _log.info(
-            "performer_tag_hybrid: built tag profile",
-            extra={
-                "profile_tags": len(tag_profile),
-                "top_tags": _summarize_scores(tag_profile, limit=8),
-            },
-        )
-    else:
-        _log.info("performer_tag_hybrid: tag profile empty", extra={"tag_weight": round(tag_weight, 4)})
+        profile_total = sum(tag_profile.values())
+        if profile_total > 0:
+            base_weights = {tag_id: value / profile_total for tag_id, value in tag_profile.items() if value > 0}
+        else:
+            base_weights = {}
 
+        if base_weights:
+            doc_frequencies = fetch_tag_document_frequencies(service=service_name, tag_ids=base_weights.keys())
+            total_tagged_scenes = fetch_total_tagged_scene_count(service=service_name) or len(doc_frequencies) or 1
+
+            weighted: Dict[int, float] = {}
+            for tag_id, tf_weight in base_weights.items():
+                df = max(0, doc_frequencies.get(tag_id, 0))
+                idf = math.log((1 + total_tagged_scenes) / (1 + df)) + 1.0
+                weighted[tag_id] = tf_weight * idf
+
+            weight_sum = sum(weighted.values())
+            if weight_sum > 0:
+                tag_interest_weights = {tag_id: value / weight_sum for tag_id, value in weighted.items() if value > 0}
+            else:
+                tag_interest_weights = base_weights
+
+            tag_normalization_base = 0.0
+            for tag_id, weight in tag_interest_weights.items():
+                tag_normalization_base += weight * tag_profile.get(tag_id, 0.0)
+            if tag_normalization_base <= 0:
+                tag_normalization_base = 1.0
+
+    # Step 5: assemble a pool of candidates sourced from performers and tag overlap.
     max_pre_score = candidate_pool * 3 if candidate_pool > 0 else None
     candidate_scene_ids: List[int] = []
     candidate_seen: Set[int] = set()
@@ -402,6 +376,9 @@ async def performer_tag_hybrid(ctx: Dict[str, Any], request: RecommendationReque
 
     performer_candidates: List[Tuple[int, Set[int]]] = []
     if seed_performers:
+        # ``fetch_scene_candidates_by_performers`` returns a list of tuples where the
+        # first element is the candidate scene id and the second is the set of performer
+        # ids shared with the seed set.
         performer_candidates = fetch_scene_candidates_by_performers(
             performer_ids=list(seed_performers),
             exclude_scene_ids=exclude_set,
@@ -410,71 +387,46 @@ async def performer_tag_hybrid(ctx: Dict[str, Any], request: RecommendationReque
         for scene_id, matched in performer_candidates:
             add_candidate(scene_id, matched, "performer")
 
-    if not performer_candidates:
-        _log.info(
-            "performer_tag_hybrid: no performer-based candidates",
-            extra={"seed_performers": len(seed_performers)},
-        )
-
     tag_duration_index: Dict[int, Dict[int, float]] = {}
-    tag_strength_items: List[Tuple[int, float]] = []
-    if tag_profile and tag_weight > 0:
-        tag_duration_index = collect_tag_durations(service=service_name, tag_ids=tag_profile.keys())
+    if tag_interest_weights and tag_weight > 0:
+        # ``collect_tag_durations`` yields ``{scene_id: {tag_id: duration_seconds}}`` for
+        # the requested tag ids. This lets us compute weighted relevance against the
+        # active tag profile ahead of the detailed scoring pass.
+        tag_duration_index = collect_tag_durations(service=service_name, tag_ids=tag_interest_weights.keys())
+        tag_strength_items: List[Tuple[int, float]] = []
         for scene_id, tag_map in tag_duration_index.items():
             if scene_id in exclude_set:
                 continue
-            overlap = 0.0
-            for tag_id, watched_value in tag_profile.items():
+            weighted_sum = 0.0
+            for tag_id, weight in tag_interest_weights.items():
                 candidate_duration = float(tag_map.get(tag_id, 0.0))
                 if candidate_duration <= 0:
                     continue
-                overlap += min(candidate_duration, watched_value)
-            if overlap <= 0:
+                weighted_sum += candidate_duration * weight
+            if weighted_sum <= 0:
                 continue
-            tag_strength_items.append((scene_id, overlap))
+            normalized_strength = weighted_sum / tag_normalization_base if tag_normalization_base > 0 else weighted_sum
+            tag_strength_items.append((scene_id, normalized_strength))
         tag_strength_items.sort(key=lambda item: item[1], reverse=True)
-        for scene_id, overlap in tag_strength_items:
-            add_candidate(scene_id, None, "tag", tag_strength=overlap)
+        for scene_id, normalized_strength in tag_strength_items:
+            add_candidate(scene_id, None, "tag", tag_strength=normalized_strength)
             if max_pre_score is not None and len(candidate_scene_ids) >= max_pre_score:
                 break
 
     if not candidate_scene_ids:
-        _log.info(
-            "performer_tag_hybrid: no candidates after combining sources",
-            extra={
-                "seed_performers": len(seed_performers),
-                "tag_profile_size": len(tag_profile),
-                "history_rows": len(history_summary),
-            },
-        )
         return {"scenes": [], "total": 0, "has_more": False}
 
     for scene_id in candidate_scene_ids:
         matched_performer_map.setdefault(scene_id, set())
-        if scene_id not in candidate_origin:
-            candidate_origin[scene_id] = {"unknown"}
+        candidate_origin.setdefault(scene_id, {"unknown"})
 
     candidate_tag_map = (
         {scene_id: tag_duration_index.get(scene_id, {}) for scene_id in candidate_scene_ids}
-        if tag_profile and tag_weight > 0
+        if tag_interest_weights and tag_weight > 0
         else {}
     )
 
-    origin_counts: Dict[str, int] = {}
-    for origins in candidate_origin.values():
-        for origin in origins:
-            origin_counts[origin] = origin_counts.get(origin, 0) + 1
-
-    _log.info(
-        "performer_tag_hybrid: assembled candidates",
-        extra={
-            "selected_candidates": len(candidate_scene_ids),
-            "performer_candidates": len(performer_candidates),
-            "tag_candidates_considered": len(tag_strength_items),
-            "origin_counts": origin_counts,
-        },
-    )
-
+    # Step 6: score candidates using the blended performer/tag model.
     candidate_payloads = fetch_scenes_by_ids(candidate_scene_ids)
     scored_candidates: List[Tuple[int, float, Dict[str, Any]]] = []
 
@@ -491,11 +443,11 @@ async def performer_tag_hybrid(ctx: Dict[str, Any], request: RecommendationReque
             seed_performers=seed_performers,
             tag_profile=tag_profile,
             tag_overlap_map=candidate_tag_map,
+            tag_interest_weights=tag_interest_weights,
+            tag_normalization_base=tag_normalization_base,
             tag_weight=tag_weight,
             studio_ids=studio_ids,
             studio_bonus=studio_bonus,
-            series_ids=series_ids,
-            series_bonus=series_bonus,
         )
         if score <= 0:
             continue
@@ -508,23 +460,7 @@ async def performer_tag_hybrid(ctx: Dict[str, Any], request: RecommendationReque
     if len(scored_candidates) > candidate_pool:
         scored_candidates = scored_candidates[:candidate_pool]
 
-    preview = [
-        {
-            "scene_id": scene_id,
-            "score": round(score, 4),
-            "performer_matches": len(scored_debug.get("performer_matches", [])),
-            "tag_overlap_seconds": scored_debug.get("tag_overlap_seconds"),
-        }
-        for scene_id, score, scored_debug in scored_candidates[:5]
-    ]
-    _log.info(
-        "performer_tag_hybrid: scored candidates",
-        extra={
-            "scored_candidate_count": len(scored_candidates),
-            "preview": preview,
-        },
-    )
-
+    # Step 7: paginate and project debug metadata for inspection.
     requested_offset = request.offset if isinstance(request.offset, int) and request.offset is not None else 0
     if requested_offset < 0:
         requested_offset = 0
@@ -553,24 +489,4 @@ async def performer_tag_hybrid(ctx: Dict[str, Any], request: RecommendationReque
         results.append(payload)
 
     has_more = requested_offset + len(page_slice) < total_candidates
-    _log.info(
-        "performer_tag_hybrid: returning page",
-        extra={
-            "page_size": len(results),
-            "total_candidates": total_candidates,
-            "offset": requested_offset,
-            "limit": requested_limit,
-            "has_more": has_more,
-            "preview": [
-                {
-                    "scene_id": payload.get("id"),
-                    "score": payload.get("score"),
-                    "sources": payload.get("debug_meta", {})
-                    .get("performer_tag_hybrid", {})
-                    .get("candidate_sources"),
-                }
-                for payload in results[:3]
-            ],
-        },
-    )
     return {"scenes": results, "total": total_candidates, "has_more": has_more}

@@ -3,14 +3,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Sequence, Tuple
 
-from stash_ai_server.db.ai_results_store import get_scene_tag_totals
 from stash_ai_server.recommendations.models import RecContext, RecommendationRequest
 from stash_ai_server.recommendations.registry import recommender
 from stash_ai_server.recommendations.utils.scene_fetch import fetch_scenes_by_ids
-from stash_ai_server.recommendations.utils.timespan_metrics import (
-    collect_tag_durations,
-    collect_watched_segment_tag_durations,
-)
+from stash_ai_server.recommendations.utils.tag_profiles import build_watched_tag_profile
+from stash_ai_server.recommendations.utils.timespan_metrics import collect_tag_durations
 
 _log = logging.getLogger(__name__)
 
@@ -35,84 +32,6 @@ def _coerce_int(value: Any, fallback: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return fallback
-
-
-def _build_tag_profile(
-    *,
-    service: str,
-    seed_ids: Sequence[int],
-    tag_source_mode: str,
-) -> Tuple[Dict[int, float], float, Dict[int, Dict[str, Any]]]:
-    aggregated: Dict[int, float] = {}
-    total_watched = 0.0
-    seed_details: Dict[int, Dict[str, Any]] = {}
-    prefer_full_scene = tag_source_mode == TAG_PROFILE_MODE_SCENE
-
-    for scene_id in seed_ids:
-        detail = seed_details.setdefault(
-            scene_id,
-            {"watch_seconds": 0.0, "watch_tags": {}, "fallback_tags": {}},
-        )
-        watched_map, watched_total = collect_watched_segment_tag_durations(
-            service=service,
-            scene_id=scene_id,
-        )
-        total_watched += watched_total
-        detail["watch_seconds"] = float(watched_total or 0.0)
-        watch_map_clean: Dict[int, float] = {}
-        if watched_map:
-            for tag_id, duration in watched_map.items():
-                if duration in (None, ""):
-                    continue
-                try:
-                    duration_val = float(duration)
-                except (TypeError, ValueError):
-                    continue
-                if duration_val <= 0:
-                    continue
-                watch_map_clean[int(tag_id)] = duration_val
-        detail["watch_tags"] = watch_map_clean
-
-        fallback_tags: Dict[int, float] = {}
-        if prefer_full_scene or not watch_map_clean:
-            fallback_map = get_scene_tag_totals(service=service, scene_id=scene_id)
-            if fallback_map:
-                for tag_id, duration in fallback_map.items():
-                    if duration in (None, ""):
-                        continue
-                    try:
-                        duration_val = float(duration)
-                    except (TypeError, ValueError):
-                        continue
-                    if duration_val <= 0:
-                        continue
-                    fallback_tags[int(tag_id)] = duration_val
-        detail["fallback_tags"] = fallback_tags
-
-        if prefer_full_scene:
-            if fallback_tags:
-                for tag_id, duration in fallback_tags.items():
-                    tag_key = int(tag_id)
-                    aggregated[tag_key] = aggregated.get(tag_key, 0.0) + float(duration)
-            elif watch_map_clean:
-                for tag_id, duration in watch_map_clean.items():
-                    tag_key = int(tag_id)
-                    aggregated[tag_key] = aggregated.get(tag_key, 0.0) + float(duration)
-            continue
-
-        if watch_map_clean:
-            for tag_id, duration in watch_map_clean.items():
-                tag_key = int(tag_id)
-                aggregated[tag_key] = aggregated.get(tag_key, 0.0) + float(duration)
-            continue
-
-        if fallback_tags:
-            for tag_id, duration in fallback_tags.items():
-                tag_key = int(tag_id)
-                aggregated[tag_key] = aggregated.get(tag_key, 0.0) + float(duration)
-
-    return aggregated, total_watched, seed_details
-
 
 @recommender(
     id="segment_similarity",
@@ -164,10 +83,14 @@ def _build_tag_profile(
 async def segment_similarity(ctx: Dict[str, Any], request: RecommendationRequest):
     cfg = request.config or {}
 
+    # Resolve the set of seed scenes the caller provided. We exit early when none are
+    # supplied because the recommender needs at least one watched reference scene.
     seed_ids = [int(sid) for sid in request.seedSceneIds or [] if sid is not None]
     if not seed_ids:
         return {"scenes": [], "total": 0, "has_more": False}
 
+    # Normalise configuration knobs with sensible bounds so the downstream logic is
+    # working with floats/ints. ``_coerce_*`` helpers swallow invalid user input.
     service_name = DEFAULT_SERVICE
     tag_limit = max(1, _coerce_int(cfg.get("tag_limit"), DEFAULT_TAG_LIMIT))
     candidate_pool = max(20, _coerce_int(cfg.get("candidate_pool"), DEFAULT_CANDIDATE_POOL))
@@ -185,10 +108,14 @@ async def segment_similarity(ctx: Dict[str, Any], request: RecommendationRequest
         round(min_watched_seconds, 3),
     )
 
-    tag_profile, total_watched, seed_breakdown = _build_tag_profile(
+    # ``build_watched_tag_profile`` returns
+    # (aggregated_tag_seconds, total_watched_seconds, per_scene_breakdown). The
+    # ``prefer_full_scene`` flag toggles whether we rely on watched segments or fall back
+    # to whole-scene tag totals when segments are missing.
+    tag_profile, total_watched, seed_breakdown = build_watched_tag_profile(
         service=service_name,
-        seed_ids=seed_ids,
-        tag_source_mode=tag_source_mode,
+        scene_ids=seed_ids,
+        prefer_full_scene=tag_source_mode == TAG_PROFILE_MODE_SCENE,
     )
 
     _log.debug("segment_similarity: tag profile %s", tag_profile)
@@ -211,6 +138,9 @@ async def segment_similarity(ctx: Dict[str, Any], request: RecommendationRequest
     if normalization_base <= 0:
         normalization_base = 1.0
 
+    # ``collect_tag_durations`` provides a candidate index shaped as
+    # ``{scene_id: {tag_id: duration_seconds}}`` for every tag in ``tag_ids``. This lets
+    # us scan potential recommendations without additional queries per scene.
     tag_duration_index = collect_tag_durations(service=service_name, tag_ids=tag_ids)
     if not tag_duration_index:
         _log.info("segment_similarity: no candidate durations for active tags")
@@ -219,6 +149,9 @@ async def segment_similarity(ctx: Dict[str, Any], request: RecommendationRequest
     seed_set = set(seed_ids)
     candidate_scores: List[Tuple[int, float, float, List[Tuple[int, float, float, float]]]] = []
 
+    # Iterate through every candidate scene and compute tag overlap (seconds) between the
+    # watched tag profile and the candidate's tag durations. "contributions" stores
+    # debug tuples of (tag_id, overlap_s, candidate_s, watched_s).
     for scene_id, candidate_tag_map in tag_duration_index.items():
         if scene_id in seed_set:
             continue
@@ -258,6 +191,8 @@ async def segment_similarity(ctx: Dict[str, Any], request: RecommendationRequest
     if not page_slice:
         return {"scenes": [], "total": total_candidates, "has_more": False}
 
+    # ``fetch_scenes_by_ids`` returns the hydrated payloads for the paged candidate ids
+    # so we can attach scores and debug metadata in-place.
     scene_ids = [scene_id for scene_id, *_ in page_slice]
     scene_payloads = fetch_scenes_by_ids(scene_ids)
     results: List[Dict[str, Any]] = []
