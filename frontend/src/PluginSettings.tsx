@@ -26,6 +26,8 @@ const PATH_SLASH_MODE_SET = new Set(PATH_SLASH_MODES);
 const LEGACY_BACKEND_URL = 'AI_BACKEND_URL_OVERRIDE';
 const LEGACY_INTERACTIONS = 'AI_INTERACTIONS_ENABLED';
 const THIS_PLUGIN_NAME = 'AIOverhaul';
+// Fallback base used when no override has been persisted yet.
+const DEFAULT_BACKEND_BASE_URL = 'http://localhost:4153';
 type SelfSettingDefinition = {
   key: string;
   label: string;
@@ -40,14 +42,14 @@ const SELF_SETTING_DEFS: SelfSettingDefinition[] = [
     key: 'backend_base_url',
     label: 'Backend Base URL Override',
     type: 'string',
-    default: '',
+    default: DEFAULT_BACKEND_BASE_URL,
     description: 'Override the base URL the AI Overhaul frontend uses when calling the AI backend.',
   },
   {
     key: 'capture_events',
     label: 'Capture Interaction Events',
     type: 'boolean',
-    default: false,
+    default: true,
     description: 'Mirror Stash interaction events to the AI backend for training and analytics.',
   },
 ];
@@ -186,7 +188,7 @@ const PluginSettings = () => {
 
   // Core state
   const [backendBase, setBackendBase] = React.useState(() => defaultBackendBase());
-  const [backendDraft, setBackendDraft] = React.useState(() => backendBase);
+  const [backendDraft, setBackendDraft] = React.useState(() => defaultBackendBase());
   // Using 'any' in generics because React reference might be untyped (window injection)
   const [installed, setInstalled] = React.useState([] as any as InstalledPlugin[]);
   const [sources, setSources] = React.useState([] as any as Source[]);
@@ -202,7 +204,7 @@ const PluginSettings = () => {
   const [addSrcUrl, setAddSrcUrl] = React.useState('');
   const [interactionsEnabled, setInteractionsEnabled] = React.useState(() => {
     const globalFlag = (window as any).__AI_INTERACTIONS_ENABLED__;
-    return typeof globalFlag === 'boolean' ? globalFlag : false;
+    return typeof globalFlag === 'boolean' ? globalFlag : true;
   });
   const [selfSettingsInitialized, setSelfSettingsInitialized] = React.useState(false);
   const [selfMigrationAttempted, setSelfMigrationAttempted] = React.useState(false);
@@ -357,32 +359,6 @@ const PluginSettings = () => {
     } catch(e:any){ setError(e.message); }
   }, [backendBase, loadInstalled, installed]);
 
-  const loadSelfPluginSettings = React.useCallback(async () => {
-    try {
-      if ((window as any).AIDebug) console.debug('[PluginSettings] loading AIOverhaul settings via GraphQL');
-      const resp = await fetch('/graphql', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ query: STASH_PLUGIN_CONFIG_QUERY, variables: { ids: [THIS_PLUGIN_NAME] } }),
-      });
-      if (!resp.ok) {
-        throw new Error(`HTTP ${resp.status}`);
-      }
-      const payload = await resp.json().catch(() => null);
-      const plugins = payload?.data?.configuration?.plugins;
-      const rawEntry = plugins && typeof plugins === 'object' ? plugins[THIS_PLUGIN_NAME] : null;
-      const config = rawEntry && typeof rawEntry === 'object' ? rawEntry : {};
-      selfConfigRef.current = { ...(config as any) };
-      setPluginSettings((p:any) => ({ ...p, [THIS_PLUGIN_NAME]: buildSelfSettingFields(selfConfigRef.current) }));
-      return config;
-    } catch (e: any) {
-      setError(e?.message || 'Failed to load AI Overhaul plugin settings');
-      setPluginSettings((p:any) => ({ ...p, [THIS_PLUGIN_NAME]: buildSelfSettingFields(selfConfigRef.current || {}) }));
-      return null;
-    }
-  }, [setPluginSettings, setError]);
-
   const saveSelfPluginSetting = React.useCallback(async (key: string, rawValue: any) => {
     const def = SELF_SETTING_DEF_BY_KEY[key];
     if (!def) return false;
@@ -423,6 +399,75 @@ const PluginSettings = () => {
       return false;
     }
   }, [setPluginSettings, setError]);
+
+  const ensureSelfSettingDefaults = React.useCallback(async (config: Record<string, any> | null) => {
+    const working = (config && typeof config === 'object') ? { ...config } : {};
+    const pending: Array<{ key: string; value: any }> = [];
+
+    for (const def of SELF_SETTING_DEFS) {
+      const raw = working[def.key];
+      const needsDefault =
+        raw === undefined ||
+        raw === null ||
+        (def.key === 'backend_base_url' && normalizeBaseValue(raw) === '');
+      if (!needsDefault) continue;
+
+      const baseDefault = def.type === 'boolean' ? !!def.default : def.default;
+      if (def.key === 'backend_base_url') {
+        const normalized = normalizeBaseValue(baseDefault) || DEFAULT_BACKEND_BASE_URL;
+        working[def.key] = normalized;
+        pending.push({ key: def.key, value: normalized });
+      } else {
+        working[def.key] = baseDefault;
+        pending.push({ key: def.key, value: baseDefault });
+      }
+    }
+
+    if (!pending.length) {
+      return working;
+    }
+
+    let latest = working;
+    for (const entry of pending) {
+      const ok = await saveSelfPluginSetting(entry.key, entry.value);
+      if (!ok) {
+        continue;
+      }
+      latest = { ...(selfConfigRef.current || latest) };
+    }
+
+    return latest;
+  }, [saveSelfPluginSetting]);
+
+  const loadSelfPluginSettings = React.useCallback(async () => {
+    try {
+      if ((window as any).AIDebug) console.debug('[PluginSettings] loading AIOverhaul settings via GraphQL');
+      const resp = await fetch('/graphql', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ query: STASH_PLUGIN_CONFIG_QUERY, variables: { ids: [THIS_PLUGIN_NAME] } }),
+      });
+      if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status}`);
+      }
+      const payload = await resp.json().catch(() => null);
+      const plugins = payload?.data?.configuration?.plugins;
+      const rawEntry = plugins && typeof plugins === 'object' ? plugins[THIS_PLUGIN_NAME] : null;
+      const config = rawEntry && typeof rawEntry === 'object' ? rawEntry : {};
+      selfConfigRef.current = { ...(config as any) };
+      const ensured = await ensureSelfSettingDefaults(selfConfigRef.current);
+      const finalConfig = ensured && typeof ensured === 'object' ? ensured : selfConfigRef.current;
+      selfConfigRef.current = { ...(finalConfig as any) };
+      setPluginSettings((p:any) => ({ ...p, [THIS_PLUGIN_NAME]: buildSelfSettingFields(selfConfigRef.current) }));
+      return selfConfigRef.current;
+    } catch (e: any) {
+      setError(e?.message || 'Failed to load AI Overhaul plugin settings');
+      const fallback = selfConfigRef.current || {};
+      setPluginSettings((p:any) => ({ ...p, [THIS_PLUGIN_NAME]: buildSelfSettingFields(fallback) }));
+      return null;
+    }
+  }, [ensureSelfSettingDefaults, setPluginSettings, setError]);
 
   const loadPluginSettings = React.useCallback(async (pluginName: string) => {
     if (pluginName === THIS_PLUGIN_NAME) {
@@ -477,17 +522,17 @@ const PluginSettings = () => {
     if (normalized === interactionsRef.current && selfSettingsInitialized) return;
     const prev = interactionsRef.current;
     setInteractionsSaving(true);
-    setInteractionsEnabled(next);
+    setInteractionsEnabled(normalized);
     try {
-      const ok = await savePluginSetting(THIS_PLUGIN_NAME, 'capture_events', next ? true : null);
+      const ok = await savePluginSetting(THIS_PLUGIN_NAME, 'capture_events', normalized);
       if (!ok) {
         setInteractionsEnabled(prev);
         return;
       }
       try {
         const helper = (window as any).AIDefaultBackendBase;
-        if (helper && typeof helper.applyPluginConfig === 'function') helper.applyPluginConfig(undefined, next);
-        else (window as any).__AI_INTERACTIONS_ENABLED__ = next;
+        if (helper && typeof helper.applyPluginConfig === 'function') helper.applyPluginConfig(undefined, normalized);
+        else (window as any).__AI_INTERACTIONS_ENABLED__ = normalized;
       } catch {}
       try { await loadPluginSettings(THIS_PLUGIN_NAME); } catch {}
     } catch {
@@ -521,7 +566,7 @@ const PluginSettings = () => {
       return field.value !== undefined && field.value !== null ? field.value : field.default;
     };
     const remoteBase = normalizeBaseValue(lookup('backend_base_url'));
-    const remoteInteractions = coerceBoolean(lookup('capture_events'), false);
+  const remoteInteractions = coerceBoolean(lookup('capture_events'), true);
 
     try {
       const helper = (window as any).AIDefaultBackendBase;
@@ -637,22 +682,22 @@ const PluginSettings = () => {
   const saveBackendBase = React.useCallback(async () => {
     const clean = normalizeBaseValue(backendDraft);
     const prev = backendBaseRef.current;
-    if (clean === prev && selfSettingsInitialized) return;
+    const target = clean || DEFAULT_BACKEND_BASE_URL;
+    if (target === prev && selfSettingsInitialized) return;
     setBackendSaving(true);
-    setBackendBase(clean);
+    setBackendBase(target);
     try {
-      const payloadValue = clean ? clean : null;
-      const ok = await savePluginSetting(THIS_PLUGIN_NAME, 'backend_base_url', payloadValue, prev);
+      const ok = await savePluginSetting(THIS_PLUGIN_NAME, 'backend_base_url', target, prev);
       if (!ok) {
         setBackendBase(prev);
         setBackendDraft(prev);
         return;
       }
-      setBackendDraft(clean);
+      setBackendDraft(target);
       try {
         const helper = (window as any).AIDefaultBackendBase;
-        if (helper && typeof helper.applyPluginConfig === 'function') helper.applyPluginConfig(clean || '', undefined);
-        else (window as any).AI_BACKEND_URL = clean;
+        if (helper && typeof helper.applyPluginConfig === 'function') helper.applyPluginConfig(target || '', undefined);
+        else (window as any).AI_BACKEND_URL = target;
       } catch {}
       setInstalled([]); setSources([]); setCatalog({}); setSelectedSource(null);
       setSystemSettings([]); setSystemLoading(true);

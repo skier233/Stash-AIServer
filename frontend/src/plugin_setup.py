@@ -27,6 +27,9 @@ query Configuration($pluginIds: [ID!]) {
 }
 """
 
+# Shared fallback backend base so setup can still sync metadata when no override exists yet.
+DEFAULT_BACKEND_BASE_URL = "http://localhost:4153"
+
 
 def _normalize_backend_base(raw: Any) -> Optional[str]:
     if isinstance(raw, str):
@@ -221,7 +224,11 @@ def plugin_setup(json_input: Dict[str, Any]) -> Dict[str, Any]:
         elif trimmed.upper() == 'REPLACE_WITH_API_KEY':
             normalized_api_key = None
 
-    backend_base_url = _format_base_url(backend_base_override) or _format_base_url(os.getenv('AI_BACKEND_BASE_URL'))
+    backend_base_url = (
+        _format_base_url(backend_base_override)
+        or _format_base_url(os.getenv('AI_BACKEND_BASE_URL'))
+        or DEFAULT_BACKEND_BASE_URL
+    )
     stash_base_url = target
     if stash_base_url.endswith('/graphql'):
         stash_base_url = stash_base_url[:-len('/graphql')]

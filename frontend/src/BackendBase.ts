@@ -3,6 +3,8 @@
 // non-module consumers in the minimal build.
 
 const PLUGIN_NAME = 'AIOverhaul';
+// Local default to keep the UI functional before plugin config loads.
+const DEFAULT_BACKEND_BASE = 'http://localhost:4153';
 const CONFIG_QUERY = `query AIOverhaulPluginConfig($ids: [ID!]) {
   configuration {
     plugins(include: $ids)
@@ -102,10 +104,15 @@ export default function defaultBackendBase(): string {
     if (!configLoaded) loadPluginConfig();
   } catch {}
 
-  const explicit = normalizeBase((window as any).AI_BACKEND_URL);
-  if (explicit) return explicit;
+  if (typeof (window as any).AI_BACKEND_URL === 'string') {
+    const explicit = normalizeBase((window as any).AI_BACKEND_URL);
+    if (explicit !== null && explicit !== undefined) {
+      return explicit;
+    }
+    return '';
+  }
 
-  return '';
+  return DEFAULT_BACKEND_BASE;
 }
 
 // Also attach as a global so files that are executed before this module can still

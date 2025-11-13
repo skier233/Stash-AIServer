@@ -125,8 +125,40 @@ class StashAPI:
                 continue
         _log.warning("Fetched image paths for ids=%s -> %s", images_ids, out)
         return out
+    
+    def get_all_images(self) -> List[str]:
+        """Fetch all image IDs from Stash."""
+        image_ids: List[str] = []
+        if not self.stash_interface:
+            _log.warning("Stash interface not configured; returning empty image list")
+            return image_ids
+        try:
+            images = self.stash_interface.find_images(
+                fragment="id"
+            )
+            image_ids = [str(image["id"]) for image in images or [] if "id" in image]
+        except Exception as exc:  # pragma: no cover - defensive
+            _log.warning("Failed to fetch all images: %s", exc)
+        _log.info("Fetched total %d images", len(image_ids))
+        return image_ids
 
     # Scenes
+
+    def get_all_scenes(self) -> List[str]:
+        """Fetch all scene IDs from Stash."""
+        scene_ids: List[str] = []
+        if not self.stash_interface:
+            _log.warning("Stash interface not configured; returning empty scene list")
+            return scene_ids
+        try:
+            scenes = self.stash_interface.find_scenes(
+                fragment="id"
+            )
+            scene_ids = [str(scene["id"]) for scene in scenes or [] if "id" in scene]
+        except Exception as exc:  # pragma: no cover - defensive
+            _log.warning("Failed to fetch all scenes: %s", exc)
+        _log.info("Fetched total %d scenes", len(scene_ids))
+        return scene_ids
 
     def get_scene_path_and_tags_and_duration(self, scene_id: int):
         scene_result = self.stash_interface.find_scene(id=scene_id, fragment="files {path duration} tags {id}")
