@@ -27,6 +27,9 @@ _KEEPALIVE_SNIPPETS = (
     '% received keepalive pong',
     '> PING',
     '< PONG',
+    '> TEXT',
+    '< TEXT',
+    'task.progress',
 )
 
 
@@ -73,11 +76,13 @@ async def lifespan(app: FastAPI):
         "websockets.legacy.protocol",
         "urllib3",
         "urllib3.connectionpool",
+        "uvicorn.protocols.websockets.websockets_impl",
     )
     keepalive_filter = _SuppressKeepaliveFilter()
     for noisy_logger in noisy_modules:
         logger = logging.getLogger(noisy_logger)
-        logger.setLevel(logging.CRITICAL)
+        if logger.level < logging.INFO:
+            logger.setLevel(logging.INFO)
         logger.propagate = False
         logger.addFilter(keepalive_filter)
 

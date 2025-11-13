@@ -266,7 +266,7 @@ class StashAPI:
         markers = self.stash_interface.find_scene_markers(
             scene_marker_filter={
                 "tags": {"value": tag_ids, "modifier": "INCLUDES"},
-                "scenes": {"value": [scene_id], "modifier": "EQUALS"}
+                "scenes": {"value": [scene_id], "modifier": "INCLUDES"}
             },
             fragment="id"
         )
