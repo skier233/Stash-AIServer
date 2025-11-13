@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Any, Dict, List
 from urllib.parse import urlparse
@@ -98,13 +99,21 @@ class StashAPI:
             return None
 
     # Images    
+    async def remove_tags_from_images_async(self, image_ids: list[int], tag_ids: list[int]) -> bool:
+        await asyncio.to_thread(self.stash_interface.update_images, {"ids": image_ids, "tag_ids": {"ids": tag_ids, "mode": "REMOVE"}})
 
     def remove_tags_from_images(self, image_ids: list[int], tag_ids: list[int]) -> bool:
         self.stash_interface.update_images({"ids": image_ids, "tag_ids": {"ids": tag_ids, "mode": "REMOVE"}})
 
+    async def add_tags_to_images_async(self, image_ids: list[int], tag_ids: list[int]) -> bool:
+        await asyncio.to_thread(self.stash_interface.update_images, {"ids": image_ids, "tag_ids": {"ids": tag_ids, "mode": "ADD"}})
+
     def add_tags_to_images(self, image_ids: list[int], tag_ids: list[int]) -> bool:
         self.stash_interface.update_images({"ids": image_ids, "tag_ids": {"ids": tag_ids, "mode": "ADD"}})
 
+    async def get_image_paths_async(self, images_ids: list[int]) -> Dict[int, str]:
+        return await asyncio.to_thread(self.get_image_paths, images_ids)
+    
     def get_image_paths(self, images_ids: list[int]) -> Dict[int, str]:
         """Fetch image paths for given image IDs."""
         out: Dict[int, str] = {}
@@ -126,6 +135,10 @@ class StashAPI:
         _log.warning("Fetched image paths for ids=%s -> %s", images_ids, out)
         return out
     
+    async def get_all_images_async(self) -> List[str]:
+        """Fetch all image IDs from Stash."""
+        return await asyncio.to_thread(self.get_all_images)
+
     def get_all_images(self) -> List[str]:
         """Fetch all image IDs from Stash."""
         image_ids: List[str] = []
@@ -143,6 +156,9 @@ class StashAPI:
         return image_ids
 
     # Scenes
+    async def get_all_scenes_async(self) -> List[str]:
+        """Fetch all scene IDs from Stash."""
+        return await asyncio.to_thread(self.get_all_scenes)
 
     def get_all_scenes(self) -> List[str]:
         """Fetch all scene IDs from Stash."""
@@ -159,6 +175,9 @@ class StashAPI:
             _log.warning("Failed to fetch all scenes: %s", exc)
         _log.info("Fetched total %d scenes", len(scene_ids))
         return scene_ids
+
+    async def get_scene_path_and_tags_and_duration_async(self, scene_id: int):
+        return await asyncio.to_thread(self.get_scene_path_and_tags_and_duration, scene_id)
 
     def get_scene_path_and_tags_and_duration(self, scene_id: int):
         scene_result = self.stash_interface.find_scene(id=scene_id, fragment="files {path duration} tags {id}")
@@ -232,6 +251,8 @@ class StashAPI:
             print(f"[stash] paginated tag query failure tag={tag_id}: {e}", flush=True)
             return [], 0, False
 
+    async def add_tags_to_scene_async(self, scene_id: int, tag_ids: list[int]) -> None:
+        await asyncio.to_thread(self.add_tags_to_scene, scene_id, tag_ids)
 
     def add_tags_to_scene(self, scene_id: int, tag_ids: list[int]) -> None:
         if not tag_ids:
@@ -244,6 +265,9 @@ class StashAPI:
             },
         }
         self.stash_interface.update_scenes(payload)
+
+    async def remove_tags_from_scene_async(self, scene_id: int, tag_ids: list[int]) -> None:
+        await asyncio.to_thread(self.remove_tags_from_scene, scene_id, tag_ids)
 
     def remove_tags_from_scene(self, scene_id: int, tag_ids: list[int]) -> None:
         if not tag_ids:
@@ -259,8 +283,14 @@ class StashAPI:
     
     # Scene Markers
 
+    async def destroy_scene_markers_async(self, marker_ids: list[int]):
+        await asyncio.to_thread(self.destroy_scene_markers, marker_ids)
+
     def destroy_scene_markers(self, marker_ids: list[int]):
         self.stash_interface.destroy_markers(marker_ids)
+
+    async def destroy_markers_with_tags_async(self, scene_id, tag_ids: list[int]):
+        await asyncio.to_thread(self.destroy_markers_with_tags, scene_id, tag_ids)
 
     def destroy_markers_with_tags(self, scene_id, tag_ids: list[int]):
         markers = self.stash_interface.find_scene_markers(
@@ -273,6 +303,9 @@ class StashAPI:
         marker_ids = [marker['id'] for marker in markers] if markers else []
         if marker_ids:
             self.destroy_scene_markers(marker_ids)
+
+    async def create_scene_markers_async(self, scene_id: int,timespans: Dict[tuple[int, str], list[tuple[float, float]]]):
+        await asyncio.to_thread(self.create_scene_markers, scene_id, timespans)
 
     def create_scene_markers(self, scene_id: int,timespans: Dict[tuple[int, str], list[tuple[float, float]]]):
         for (tag_id, tag_name), spans in timespans.items():
