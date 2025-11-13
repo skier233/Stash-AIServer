@@ -32,12 +32,23 @@ interface BuildNoticeOptions {
 
   function now() { return Date.now ? Date.now() : new Date().getTime(); }
 
+  function getOrigin(): string {
+    try {
+      if (typeof location !== 'undefined' && location.origin) {
+        return location.origin.replace(/\/$/, '');
+      }
+    } catch (_) {}
+    return '';
+  }
+
   function normalizeBase(base: any): string {
-    if (!base && base !== '') return current.backendBase || '';
+    if (base === undefined || base === null) return current.backendBase || '';
     try {
       const str = String(base || '').trim();
       if (!str) return '';
-      return str.replace(/\/$/, '');
+      const cleaned = str.replace(/\/$/, '');
+      const origin = getOrigin();
+      return origin && cleaned === origin ? '' : cleaned;
     } catch (_) {
       return '';
     }
@@ -48,10 +59,13 @@ interface BuildNoticeOptions {
       const fn = (w.AIDefaultBackendBase || w.defaultBackendBase) as (() => string) | undefined;
       if (typeof fn === 'function') {
         const base = fn();
-        if (typeof base === 'string') return base.replace(/\/$/, '');
+        if (typeof base === 'string') {
+          const normalized = normalizeBase(base);
+          if (normalized) return normalized;
+        }
       }
     } catch (_) {}
-    try { return (location && location.origin) ? location.origin.replace(/\/$/, '') : ''; } catch (_) { return ''; }
+    return '';
   }
 
   function emit(state: BackendHealthState) {

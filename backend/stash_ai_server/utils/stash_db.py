@@ -23,10 +23,13 @@ _STASH_SESSION_FACTORY: sessionmaker[Session] | None = None
 _STASH_DB_PATH: Path | None = None
 _METADATA: sa.MetaData | None = None
 _TABLE_CACHE: Dict[str, sa.Table] = {}
+_CACHED_DB_PATH: Path | None = None
 
 
 def _resolve_db_path() -> Path | None:
     """Return the configured path (or URL) to the Stash database."""
+    if _CACHED_DB_PATH is not None:
+        return _CACHED_DB_PATH
     try:
         configured = sys_get("STASH_DB_PATH")
     except Exception:
@@ -43,7 +46,8 @@ def _resolve_db_path() -> Path | None:
                 except Exception:
                     pass
                 if resolved.exists():
-                    _log.info("Using STASH_DB_PATH from system settings: %s", resolved)
+                    global _CACHED_DB_PATH
+                    _CACHED_DB_PATH = resolved
                     return resolved
                 _log.warning("Configured STASH_DB_PATH (after mutation) does not exist: %s", resolved)
         except Exception:

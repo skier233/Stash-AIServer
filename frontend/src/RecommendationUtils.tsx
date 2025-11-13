@@ -530,7 +530,7 @@
         case 'boolean':
           control = React.createElement('div',{ className:'custom-control custom-switch'}, [
             React.createElement('input',{ key:'chk', id, type:'checkbox', className:'custom-control-input', checked: !!val, onChange:(e:any)=> updateConfigField(field.name, e.target.checked) }),
-            React.createElement('label',{ key:'lb', htmlFor:id, className:'custom-control-label', title: field.help||'' }, '')
+            React.createElement('label',{ key:'lb', htmlFor:id, className:'custom-control-label' }, '')
           ]);
           break;
         case 'text':
@@ -557,7 +557,9 @@
       const showLabelAbove = true;
   const capWidth = (field.type==='tags'||field.type==='performers') ? (narrowTagWidth ?? 400) : (field.type==='slider'? 92 : (['text','search','select','enum'].includes(field.type)? 180: undefined));
       const labelStyle = capWidth ? { display:'inline-block', width: capWidth+'px', maxWidth: capWidth+'px' } : undefined;
-      const labelNode = showLabelAbove ? React.createElement('label',{ htmlFor:id, className:'form-label d-flex justify-content-between mb-0', style: labelStyle }, [React.createElement('span',{ key:'t', className:'label-text' }, field.label || field.name)]) : null;
+  const labelProps:any = { htmlFor:id, className:'form-label d-flex justify-content-between mb-0', style: labelStyle };
+  if(field.help) labelProps.title = field.help;
+  const labelNode = showLabelAbove ? React.createElement('label', labelProps, [React.createElement('span',{ key:'t', className:'label-text' }, field.label || field.name)]) : null;
       const compactTypes = ['number','select','enum','boolean','slider','text','search','tags','performers'];
       const colClass = compactTypes.includes(field.type) ? 'col-auto mb-1' : 'col-lg-4 col-md-6 col-12 mb-1';
       return React.createElement('div',{ key:field.name, className:colClass }, [

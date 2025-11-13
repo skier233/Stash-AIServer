@@ -22,6 +22,26 @@ import logging
 from stash_ai_server.core.config import settings as config_settings
 
 
+_KEEPALIVE_SNIPPETS = (
+    '% sending keepalive ping',
+    '% received keepalive pong',
+    '> PING',
+    '< PONG',
+)
+
+
+class _SuppressKeepaliveFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:  # pragma: no cover - logging hook
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        lowered = message.lower()
+        for snippet in _KEEPALIVE_SNIPPETS:
+            if snippet in message or snippet in lowered:
+                return False
+        return True
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -54,8 +74,16 @@ async def lifespan(app: FastAPI):
         "urllib3",
         "urllib3.connectionpool",
     )
+    keepalive_filter = _SuppressKeepaliveFilter()
     for noisy_logger in noisy_modules:
-        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
+        logger = logging.getLogger(noisy_logger)
+        logger.setLevel(logging.CRITICAL)
+        logger.propagate = False
+        logger.addFilter(keepalive_filter)
+
+    logging.getLogger().addFilter(keepalive_filter)
+    logging.getLogger('uvicorn').addFilter(keepalive_filter)
+    logging.getLogger('uvicorn.error').addFilter(keepalive_filter)
 
     if os.getenv('AIO_DEVMODE'):
         try:

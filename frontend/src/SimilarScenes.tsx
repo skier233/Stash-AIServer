@@ -133,12 +133,46 @@
       [recommenders, recommenderId]
     );
 
-    // Resolve backend base using shared helper when available
-    const backendBase = useMemo(() => {
-      const globalFn = (w as any).AIDefaultBackendBase;
-      if (typeof globalFn !== 'function') throw new Error('AIDefaultBackendBase not initialized. Ensure backendBase is loaded first.');
-      return globalFn();
+    const sanitizeBase = useCallback((value: string | null | undefined) => {
+      const origin = (() => {
+        try {
+          return typeof location !== 'undefined' && location.origin ? location.origin.replace(/\/$/, '') : '';
+        } catch {
+          return '';
+        }
+      })();
+      if (typeof value !== 'string') return '';
+      const trimmed = value.trim();
+      if (!trimmed) return '';
+      const cleaned = trimmed.replace(/\/$/, '');
+      return origin && cleaned === origin ? '' : cleaned;
     }, []);
+
+    const resolveBackendBase = useCallback(() => {
+      const fn = (w as any).AIDefaultBackendBase;
+      if (typeof fn !== 'function') return '';
+      try {
+        const value = fn();
+        return sanitizeBase(typeof value === 'string' ? value : '');
+      } catch {
+        return '';
+      }
+    }, [sanitizeBase]);
+
+    const [backendBase, setBackendBase] = useState(() => resolveBackendBase());
+
+    useEffect(() => {
+      const handler = (event: any) => {
+        const next = typeof event?.detail === 'string' ? event.detail : resolveBackendBase();
+        setBackendBase(sanitizeBase(next || ''));
+      };
+      try { window.addEventListener('AIBackendBaseUpdated', handler as any); } catch (_) {}
+      const timer = !backendBase ? setTimeout(() => setBackendBase(resolveBackendBase() || ''), 0) : null;
+      return () => {
+        try { window.removeEventListener('AIBackendBaseUpdated', handler as any); } catch (_) {}
+        if (timer) clearTimeout(timer);
+      };
+    }, [backendBase, resolveBackendBase, sanitizeBase]);
 
     const backendHealthApi: any = (w as any).AIBackendHealth;
     const backendHealthEvent = backendHealthApi?.EVENT_NAME || 'AIBackendHealthChange';
@@ -158,7 +192,8 @@
 
     // Discover available recommenders using the backend recommendations API
     const discoverRecommenders = useCallback(async () => {
-      let reportedError = false;
+  if (!backendBase) return;
+  let reportedError = false;
       if (backendHealthApi && typeof backendHealthApi.reportChecking === 'function') {
         try { backendHealthApi.reportChecking(backendBase); } catch (_) {}
       }
@@ -215,7 +250,7 @@
 
     // Fetch a page of similar scenes from the unified recommendations query endpoint
     const fetchPage = useCallback(async (pageOffset = 0, append = false) => {
-      if (!recommenderId || !currentSceneId) return;
+  if (!backendBase || !recommenderId || !currentSceneId) return;
 
       let reportedError = false;
       try {
@@ -244,7 +279,7 @@
           offset: pageOffset
         } as any;
 
-        const url = `${backendBase}/api/v1/recommendations/query`;
+  const url = `${backendBase}/api/v1/recommendations/query`;
         const response = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -343,8 +378,9 @@
 
     // Auto-discover recommenders on mount
     useEffect(() => {
+      if (!backendBase) return;
       discoverRecommenders();
-    }, [discoverRecommenders]);
+    }, [discoverRecommenders, backendBase]);
 
     // When the selected recommender changes, initialize config values from its defaults
     useEffect(() => {

@@ -7,22 +7,19 @@
 
 interface HistoryItem { task_id: string; action_id: string; service: string; status: string; submitted_at: number; started_at?: number; finished_at?: number; duration_ms?: number | null; items_sent?: number | null; item_id?: string | null; error?: string | null; }
 
-defaultBackendBase(); // hoist helper for potential tree-shake clarity (no effect at runtime)
-function defaultBackendBase() {
-  const globalFn = (window as any).AIDefaultBackendBase;
-  if (typeof globalFn === 'function') return globalFn();
-  const explicit = (window as any).AI_BACKEND_URL as string | undefined;
-  if (explicit) return explicit.replace(/\/$/, '');
-  if (typeof location !== 'undefined' && location.origin) {
-    try {
-      const u = new URL(location.origin);
-      if (u.hostname && u.hostname !== 'localhost') {
-        return '';
-      }
-      return u.origin.replace(/\/$/, '');
-    } catch {
-      return '';
+function resolveBackendBase(): string {
+  try {
+    const globalFn = (window as any).AIDefaultBackendBase;
+    if (typeof globalFn === 'function') {
+      const value = globalFn();
+      if (typeof value === 'string') return value;
     }
+  } catch {}
+  try {
+    const raw = (window as any).AI_BACKEND_URL;
+    if (typeof raw === 'string') return raw.replace(/\/$/, '');
+  } catch {
+    return '';
   }
   return '';
 }
@@ -31,10 +28,24 @@ const dlog = (...a:any[]) => { if (debug()) console.debug('[TaskDashboard]', ...
 
 function ensureWS(baseHttp:string) {
   const g:any = window as any;
-  if (g.__AI_TASK_WS__ && g.__AI_TASK_WS__.readyState === 1) return;
+  if (!baseHttp) {
+    try { g.__AI_TASK_WS__?.close?.(); } catch {}
+    g.__AI_TASK_WS__ = null;
+    g.__AI_TASK_WS_BASE__ = null;
+    g.__AI_TASK_WS_INIT__ = false;
+    return;
+  }
+  if (g.__AI_TASK_WS_BASE__ && g.__AI_TASK_WS_BASE__ !== baseHttp) {
+    try { g.__AI_TASK_WS__?.close?.(); } catch {}
+    g.__AI_TASK_WS__ = null;
+    g.__AI_TASK_WS_INIT__ = false;
+  }
+  if (g.__AI_TASK_WS__ && g.__AI_TASK_WS__.readyState === 1 && g.__AI_TASK_WS_BASE__ === baseHttp) return;
   if (g.__AI_TASK_WS_INIT__) return;
   g.__AI_TASK_WS_INIT__ = true;
+  g.__AI_TASK_WS_BASE__ = baseHttp;
   const base = baseHttp.replace(/^http/, 'ws'); const urls = [`${base}/api/v1/ws/tasks`, `${base}/ws/tasks`];
+  let connected = false;
   for (const u of urls) {
     try {
       const sock = new WebSocket(u);
@@ -51,8 +62,12 @@ function ensureWS(baseHttp:string) {
         } catch {}
       };
       sock.onclose = () => { if (g.__AI_TASK_WS__ === sock) g.__AI_TASK_WS__ = null; g.__AI_TASK_WS_INIT__ = false; };
+      connected = true;
       break;
     } catch {}
+  }
+  if (!connected) {
+    g.__AI_TASK_WS_INIT__ = false;
   }
 }
 
@@ -73,7 +88,7 @@ function computeProgress(task: any): number | null {
 const TaskDashboard = () => {
   const React: any = (window as any).PluginApi?.React || (window as any).React;
   if (!React) { console.error('[TaskDashboard] React not found'); return null; }
-  const [backendBase] = React.useState(() => defaultBackendBase());
+  const [backendBase, setBackendBase] = React.useState(() => resolveBackendBase());
   const [active, setActive] = React.useState([] as any[]);
   const [history, setHistory] = React.useState([] as HistoryItem[]);
   const [loadingHistory, setLoadingHistory] = React.useState(false as boolean);
@@ -82,6 +97,15 @@ const TaskDashboard = () => {
   const [cancelling, setCancelling] = React.useState(new Set<string>());
 
   React.useEffect(() => { ensureWS(backendBase); }, [backendBase]);
+
+  React.useEffect(() => {
+    const handleBaseUpdate = () => {
+      const next = resolveBackendBase();
+      setBackendBase((prev: string) => (next === prev ? prev : next));
+    };
+    try { window.addEventListener('AIBackendBaseUpdated', handleBaseUpdate as EventListener); } catch {}
+    return () => { try { window.removeEventListener('AIBackendBaseUpdated', handleBaseUpdate as EventListener); } catch {} };
+  }, []);
 
   // Active tasks tracking
   React.useEffect(() => {
@@ -94,6 +118,11 @@ const TaskDashboard = () => {
   }, []);
 
   const fetchHistory = React.useCallback(async () => {
+    if (!backendBase) {
+      setLoadingHistory(false);
+      setHistory([]);
+      return;
+    }
     setLoadingHistory(true);
     try {
       const url = new URL(`${backendBase}/api/v1/tasks/history`); url.searchParams.set('limit','50'); if (filterService) url.searchParams.set('service', filterService); if (debug()) dlog('Fetch history URL:', url.toString());
@@ -104,7 +133,18 @@ const TaskDashboard = () => {
 
   function toggleExpand(id: string) { setExpanded((prev: Set<string>) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; }); }
   function copyToClipboard(text: string) { try { navigator.clipboard?.writeText(text); } catch { try { (window as any).prompt('Copy error text manually:', text); } catch {} } }
-  async function cancelTask(id: string) { setCancelling((prev: Set<string>) => { const n = new Set(prev); n.add(id); return n; }); try { const res = await fetch(`${backendBase}/api/v1/tasks/${id}/cancel`, { method: 'POST' }); if (!res.ok) throw new Error('Cancel failed HTTP '+res.status); } catch (e: any) { setCancelling((prev: Set<string>) => { const n = new Set(prev); n.delete(id); return n; }); alert('Cancel failed: ' + (e.message || 'unknown')); } }
+  async function cancelTask(id: string) {
+    if (!backendBase) {
+      alert('AI backend URL is not configured.');
+      return;
+    }
+    setCancelling((prev: Set<string>) => { const n = new Set(prev); n.add(id); return n; });
+    try { const res = await fetch(`${backendBase}/api/v1/tasks/${id}/cancel`, { method: 'POST' }); if (!res.ok) throw new Error('Cancel failed HTTP '+res.status); }
+    catch (e: any) {
+      setCancelling((prev: Set<string>) => { const n = new Set(prev); n.delete(id); return n; });
+      alert('Cancel failed: ' + (e.message || 'unknown'));
+    }
+  }
 
   const formatTs = (v?: number) => v ? new Date(v*1000).toLocaleTimeString() : '-';
   const services = Array.from(new Set((history as any[]).map(h => h.service).concat((active as any[]).map(a => a.service))));

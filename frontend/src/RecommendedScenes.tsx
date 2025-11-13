@@ -33,7 +33,7 @@
     }
     
     const React = PluginApi.React; 
-    const { useState, useMemo, useEffect, useRef } = React;
+  const { useState, useMemo, useEffect, useRef, useCallback } = React;
   // Using only the new backend hydrated recommendations API.
   // const GQL = {} as any; // (legacy GraphQL client removed)
   
@@ -1046,7 +1046,6 @@
       applyConfigImmediate({ [name]: value });
       scheduleFetchAfterConfigChange(prevPage);
     }
-    if(prevPage !== 1) setPage(1); // reset to first page
   }
 
   function parseIdList(raw:string):number[]{
@@ -1077,11 +1076,10 @@
           break;
         case 'boolean': {
           // Ensure the checkbox has an accessible description (help) and the visible label is rendered above via labelNode.
-          const helpId = field.help ? (id + '-help') : undefined;
           // Keep the internal switch label empty so the above label (labelNode) is the visible caption
           control = React.createElement('div',{ className:'custom-control custom-switch'}, [
-            React.createElement('input',{ key:'chk', id, type:'checkbox', className:'custom-control-input', checked: !!val, onChange:(e:any)=> updateConfigField(field.name, e.target.checked), 'aria-describedby': helpId }),
-            React.createElement('label',{ key:'lb', htmlFor:id, className:'custom-control-label', title: field.help||'' }, '')
+            React.createElement('input',{ key:'chk', id, type:'checkbox', className:'custom-control-input', checked: !!val, onChange:(e:any)=> updateConfigField(field.name, e.target.checked) }),
+            React.createElement('label',{ key:'lb', htmlFor:id, className:'custom-control-label' }, '')
           ]);
           break;
         }
@@ -1141,7 +1139,9 @@
       // Make labels inline-block and only as wide as the control beneath to prevent blocking layout
   const capWidth = (field.type==='tags' || field.type==='performers') ? 400 : (field.type==='slider' ? 92 : (['text','search','select','enum'].includes(field.type) ? 180 : undefined));
       const labelStyle = capWidth ? { display:'inline-block', width: capWidth+'px', maxWidth: capWidth+'px' } : undefined;
-      const labelNode = showLabelAbove ? React.createElement('label',{ htmlFor:id, className:'form-label d-flex justify-content-between mb-0', style: labelStyle }, [
+      const labelProps:any = { htmlFor:id, className:'form-label d-flex justify-content-between mb-0', style: labelStyle };
+      if(field.help) labelProps.title = field.help;
+      const labelNode = showLabelAbove ? React.createElement('label', labelProps, [
         React.createElement('span',{ key:'t', className:'label-text' }, field.label || field.name)
       ]) : null;
       // Use auto-width columns for compact fields; let large/complex fields take normal grid width
@@ -1170,11 +1170,11 @@
   // filtered scenes (placeholder for future filters/search)
   const filteredScenes = useMemo(()=> scenes, [scenes]);
   // totalPages is heuristic if hasMore: allow navigating one page past current computed value repeatedly
-  const totalPages = useMemo(()=>{
+  const totalPages = useMemo(()=> {
     const base = Math.max(1, Math.ceil(total / itemsPerPage));
-    if(hasMore && page >= base) {
-      // Extend virtual page count so Next stays enabled
-      return page + 1; // allow exploring next page until backend signals no more
+    if (hasMore) {
+      // Allow navigating to the next page when backend indicates more data.
+      return Math.max(base, page + 1);
     }
     return base;
   }, [total, itemsPerPage, hasMore, page]);
@@ -1183,12 +1183,59 @@
     useEffect(()=>{ try { const usp = new URLSearchParams(location.search); usp.set('perPage', String(itemsPerPage)); usp.set('z', String(zoomIndex)); if(page>1) usp.set('p', String(page)); else usp.delete('p'); const qs=usp.toString(); const desired=location.pathname + (qs? ('?'+qs):''); if(desired !== location.pathname + location.search) history.replaceState(null,'',desired); localStorage.setItem(LS_PER_PAGE_KEY,String(itemsPerPage)); localStorage.setItem(LS_ZOOM_KEY,String(zoomIndex)); localStorage.setItem(LS_PAGE_KEY,String(page)); } catch(_){ } }, [itemsPerPage, zoomIndex, page]);
     useEffect(()=>{ function onStorage(e:StorageEvent){ if(!e.key) return; if(e.key===LS_PER_PAGE_KEY){ const n=parseInt(String(e.newValue||''),10); if(!isNaN(n)) setItemsPerPage(n);} if(e.key===LS_ZOOM_KEY){ const n=parseInt(String(e.newValue||''),10); if(!isNaN(n)) setZoomIndex(n);} if(e.key===LS_PAGE_KEY){ const n=parseInt(String(e.newValue||''),10); if(!isNaN(n)) setPage(n);} } window.addEventListener('storage', onStorage); return ()=> window.removeEventListener('storage', onStorage); }, []);
 
-    // Resolve backend base using shared helper when available
-    const backendBase = useMemo(()=>{
-      const globalFn = (w as any).AIDefaultBackendBase;
-      if (typeof globalFn !== 'function') throw new Error('AIDefaultBackendBase not initialized. Ensure backendBase is loaded first.');
-      return globalFn();
+    const sanitizeBase = useCallback((value: string | null | undefined) => {
+      const origin = (() => {
+        try {
+          return typeof location !== 'undefined' && location.origin ? location.origin.replace(/\/$/, '') : '';
+        } catch {
+          return '';
+        }
+      })();
+      if (typeof value !== 'string') return '';
+      const trimmed = value.trim();
+      if (!trimmed) return '';
+      const cleaned = trimmed.replace(/\/$/, '');
+      return origin && cleaned === origin ? '' : cleaned;
     }, []);
+
+    const resolveBackendBase = useCallback(() => {
+      const fn = (w as any).AIDefaultBackendBase;
+      if (typeof fn !== 'function') return '';
+      try {
+        const value = fn();
+        return sanitizeBase(typeof value === 'string' ? value : '');
+      } catch {
+        return '';
+      }
+    }, [sanitizeBase]);
+
+    const [backendBase, setBackendBase] = useState(() => resolveBackendBase());
+
+    const applyBackendBase = useCallback((nextRaw: string) => {
+      const next = sanitizeBase(nextRaw || '');
+      let changed = false;
+  setBackendBase((prev: string) => {
+        if (prev === next) return prev;
+        changed = true;
+        return next;
+      });
+      if (changed) {
+        setDiscoveryAttempted(false);
+      }
+    }, [sanitizeBase, setDiscoveryAttempted]);
+
+    useEffect(() => {
+      const handler = (event: any) => {
+        const next = typeof event?.detail === 'string' ? event.detail : resolveBackendBase();
+        applyBackendBase(next || '');
+      };
+      try { window.addEventListener('AIBackendBaseUpdated', handler as any); } catch (_) {}
+      const timer = !backendBase ? setTimeout(() => applyBackendBase(resolveBackendBase() || ''), 0) : null;
+      return () => {
+        try { window.removeEventListener('AIBackendBaseUpdated', handler as any); } catch (_) {}
+        if (timer) clearTimeout(timer);
+      };
+    }, [backendBase, resolveBackendBase, applyBackendBase]);
 
     const backendHealthApi: any = (w as any).AIBackendHealth;
     const backendHealthEvent = backendHealthApi?.EVENT_NAME || 'AIBackendHealthChange';
@@ -1207,11 +1254,14 @@
     }, [backendHealthApi, backendHealthTick]);
 
     const discoverRecommenders = React.useCallback(async (): Promise<{ success: boolean; recommenderId: string | null }> => {
+      if (!backendBase) {
+        return { success: false, recommenderId: null };
+      }
       try {
         if (backendHealthApi && typeof backendHealthApi.reportChecking === 'function') {
           try { backendHealthApi.reportChecking(backendBase); } catch (_) {}
         }
-        const ctxPage = pageAPI?.get?.()?.page;
+  const ctxPage = pageAPI?.get?.()?.page;
         const recContext = 'global_feed';
         const url = `${backendBase}/api/v1/recommendations/recommenders?context=${encodeURIComponent(recContext)}`;
         const res = await fetch(url);
@@ -1261,9 +1311,9 @@
 
     // Attempt new recommender discovery first; fallback to legacy algorithms if unavailable
     useEffect(()=>{
-      if(discoveryAttempted) return;
+      if(discoveryAttempted || !backendBase) return;
       discoverRecommenders();
-    }, [discoveryAttempted, discoverRecommenders]);
+    }, [discoveryAttempted, discoverRecommenders, backendBase]);
 
 
     // (legacy algorithm effects removed)
@@ -1271,6 +1321,7 @@
     // Unified function to request recommendations (first page)
     const latestRequestIdRef = React.useRef(0);
     const fetchRecommendations = React.useCallback(async (overrideId?: string)=>{
+      if (!backendBase) return;
       const myId = ++latestRequestIdRef.current;
       setLoading(true); setError(null);
       try {
@@ -1306,14 +1357,15 @@
         if(!Array.isArray(j.scenes)){
           throw new Error('Unexpected response format');
         }
-        const norm = j.scenes.map((s:any)=> normalizeScene(s)).filter(Boolean) as BasicScene[];
-        setScenes(norm);
-        const serverTotal = (j.meta && typeof j.meta.total==='number') ? j.meta.total : norm.length;
-        const floorTotal = offset + norm.length;
-        const metaTotal = serverTotal < floorTotal ? floorTotal : serverTotal;
-        setTotal(metaTotal);
-        const hm = !!(j.meta && j.meta.hasMore);
-        setHasMore(hm);
+  const norm = j.scenes.map((s:any)=> normalizeScene(s)).filter(Boolean) as BasicScene[];
+  setScenes(norm);
+  const serverTotal = (j.meta && typeof j.meta.total==='number') ? j.meta.total : norm.length;
+  const floorTotal = offset + norm.length;
+  const metaTotal = serverTotal < floorTotal ? floorTotal : serverTotal;
+  setTotal(metaTotal);
+  const nextOffset = j.meta && typeof j.meta.nextOffset === 'number' ? j.meta.nextOffset : null;
+  const hm = j.meta && typeof j.meta.hasMore === 'boolean' ? Boolean(j.meta.hasMore) : (nextOffset != null ? nextOffset > offset : offset + norm.length < metaTotal);
+  setHasMore(hm);
         if((w as any).AIDebug) console.log('[RecommendedScenes] meta', j.meta, {page, itemsPerPage, computedPages: Math.ceil(metaTotal / itemsPerPage), hasMore: hm});
         if(myId === latestRequestIdRef.current && backendHealthApi && typeof backendHealthApi.reportOk === 'function'){
           try { backendHealthApi.reportOk(backendBase); } catch (_) {}

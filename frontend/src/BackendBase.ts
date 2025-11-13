@@ -12,10 +12,25 @@ const CONFIG_QUERY = `query AIOverhaulPluginConfig($ids: [ID!]) {
 let configLoaded = false;
 let configLoading = false;
 
+function getOrigin(): string {
+  try {
+    if (typeof location !== 'undefined' && location.origin) {
+      return location.origin.replace(/\/$/, '');
+    }
+  } catch {}
+  return '';
+}
+
 function normalizeBase(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
   const trimmed = raw.trim();
-  return trimmed ? trimmed.replace(/\/$/, '') : '';
+  if (!trimmed) return '';
+  const cleaned = trimmed.replace(/\/$/, '');
+  const origin = getOrigin();
+  if (origin && cleaned === origin) {
+    return '';
+  }
+  return cleaned;
 }
 
 function interpretBool(raw: unknown): boolean | null {
@@ -34,9 +49,10 @@ function applyPluginConfig(base: string | null | undefined, captureEvents: boole
   if (base !== undefined) {
     const normalized = normalizeBase(base);
     if (normalized !== null) {
+      const value = normalized || '';
       try {
-        (window as any).AI_BACKEND_URL = normalized;
-        window.dispatchEvent(new CustomEvent('AIBackendBaseUpdated', { detail: normalized }));
+        (window as any).AI_BACKEND_URL = value;
+        window.dispatchEvent(new CustomEvent('AIBackendBaseUpdated', { detail: value }));
       } catch {}
     }
   }
@@ -86,20 +102,8 @@ export default function defaultBackendBase(): string {
     if (!configLoaded) loadPluginConfig();
   } catch {}
 
-  const explicit = (window as any).AI_BACKEND_URL as string | undefined;
-  if (typeof explicit === 'string') return explicit.replace(/\/$/, '');
-
-  if (typeof location !== 'undefined' && location.origin) {
-    try {
-      const u = new URL(location.origin);
-      if (u.hostname && u.hostname !== 'localhost') {
-        return '';
-      }
-      return u.origin.replace(/\/$/, '');
-    } catch {
-      return '';
-    }
-  }
+  const explicit = normalizeBase((window as any).AI_BACKEND_URL);
+  if (explicit) return explicit;
 
   return '';
 }
