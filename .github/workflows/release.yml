@@ -309,3 +309,4 @@ jobs:
             release_assets/stash-ai-server-frontend-${{ needs.determine.outputs.version }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+ 
