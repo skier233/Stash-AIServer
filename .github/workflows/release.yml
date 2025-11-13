@@ -6,7 +6,7 @@ on:
       - 'v*'
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
@@ -17,6 +17,7 @@ jobs:
       is_release: ${{ steps.set.outputs.is_release }}
       tag: ${{ steps.set.outputs.tag }}
       version: ${{ steps.set.outputs.version }}
+      is_final: ${{ steps.set.outputs.is_final }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -36,11 +37,17 @@ jobs:
             fi
             echo "tag=${TAG}" >> $GITHUB_OUTPUT
             echo "version=${VERSION}" >> $GITHUB_OUTPUT
+            if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "is_final=true" >> $GITHUB_OUTPUT
+            else
+              echo "is_final=false" >> $GITHUB_OUTPUT
+            fi
           else
             echo "is_release=false" >> $GITHUB_OUTPUT
             SHORT_SHA=$(git rev-parse --short HEAD)
             echo "tag=dev-${SHORT_SHA}" >> $GITHUB_OUTPUT
             echo "version=0.0.0" >> $GITHUB_OUTPUT
+            echo "is_final=false" >> $GITHUB_OUTPUT
           fi
 
   build-wheel:
@@ -144,6 +151,78 @@ jobs:
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: python -m twine upload dist_dl/*.whl
 
+  package-assets:
+    name: Prepare release bundles
+    runs-on: ubuntu-latest
+    needs: determine
+    if: needs.determine.outputs.is_release == 'true'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Build backend and docker bundles
+        env:
+          VERSION: ${{ needs.determine.outputs.version }}
+        run: |
+          set -euo pipefail
+          ROOT="$PWD"
+          mkdir -p release
+
+          # Backend bundle
+          BACK_STAGE="$ROOT/release/backend-stage"
+          rm -rf "$BACK_STAGE"
+          mkdir -p "$BACK_STAGE"
+          rsync -a --exclude='__pycache__' --exclude='*.pyc' --exclude='*.pyo' backend/ "$BACK_STAGE/backend/"
+          cp backend/environment.yml "$BACK_STAGE/"
+          cp backend/requirements.txt "$BACK_STAGE/"
+          cp backend/config.sample.env "$BACK_STAGE/config.env"
+          mkdir -p "$BACK_STAGE/data" "$BACK_STAGE/plugins"
+          (cd "$BACK_STAGE" && zip -r "$ROOT/release/stash-ai-server-backend-${VERSION}.zip" .)
+          rm -rf "$BACK_STAGE"
+
+          # Docker bundle
+          DOCKER_STAGE="$ROOT/release/docker-stage"
+          rm -rf "$DOCKER_STAGE"
+          mkdir -p "$DOCKER_STAGE"
+          cp docker-compose.yml "$DOCKER_STAGE/"
+          cp backend/config.docker.sample.env "$DOCKER_STAGE/config.env"
+          mkdir -p "$DOCKER_STAGE/data" "$DOCKER_STAGE/plugins"
+          (cd "$DOCKER_STAGE" && zip -r "$ROOT/release/stash-ai-server-docker-${VERSION}.zip" .)
+          rm -rf "$DOCKER_STAGE"
+
+          ls -l release
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+      - name: Package frontend bundle
+        env:
+          VERSION: ${{ needs.determine.outputs.version }}
+        run: |
+          set -euo pipefail
+          ROOT="$PWD"
+          mkdir -p release
+          if [ ! -d frontend/dist ]; then
+            echo "dist folder missing after build" >&2
+            exit 1
+          fi
+          (cd frontend/dist && zip -r "$ROOT/release/stash-ai-server-frontend-${VERSION}.zip" .)
+          ls -l release
+      - name: Upload release bundles
+        uses: actions/upload-artifact@v5
+        with:
+          name: release-bundles
+          path: |
+            release/stash-ai-server-backend-${{ needs.determine.outputs.version }}.zip
+            release/stash-ai-server-docker-${{ needs.determine.outputs.version }}.zip
+            release/stash-ai-server-frontend-${{ needs.determine.outputs.version }}.zip
+
   image:
     name: Build & push GHCR image
     runs-on: ubuntu-latest
@@ -201,6 +280,32 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: |
             ghcr.io/${{ github.repository_owner }}/stash-ai-server:${{ needs.determine.outputs.version }}
-            ghcr.io/${{ github.repository_owner }}/stash-ai-server:latest
+            ${{ needs.determine.outputs.is_final == 'true' && format('ghcr.io/{0}/stash-ai-server:latest', github.repository_owner) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  github-release:
+    name: Publish GitHub release
+    runs-on: ubuntu-latest
+    needs: [determine, publish, image, package-assets]
+    if: needs.determine.outputs.is_release == 'true'
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: release-bundles
+          path: release_assets
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.determine.outputs.tag }}
+          name: Stash AI Server ${{ needs.determine.outputs.version }}
+          draft: false
+          prerelease: ${{ needs.determine.outputs.is_final != 'true' }}
+          make_latest: ${{ needs.determine.outputs.is_final == 'true' && 'true' || 'false' }}
+          generate_release_notes: true
+          files: |
+            release_assets/stash-ai-server-backend-${{ needs.determine.outputs.version }}.zip
+            release_assets/stash-ai-server-docker-${{ needs.determine.outputs.version }}.zip
+            release_assets/stash-ai-server-frontend-${{ needs.determine.outputs.version }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
