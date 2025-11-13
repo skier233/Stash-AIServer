@@ -306,9 +306,9 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
           else
             echo "exists=true" >> $GITHUB_OUTPUT
-          upload_url=$(printf '%s\n' "$resp" | python -c "import json,sys;\ntry:\n    data=json.load(sys.stdin)\nexcept Exception:\n    data={}\nprint(data.get('upload_url',''))")
-                echo "upload_url=${upload_url}" >> $GITHUB_OUTPUT
-              fi
+            upload_url=$(printf '%s\n' "$resp" | jq -r '.upload_url // ""')
+            echo "upload_url=${upload_url}" >> $GITHUB_OUTPUT
+          fi
 
       - name: Upload bundles to existing release
         if: steps.find_release.outputs.exists == 'true'
