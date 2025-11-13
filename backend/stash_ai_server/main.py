@@ -40,6 +40,23 @@ async def lifespan(app: FastAPI):
         lvl = logging.INFO
     logging.basicConfig(level=lvl, format='[%(levelname)s] %(name)s: %(message)s')
 
+    # The websockets library becomes extremely chatty at DEBUG, spamming keepalive PING/PONG
+    # frames and payload dumps. Force those module loggers up to INFO so backend debug sessions
+    # stay readable while still allowing other components to remain in DEBUG if requested.
+    noisy_modules = (
+        "websockets",
+        "websockets.client",
+        "websockets.server",
+        "websockets.protocol",
+        "websockets.connection",
+        "websockets.frames",
+        "websockets.legacy.protocol",
+        "urllib3",
+        "urllib3.connectionpool",
+    )
+    for noisy_logger in noisy_modules:
+        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
+
     if os.getenv('AIO_DEVMODE'):
         try:
             h = hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()[:12]

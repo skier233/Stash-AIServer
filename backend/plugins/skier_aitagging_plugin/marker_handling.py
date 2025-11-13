@@ -41,7 +41,6 @@ def merge_spans_for_tag(
 
     # Filter out markers shorter than min_marker_duration
     min_duration = settings.min_marker_duration
-    _log.info(f"Min marker duration: {min_duration}")
     if min_duration is not None and min_duration > 0:
         merged = [span for span in merged if _span_duration(span) >= min_duration]
 
