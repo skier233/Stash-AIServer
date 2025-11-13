@@ -172,7 +172,7 @@ jobs:
           BACK_STAGE="$ROOT/release/backend-stage"
           rm -rf "$BACK_STAGE"
           mkdir -p "$BACK_STAGE"
-          # ensure a runnable sample config exists at the stage root
+          rsync -a --exclude='__pycache__' --exclude='*.pyc' --exclude='*.pyo' backend/ "$BACK_STAGE/backend/"
           cp backend/environment.yml "$BACK_STAGE/"
           cp backend/requirements.txt "$BACK_STAGE/"
           cp backend/config.sample.env "$BACK_STAGE/config.env"
@@ -294,51 +294,7 @@ jobs:
         with:
           name: release-bundles
           path: release_assets
-
-      - id: find_release
-        name: Find existing GitHub release for tag
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.determine.outputs.tag }}
-        run: |
-          set -e
-          API="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}"
-          resp=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" "$API") || true
-          if echo "$resp" | grep -q '"message": "Not Found"'; then
-            echo "exists=false" >> $GITHUB_OUTPUT
-          else
-            echo "exists=true" >> $GITHUB_OUTPUT
-            upload_url=$(python - <<'PY'
-import sys, json
-try:
-    j=json.load(sys.stdin)
-    print(j.get('upload_url',''))
-except Exception:
-    print('')
-PY
-<<"RESP"
-$resp
-RESP
-            echo "upload_url=${upload_url}" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Upload assets to existing release
-        if: steps.find_release.outputs.exists == 'true'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -e
-          UPLOAD_URL="${{ steps.find_release.outputs.upload_url }}"
-          # strip the templated part like {?:name,label}
-          UPLOAD_URL="${UPLOAD_URL%%\{*}"
-          for f in release_assets/*.zip; do
-            echo "Uploading $f to $UPLOAD_URL"
-            filename=$(basename "$f")
-            curl -s -X POST -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/zip" --data-binary @"$f" "${UPLOAD_URL}?name=$filename"
-          done
-
-      - name: Create release and upload assets
-        if: steps.find_release.outputs.exists != 'true'
+      - name: Publish GitHub release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.determine.outputs.tag }}
