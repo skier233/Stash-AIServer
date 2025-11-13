@@ -1,9 +1,0 @@
-name: timespan_filter_plugin
-human_name: Timespan Tag Filter
-server_link: https://github.com/skier233/Stash-AIServer
-version: 0.1.0
-required_backend: '>=0.0.0'
-files:
-  - recommender
-depends_on:
-  - skier_aitagging_plugin

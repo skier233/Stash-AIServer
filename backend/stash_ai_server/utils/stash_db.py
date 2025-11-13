@@ -28,6 +28,7 @@ _CACHED_DB_PATH: Path | None = None
 
 def _resolve_db_path() -> Path | None:
     """Return the configured path (or URL) to the Stash database."""
+    global _CACHED_DB_PATH
     if _CACHED_DB_PATH is not None:
         return _CACHED_DB_PATH
     try:
@@ -46,7 +47,6 @@ def _resolve_db_path() -> Path | None:
                 except Exception:
                     pass
                 if resolved.exists():
-                    global _CACHED_DB_PATH
                     _CACHED_DB_PATH = resolved
                     return resolved
                 _log.warning("Configured STASH_DB_PATH (after mutation) does not exist: %s", resolved)
