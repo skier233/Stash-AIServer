@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from threading import RLock
@@ -8,6 +9,7 @@ from typing import Dict, Iterator
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine, URL
+from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import Session, sessionmaker
 
 from stash_ai_server.core.runtime import register_backend_refresh_handler
@@ -75,8 +77,29 @@ def _dispose_locked() -> None:
 def _build_engine_for_path(resolved_path: Path) -> Engine:
     """Construct a SQLAlchemy engine for the provided SQLite path."""
 
-    url = URL.create("sqlite", database=str(resolved_path))
-    return sa.create_engine(url, connect_args={"check_same_thread": False})
+    # Prefer opening the DB in read-only mode so we never block or write to the
+    # upstream Stash database. Use the SQLite URI "file:path?mode=ro" and
+    # instruct SQLAlchemy to treat the database string as a URI.
+    # If this fails (older sqlite builds or unusual environments), fall back to
+    # the previous behaviour (read/write) but log a warning.
+    pathstr = str(resolved_path)
+    readonly_uri = f"file:{resolved_path.as_posix()}?mode=ro&cache=shared"
+    try:
+        def connect_readonly() -> sqlite3.Connection:
+            return sqlite3.connect(readonly_uri, uri=True, check_same_thread=False)
+
+        engine = sa.create_engine(
+            "sqlite+pysqlite://",
+            creator=connect_readonly,
+            poolclass=StaticPool,
+            future=True,
+        )
+        with engine.connect() as conn:
+            conn.execute(sa.text("SELECT 1"))
+        return engine
+    except Exception:
+        _log.exception("Failed to open Stash DB in read-only mode")
+        return None
 
 
 def get_stash_engine(*, refresh: bool = False) -> Engine | None:
