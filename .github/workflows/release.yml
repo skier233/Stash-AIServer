@@ -232,7 +232,7 @@ jobs:
       COMMUNITY_BRANCH: release/ai-overhaul-${{ needs.determine.outputs.version }}
       COMMUNITY_FORK_REPO: ${{ secrets.COMMUNITY_SCRIPTS_FORK != '' && secrets.COMMUNITY_SCRIPTS_FORK || 'skier233/CommunityScripts' }}
       COMMUNITY_UPSTREAM_REPO: ${{ secrets.COMMUNITY_SCRIPTS_UPSTREAM != '' && secrets.COMMUNITY_SCRIPTS_UPSTREAM || 'stashapp/CommunityScripts' }}
-      COMMUNITY_BASE: ${{ secrets.COMMUNITY_SCRIPTS_BASE != '' && secrets.COMMUNITY_SCRIPTS_BASE || 'master' }}
+      COMMUNITY_BASE: ${{ secrets.COMMUNITY_SCRIPTS_BASE != '' && secrets.COMMUNITY_SCRIPTS_BASE || 'main' }}
     steps:
       - name: Check CommunityScripts PAT
         id: guard_pat
