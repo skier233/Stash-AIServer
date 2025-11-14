@@ -226,7 +226,7 @@ jobs:
     name: Publish AI Overhaul plugin to CommunityScripts
     runs-on: ubuntu-latest
     needs: [determine, package-assets]
-    if: needs.determine.outputs.is_release == 'true' && secrets.COMMUNITY_SCRIPTS_PAT != ''
+  if: needs.determine.outputs.is_release == 'true'
     env:
       RELEASE_VERSION: ${{ needs.determine.outputs.version }}
       COMMUNITY_BRANCH: release/ai-overhaul-${{ needs.determine.outputs.version }}
@@ -234,21 +234,35 @@ jobs:
       COMMUNITY_UPSTREAM_REPO: ${{ secrets.COMMUNITY_SCRIPTS_UPSTREAM != '' && secrets.COMMUNITY_SCRIPTS_UPSTREAM || 'stashapp/CommunityScripts' }}
       COMMUNITY_BASE: ${{ secrets.COMMUNITY_SCRIPTS_BASE != '' && secrets.COMMUNITY_SCRIPTS_BASE || 'master' }}
     steps:
+      - name: Check CommunityScripts PAT
+        id: guard_pat
+        run: |
+          if [ -z "${{ secrets.COMMUNITY_SCRIPTS_PAT }}" ]; then
+            echo "COMMUNITY_SCRIPTS_PAT is not set; skipping CommunityScripts publishing."
+            echo "has_pat=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_pat=true" >> $GITHUB_OUTPUT
+          fi
       - name: Checkout Stash AI Server
+        if: steps.guard_pat.outputs.has_pat == 'true'
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: Set up Node.js
+        if: steps.guard_pat.outputs.has_pat == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
       - name: Install frontend dependencies
+        if: steps.guard_pat.outputs.has_pat == 'true'
         working-directory: frontend
         run: npm install
       - name: Build frontend bundle
+        if: steps.guard_pat.outputs.has_pat == 'true'
         working-directory: frontend
         run: npm run build
       - name: Checkout CommunityScripts repo
+        if: steps.guard_pat.outputs.has_pat == 'true'
         uses: actions/checkout@v5
         with:
           repository: ${{ env.COMMUNITY_FORK_REPO }}
@@ -256,6 +270,7 @@ jobs:
           path: community-scripts
           fetch-depth: 0
       - name: Sync fork base branch with upstream
+        if: steps.guard_pat.outputs.has_pat == 'true'
         run: |
           set -euo pipefail
           cd community-scripts
@@ -266,11 +281,13 @@ jobs:
           git reset --hard "upstream/${COMMUNITY_BASE}"
           git push origin "$COMMUNITY_BASE" --force-with-lease
       - name: Sync AI Overhaul bundle
+        if: steps.guard_pat.outputs.has_pat == 'true'
         run: |
           set -euo pipefail
           mkdir -p community-scripts/plugins/AIOverhaul
           rsync -a --delete --exclude '__pycache__' frontend/dist/ community-scripts/plugins/AIOverhaul/
       - name: Detect changes
+        if: steps.guard_pat.outputs.has_pat == 'true'
         id: community_changes
         run: |
           cd community-scripts
@@ -280,7 +297,7 @@ jobs:
             echo "changed=false" >> $GITHUB_OUTPUT
           fi
       - name: Commit changes
-        if: steps.community_changes.outputs.changed == 'true'
+        if: steps.guard_pat.outputs.has_pat == 'true' && steps.community_changes.outputs.changed == 'true'
         run: |
           cd community-scripts
           git config user.name "github-actions[bot]"
@@ -289,14 +306,14 @@ jobs:
           git add plugins/AIOverhaul
           git commit -m "Update AI Overhaul plugin for $RELEASE_VERSION"
       - name: Push branch
-        if: steps.community_changes.outputs.changed == 'true'
+        if: steps.guard_pat.outputs.has_pat == 'true' && steps.community_changes.outputs.changed == 'true'
         env:
           GIT_TOKEN: ${{ secrets.COMMUNITY_SCRIPTS_PAT }}
         run: |
           cd community-scripts
           git push origin "$COMMUNITY_BRANCH" --force-with-lease
       - name: Create pull request
-        if: steps.community_changes.outputs.changed == 'true'
+        if: steps.guard_pat.outputs.has_pat == 'true' && steps.community_changes.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.COMMUNITY_SCRIPTS_PAT }}
         run: |
@@ -309,7 +326,7 @@ jobs:
             --base "$COMMUNITY_BASE" \
             --head "${FORK_OWNER}:$COMMUNITY_BRANCH" || echo "PR creation skipped (possibly already exists)"
       - name: No changes detected
-        if: steps.community_changes.outputs.changed != 'true'
+        if: steps.guard_pat.outputs.has_pat == 'true' && steps.community_changes.outputs.changed != 'true'
         run: echo "CommunityScripts plugin already up to date; skipping PR"
 
   image:
