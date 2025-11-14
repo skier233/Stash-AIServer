@@ -177,25 +177,24 @@ jobs:
           cp backend/requirements.txt "$BACK_STAGE/"
           if [ "$IS_FINAL" != 'true' ]; then
             echo "pinning backend requirements stash-ai-server dependency to $VERSION"
-            BACK_STAGE_PATH="$BACK_STAGE"
-            python - <<'PY'
-            import pathlib, os, re
+            BACK_STAGE_PATH="$BACK_STAGE" python - <<'PY'
+          import pathlib, os, re
 
-            release = os.environ['VERSION']
-            path = pathlib.Path(os.environ['BACK_STAGE_PATH']) / 'requirements.txt'
-            if not path.exists():
+          release = os.environ['VERSION']
+          path = pathlib.Path(os.environ['BACK_STAGE_PATH']) / 'requirements.txt'
+          if not path.exists():
               raise SystemExit(f'requirements.txt missing at {path}')
-            text = path.read_text()
-            pattern = re.compile(r'^(stash-ai-server)(?:\s*==\s*[^\s]+)?\s*$', re.MULTILINE)
-            if pattern.search(text):
+          text = path.read_text()
+          pattern = re.compile(r'^(stash-ai-server)(?:\s*==\s*[^\s]+)?\s*$', re.MULTILINE)
+          if pattern.search(text):
               text = pattern.sub(f'stash-ai-server=={release}', text, 1)
-            else:
+          else:
               if text and not text.endswith('\n'):
-                text += '\n'
+                  text += '\n'
               text += f'stash-ai-server=={release}\n'
-            path.write_text(text)
-            print('replaced stash-ai-server line with version', release)
-            PY
+          path.write_text(text)
+          print('replaced stash-ai-server line with version', release)
+          PY
           fi
           cp backend/config.sample.env "$BACK_STAGE/config.env"
           mkdir -p "$BACK_STAGE/data" "$BACK_STAGE/plugins"
