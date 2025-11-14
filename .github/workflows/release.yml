@@ -226,7 +226,7 @@ jobs:
     name: Publish AI Overhaul plugin to CommunityScripts
     runs-on: ubuntu-latest
     needs: [determine, package-assets]
-  if: needs.determine.outputs.is_release == 'true'
+    if: needs.determine.outputs.is_release == 'true'
     env:
       RELEASE_VERSION: ${{ needs.determine.outputs.version }}
       COMMUNITY_BRANCH: release/ai-overhaul-${{ needs.determine.outputs.version }}
