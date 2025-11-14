@@ -9,6 +9,9 @@ import httpx
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 
+from stash_ai_server.core.config import settings
+from stash_ai_server.utils.url_helpers import dockerize_localhost
+
 from .registry import ServiceBase
 
 T = TypeVar("T")
@@ -289,7 +292,8 @@ class RemoteServiceBase(ServiceBase):
     def http(self) -> HTTPClient:
         if not self.server_url:
             raise RuntimeError(f"Service '{self.name}' does not define a server_url")
-        normalized = self.server_url.rstrip("/")
+        effective = dockerize_localhost(self.server_url, enabled=settings.docker_mode) or self.server_url
+        normalized = effective.rstrip("/")
         client = self._http_client
         if client is None or client.base_url != normalized:
             if client is not None:

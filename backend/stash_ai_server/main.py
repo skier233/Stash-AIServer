@@ -20,30 +20,7 @@ from stash_ai_server.core.system_settings import seed_system_settings, get_value
 from stash_ai_server.services import registry as services_registry  # registry remains for core non-plugin definitions (if any)
 import logging
 from stash_ai_server.core.config import settings as config_settings
-
-
-_KEEPALIVE_SNIPPETS = (
-    '% sending keepalive ping',
-    '% received keepalive pong',
-    '> PING',
-    '< PONG',
-    '> TEXT',
-    '< TEXT',
-    'task.progress',
-)
-
-
-class _SuppressKeepaliveFilter(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:  # pragma: no cover - logging hook
-        try:
-            message = record.getMessage()
-        except Exception:
-            return True
-        lowered = message.lower()
-        for snippet in _KEEPALIVE_SNIPPETS:
-            if snippet in message or snippet in lowered:
-                return False
-        return True
+from stash_ai_server.core.logging_config import configure_logging
 
 
 @asynccontextmanager
@@ -56,39 +33,7 @@ async def lifespan(app: FastAPI):
     system.
     """
     # Setup / startup
-    # Configure root logging level early so modules use the desired level
-    try:
-        lvl = getattr(logging, (config_settings.log_level or 'INFO').upper(), logging.INFO)
-    except Exception:
-        lvl = logging.INFO
-    logging.basicConfig(level=lvl, format='[%(levelname)s] %(name)s: %(message)s')
-
-    # The websockets library becomes extremely chatty at DEBUG, spamming keepalive PING/PONG
-    # frames and payload dumps. Force those module loggers up to INFO so backend debug sessions
-    # stay readable while still allowing other components to remain in DEBUG if requested.
-    noisy_modules = (
-        "websockets",
-        "websockets.client",
-        "websockets.server",
-        "websockets.protocol",
-        "websockets.connection",
-        "websockets.frames",
-        "websockets.legacy.protocol",
-        "urllib3",
-        "urllib3.connectionpool",
-        "uvicorn.protocols.websockets.websockets_impl",
-    )
-    keepalive_filter = _SuppressKeepaliveFilter()
-    for noisy_logger in noisy_modules:
-        logger = logging.getLogger(noisy_logger)
-        if logger.level < logging.INFO:
-            logger.setLevel(logging.INFO)
-        logger.propagate = False
-        logger.addFilter(keepalive_filter)
-
-    logging.getLogger().addFilter(keepalive_filter)
-    logging.getLogger('uvicorn').addFilter(keepalive_filter)
-    logging.getLogger('uvicorn.error').addFilter(keepalive_filter)
+    configure_logging(config_settings.log_level)
 
     if os.getenv('AIO_DEVMODE'):
         try:

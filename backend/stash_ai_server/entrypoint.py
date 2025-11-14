@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os
 from stash_ai_server.core.config import settings
+from stash_ai_server.core.logging_config import configure_logging
 from stash_ai_server.core.system_settings import seed_system_settings
 
 def _maybe_run_migrations():
@@ -12,6 +13,7 @@ def _maybe_run_migrations():
         raise
 
 def main():
+    configure_logging(settings.log_level)
     print(f"[entrypoint] starting (prod) version={settings.version} db={settings.database_url} log_level={settings.log_level}", flush=True)
     try:
         print(f"[entrypoint] data_dir={settings.data_dir} db_file={settings.db_file}", flush=True)
@@ -30,7 +32,14 @@ def main():
     import uvicorn
     host = os.getenv('AI_SERVER_HOST', '0.0.0.0')
     port = int(os.getenv('AI_SERVER_PORT', '4153'))
-    uvicorn.run('stash_ai_server.main:app', host=host, port=port, reload=False, log_level=settings.log_level.lower())
+    uvicorn.run(
+        'stash_ai_server.main:app',
+        host=host,
+        port=port,
+        reload=False,
+        log_level=settings.log_level.lower(),
+        log_config=None,
+    )
 
 if __name__ == '__main__':  # pragma: no cover
     main()

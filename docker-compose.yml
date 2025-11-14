@@ -30,3 +30,5 @@ services:
     volumes:
       - ./data:/app/data:rw
       - ./plugins:/app/plugins:rw
+      # Note: Adjust the path on the left side to the path of your Stash root folder. DO NOT change the "ro" on the end.
+      - /path/to/your/stash_root_folder:/app/stash:ro

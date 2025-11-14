@@ -44,6 +44,18 @@ Env vars:
 
 _diagnostics: list[str] = []
 
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+_docker_mode = _env_flag("DOCKER")
+if _docker_mode:
+    _diagnostics.append("docker_mode=true")
+
 env_data_dir = os.getenv('AI_SERVER_DATA_DIR')
 
 # Build ordered candidate list (dedup while preserving order)
@@ -98,6 +110,7 @@ class Settings(BaseModel):
     # Logging level for the backend (DEBUG, INFO, WARNING, ERROR, CRITICAL)
     # Can be set via the environment variable AI_SERVER_LOG_LEVEL
     log_level: str = os.getenv('AI_SERVER_LOG_LEVEL', 'DEBUG')
+    docker_mode: bool = _docker_mode
     diagnostics: list[str] | None = _diagnostics
 
 settings = Settings()

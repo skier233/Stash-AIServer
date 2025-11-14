@@ -377,6 +377,8 @@ def _fetch_scenes_via_db(scene_ids: Sequence[int]) -> Dict[int, Dict[str, Any]]:
                 performer_id_col = performer_link.c.get("performer_id")
                 performer_id_target = performers_table.c.get("id")
                 performer_name = performers_table.c.get("name")
+
+                #TODO: stop guessing at stuff like this
                 performer_image = _pick_column(performers_table, "image_path", "image")
                 performer_stmt = (
                     sa.select(

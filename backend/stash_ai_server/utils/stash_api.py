@@ -2,8 +2,11 @@ import asyncio
 import logging
 from typing import Any, Dict, List
 from urllib.parse import urlparse
+
+from stash_ai_server.core.config import settings
 from stash_ai_server.core.system_settings import get_value as sys_get
 from stash_ai_server.core.runtime import register_backend_refresh_handler
+from stash_ai_server.utils.url_helpers import dockerize_localhost
 from stashapi.stashapp import StashInterface
 
 _log = logging.getLogger(__name__)
@@ -14,6 +17,7 @@ class StashAPI:
     stash_interface: StashInterface | None = None
     tag_id_cache: Dict[str, int] = {}
     tag_name_cache: Dict[int, str] = {}
+    _effective_url: str | None = None
 
     def __init__(self) -> None:
         self.tag_id_cache = {}
@@ -38,8 +42,10 @@ class StashAPI:
             _log.warning("STASH_URL not configured; Stash interface unavailable")
             return
 
+        effective_url = dockerize_localhost(new_url, enabled=settings.docker_mode)
+
         try:
-            new_interface = _construct_stash_interface(new_url, new_key)
+            new_interface = _construct_stash_interface(effective_url, new_key)
         except Exception as exc:
             _log.error(
                 "Failed to configure Stash API client with url=%s: %s",
@@ -49,11 +55,19 @@ class StashAPI:
             return
 
         self.stash_url = new_url
+        self._effective_url = effective_url
         self.api_key = new_key
         self.stash_interface = new_interface
         self.tag_id_cache.clear()
         self.tag_name_cache.clear()
-        _log.info("Stash API client configured host=%s", self.stash_url)
+        if effective_url != new_url:
+            _log.info(
+                "Stash API client configured host=%s (effective=%s)",
+                self.stash_url,
+                effective_url,
+            )
+        else:
+            _log.info("Stash API client configured host=%s", self.stash_url)
 
     # Tags
     
