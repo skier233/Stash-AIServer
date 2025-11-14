@@ -30,6 +30,22 @@ npm run build
 
 Outputs to `dist/*.js` (button, dashboard, integration, context). All listed in `AIOverhaul.yml`.
 
+### Publishing to stashapp/CommunityScripts
+
+When the `COMMUNITY_SCRIPTS_PAT` secret is configured, the release GitHub Action automatically runs the helper script, pushes a branch named `release/ai-overhaul-vX.Y.Z` to the configured CommunityScripts repo, and opens a PR. For local/manual execution (or if the secret is missing), use `python tools/publish_ai_overhaul.py --release vX.Y.Z --community-repo ../CommunityScripts`. The script:
+
+1. Run the frontend build (unless `--skip-build` is passed).
+2. Copy everything from `frontend/dist/` into `<CommunityScripts>/plugins/AIOverhaul`, skipping `__pycache__`.
+3. Create/switch to a branch named `release/ai-overhaul-vx.y.z` inside the CommunityScripts checkout (omit via `--no-branch`).
+
+After it finishes:
+
+1. Inspect the copied files under `plugins/AIOverhaul`.
+2. Run `git status`, commit the changes (message suggestion: `Update AI Overhaul plugin for vX.Y.Z`).
+3. Push the branch and open a PR against `stashapp/CommunityScripts`.
+
+> Make sure your CommunityScripts clone is up to date (`git fetch origin` / `git checkout main && git pull`).
+
 ## 🔭 Potential Enhancements
 
 1. Rich result rendering (markdown/modals) based on `result_kind` contract.

@@ -222,6 +222,96 @@ jobs:
             release/stash-ai-server-docker-${{ needs.determine.outputs.version }}.zip
             release/stash-ai-server-frontend-${{ needs.determine.outputs.version }}.zip
 
+  community-plugin:
+    name: Publish AI Overhaul plugin to CommunityScripts
+    runs-on: ubuntu-latest
+    needs: [determine, package-assets]
+    if: needs.determine.outputs.is_release == 'true' && secrets.COMMUNITY_SCRIPTS_PAT != ''
+    env:
+      RELEASE_VERSION: ${{ needs.determine.outputs.version }}
+      COMMUNITY_BRANCH: release/ai-overhaul-${{ needs.determine.outputs.version }}
+      COMMUNITY_FORK_REPO: ${{ secrets.COMMUNITY_SCRIPTS_FORK != '' && secrets.COMMUNITY_SCRIPTS_FORK || 'skier233/CommunityScripts' }}
+      COMMUNITY_UPSTREAM_REPO: ${{ secrets.COMMUNITY_SCRIPTS_UPSTREAM != '' && secrets.COMMUNITY_SCRIPTS_UPSTREAM || 'stashapp/CommunityScripts' }}
+      COMMUNITY_BASE: ${{ secrets.COMMUNITY_SCRIPTS_BASE != '' && secrets.COMMUNITY_SCRIPTS_BASE || 'master' }}
+    steps:
+      - name: Checkout Stash AI Server
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install
+      - name: Build frontend bundle
+        working-directory: frontend
+        run: npm run build
+      - name: Checkout CommunityScripts repo
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.COMMUNITY_FORK_REPO }}
+          token: ${{ secrets.COMMUNITY_SCRIPTS_PAT }}
+          path: community-scripts
+          fetch-depth: 0
+      - name: Sync fork base branch with upstream
+        run: |
+          set -euo pipefail
+          cd community-scripts
+          git remote remove upstream >/dev/null 2>&1 || true
+          git remote add upstream "https://github.com/${COMMUNITY_UPSTREAM_REPO}.git"
+          git fetch upstream "$COMMUNITY_BASE"
+          git checkout "$COMMUNITY_BASE"
+          git reset --hard "upstream/${COMMUNITY_BASE}"
+          git push origin "$COMMUNITY_BASE" --force-with-lease
+      - name: Sync AI Overhaul bundle
+        run: |
+          set -euo pipefail
+          mkdir -p community-scripts/plugins/AIOverhaul
+          rsync -a --delete --exclude '__pycache__' frontend/dist/ community-scripts/plugins/AIOverhaul/
+      - name: Detect changes
+        id: community_changes
+        run: |
+          cd community-scripts
+          if git status --short plugins/AIOverhaul | grep .; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+      - name: Commit changes
+        if: steps.community_changes.outputs.changed == 'true'
+        run: |
+          cd community-scripts
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$COMMUNITY_BRANCH" "$COMMUNITY_BASE"
+          git add plugins/AIOverhaul
+          git commit -m "Update AI Overhaul plugin for $RELEASE_VERSION"
+      - name: Push branch
+        if: steps.community_changes.outputs.changed == 'true'
+        env:
+          GIT_TOKEN: ${{ secrets.COMMUNITY_SCRIPTS_PAT }}
+        run: |
+          cd community-scripts
+          git push origin "$COMMUNITY_BRANCH" --force-with-lease
+      - name: Create pull request
+        if: steps.community_changes.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.COMMUNITY_SCRIPTS_PAT }}
+        run: |
+          cd community-scripts
+          FORK_OWNER="${COMMUNITY_FORK_REPO%%/*}"
+          gh pr create \
+            --repo "$COMMUNITY_UPSTREAM_REPO" \
+            --title "Update AI Overhaul plugin for $RELEASE_VERSION" \
+            --body "Automated update from stash-ai-server $RELEASE_VERSION" \
+            --base "$COMMUNITY_BASE" \
+            --head "${FORK_OWNER}:$COMMUNITY_BRANCH" || echo "PR creation skipped (possibly already exists)"
+      - name: No changes detected
+        if: steps.community_changes.outputs.changed != 'true'
+        run: echo "CommunityScripts plugin already up to date; skipping PR"
+
   image:
     name: Build & push GHCR image
     runs-on: ubuntu-latest
