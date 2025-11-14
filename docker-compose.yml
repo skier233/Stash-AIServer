@@ -26,7 +26,7 @@ services:
     ports:
       - "4153:4153"
     env_file:
-      - ./backend/config.env
+      - ./config.env
     volumes:
-      - ./backend/data:/app/data:rw
-      - ./backend/plugins:/app/plugins:rw
+      - ./data:/app/data:rw
+      - ./plugins:/app/plugins:rw
