@@ -10,3 +10,4 @@ httpx==0.28.1
 stashapi==0.1.2
 PyYAML==6.0.3
 packaging==25.0
+stash-ai-server
