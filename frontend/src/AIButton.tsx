@@ -66,11 +66,15 @@ interface AITaskEvent {
 }
 
 // ---- Toast notification system ----
-const showToast = (
-  message: string,
-  type: "success" | "error" = "success",
-  link?: { url: string; text: string },
-) => {
+interface ToastOptions {
+  message: string;
+  type?: "success" | "error";
+  link?: { url: string; text: string };
+  timeout?: number;
+}
+
+const showToast = (options: ToastOptions) => {
+  const { message, type = "success", link, timeout } = options;
   const toastId = `ai-toast-${Date.now()}`;
   const toast = document.createElement("div");
   toast.id = toastId;
@@ -206,7 +210,12 @@ const showToast = (
   toast.appendChild(dismissButton);
   document.body.appendChild(toast);
 
-  // Toasts persist forever by default (only dismissed via button click)
+  // Auto-dismiss after timeout if provided
+  if (timeout && timeout > 0) {
+    dismissTimeout = window.setTimeout(() => {
+      dismissToast();
+    }, timeout);
+  }
 };
 
 // ---- Small internal helpers (pure / non-visual) ----
@@ -506,6 +515,10 @@ const MinimalAIButton = () => {
         } catch {}
         throw new Error(message);
       }
+      // Close menu and show success toast after successful POST
+      setOpenMenu(false);
+      const toastMsg = `Action ${actionId} started`;
+      showToast({ message: toastMsg, type: "success", timeout: 3000 });
       const { task_id: taskId } = await res.json();
       if (!g.__AI_TASK_WS_LISTENERS__) g.__AI_TASK_WS_LISTENERS__ = {};
       if (!g.__AI_TASK_WS_LISTENERS__[taskId])
@@ -534,7 +547,7 @@ const MinimalAIButton = () => {
 
               // Construct scene URL from current origin
               const sceneUrl = `${window.location.origin}/scenes/${sceneId}/`;
-              showToast(message, "success", { url: sceneUrl, text: "view" });
+              showToast({ message, type: "success", link: { url: sceneUrl, text: "view" } });
               return; // Early return to avoid showing toast twice
             }
             // Check if it's a multiple scenes result
@@ -561,7 +574,7 @@ const MinimalAIButton = () => {
 
               // Construct URL to recently updated scenes
               const scenesUrl = `${window.location.origin}/scenes?sortby=updated_at&sortdir=desc`;
-              showToast(message, "success", { url: scenesUrl, text: "view" });
+              showToast({ message, type: "success", link: { url: scenesUrl, text: "view" } });
               return; // Early return to avoid showing toast twice
             }
             // Fallback for other result types
@@ -570,14 +583,14 @@ const MinimalAIButton = () => {
             }
 
             if (message) {
-              showToast(message, "success");
+              showToast({ message, type: "success" });
             }
           }
         } else if (t.status === "failed") {
-          showToast(
-            `Action ${actionId} failed: ${t.error || "unknown error"}. Is the nsfw_ai_model_server (usually port 8000) running?`,
-            "error",
-          );
+          showToast({
+            message: `Action ${actionId} failed: ${t.error || "unknown error"}. Is the nsfw_ai_model_server (usually port 8000) running?`,
+            type: "error",
+          });
         }
         setActiveTasks((prev: string[]) =>
           prev.filter((id: string) => id !== t.id),
@@ -596,10 +609,11 @@ const MinimalAIButton = () => {
       g.__AI_TASK_WS_LISTENERS__[taskId].push(listener);
       if (g.__AI_TASK_CACHE__?.[taskId]) listener(g.__AI_TASK_CACHE__[taskId]);
     } catch (e: any) {
-      showToast(
-        `Action ${actionId} failed: ${e.message}. Is the nsfw_ai_model_server (usually port 8000) running?`,
-        "error",
-      );
+      setOpenMenu(false);
+      showToast({
+        message: `Action ${actionId} failed: ${e.message}. Is the nsfw_ai_model_server (usually port 8000) running?`,
+        type: "error",
+      });
     }
   };
 
