@@ -71,10 +71,164 @@ interface ToastOptions {
   type?: "success" | "error";
   link?: { url: string; text: string };
   timeout?: number;
+  fullDetails?: any; // Full backend payload to show in modal
 }
 
+const showFullDetailsModal = (payload: any, type: "success" | "error" = "success") => {
+  const modalId = `ai-details-modal-${Date.now()}`;
+  const overlay = document.createElement("div");
+  overlay.id = modalId;
+  overlay.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 20000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: fadeIn 0.2s ease-out;
+  `;
+
+  const modal = document.createElement("div");
+  modal.style.cssText = `
+    background: #1a1a1a;
+    border: 1px solid ${type === "success" ? "rgba(72, 180, 97, 0.3)" : "rgba(220, 53, 69, 0.3)"};
+    border-radius: 8px;
+    padding: 24px;
+    max-width: 80vw;
+    max-height: 80vh;
+    overflow: auto;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    animation: slideUp 0.3s ease-out;
+  `;
+
+  const header = document.createElement("div");
+  header.style.cssText = `
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  `;
+
+  const title = document.createElement("h3");
+  title.textContent = "Full Details";
+  title.style.cssText = `
+    margin: 0;
+    color: ${type === "success" ? "#d4edda" : "#f8d7da"};
+    font-size: 18px;
+    font-weight: 600;
+  `;
+
+  const closeButton = document.createElement("button");
+  closeButton.textContent = "×";
+  closeButton.style.cssText = `
+    background: transparent;
+    border: none;
+    color: ${type === "success" ? "#d4edda" : "#f8d7da"};
+    font-size: 28px;
+    font-weight: bold;
+    line-height: 1;
+    padding: 0;
+    width: 32px;
+    height: 32px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0.8;
+    transition: opacity 0.2s;
+  `;
+  closeButton.onmouseenter = () => {
+    closeButton.style.opacity = "1";
+  };
+  closeButton.onmouseleave = () => {
+    closeButton.style.opacity = "0.8";
+  };
+
+  const content = document.createElement("pre");
+  content.style.cssText = `
+    margin: 0;
+    color: #e0e0e0;
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-family: 'Courier New', monospace;
+    background: rgba(0, 0, 0, 0.3);
+    padding: 16px;
+    border-radius: 4px;
+    overflow-x: auto;
+  `;
+  content.textContent = JSON.stringify(payload, null, 2);
+
+  const closeModal = () => {
+    overlay.style.animation = "fadeOut 0.2s ease-out";
+    modal.style.animation = "slideDown 0.3s ease-out";
+    setTimeout(() => {
+      if (overlay.parentNode) {
+        overlay.parentNode.removeChild(overlay);
+      }
+    }, 300);
+  };
+
+  closeButton.onclick = closeModal;
+  overlay.onclick = (e) => {
+    if (e.target === overlay) closeModal();
+  };
+
+  header.appendChild(title);
+  header.appendChild(closeButton);
+  modal.appendChild(header);
+  modal.appendChild(content);
+  overlay.appendChild(modal);
+
+  // Add modal animations if not already present
+  if (!document.getElementById("ai-modal-styles")) {
+    const style = document.createElement("style");
+    style.id = "ai-modal-styles";
+    style.textContent = `
+      @keyframes fadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      @keyframes fadeOut {
+        from { opacity: 1; }
+        to { opacity: 0; }
+      }
+      @keyframes slideUp {
+        from {
+          transform: translateY(20px);
+          opacity: 0;
+        }
+        to {
+          transform: translateY(0);
+          opacity: 1;
+        }
+      }
+      @keyframes slideDown {
+        from {
+          transform: translateY(0);
+          opacity: 1;
+        }
+        to {
+          transform: translateY(20px);
+          opacity: 0;
+        }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  document.body.appendChild(overlay);
+};
+
 const showToast = (options: ToastOptions) => {
-  const { message, type = "success", link, timeout } = options;
+  const { message, type = "success", link, timeout, fullDetails } = options;
   const toastId = `ai-toast-${Date.now()}`;
   const toast = document.createElement("div");
   toast.id = toastId;
@@ -95,8 +249,8 @@ const showToast = (options: ToastOptions) => {
     animation: slideIn 0.3s ease-out;
     border: 1px solid ${type === "success" ? "rgba(72, 180, 97, 0.3)" : "rgba(220, 53, 69, 0.3)"};
     display: flex;
-    align-items: center;
-    gap: 12px;
+    flex-direction: column;
+    gap: 8px;
   `;
 
   // Add animation keyframes if not already present
@@ -156,6 +310,15 @@ const showToast = (options: ToastOptions) => {
     dismissButton.style.opacity = "0.8";
   };
 
+  // Create top row container (message + link + dismiss button)
+  const topRow = document.createElement("div");
+  topRow.style.cssText = `
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex: 1;
+  `;
+
   // Create message container
   const messageContainer = document.createElement("div");
   messageContainer.style.cssText = `
@@ -163,6 +326,7 @@ const showToast = (options: ToastOptions) => {
     word-wrap: break-word;
     display: flex;
     gap: 8px;
+    align-items: center;
   `;
 
   const messageText = document.createElement("div");
@@ -189,6 +353,43 @@ const showToast = (options: ToastOptions) => {
     messageContainer.appendChild(linkElement);
   }
 
+  topRow.appendChild(messageContainer);
+  topRow.appendChild(dismissButton);
+
+  // Add "show full details" button if fullDetails provided (on separate row)
+  if (fullDetails !== undefined) {
+    const detailsButton = document.createElement("button");
+    detailsButton.textContent = "show full details";
+    detailsButton.style.cssText = `
+      background: transparent;
+      border: 1px solid ${type === "success" ? "#90ee90" : "#ffb3b3"};
+      color: ${type === "success" ? "#90ee90" : "#ffb3b3"};
+      padding: 6px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      width: 100%;
+      transition: background 0.2s, opacity 0.2s;
+    `;
+    detailsButton.onmouseenter = () => {
+      detailsButton.style.background = type === "success" ? "rgba(144, 238, 144, 0.2)" : "rgba(255, 179, 179, 0.2)";
+    };
+    detailsButton.onmouseleave = () => {
+      detailsButton.style.background = "transparent";
+    };
+    detailsButton.onclick = (e) => {
+      e.stopPropagation();
+      showFullDetailsModal(fullDetails, type);
+    };
+    toast.appendChild(topRow);
+    toast.appendChild(detailsButton);
+  } else {
+    toast.appendChild(topRow);
+  }
+
+  document.body.appendChild(toast);
+
   // Dismiss function
   let dismissTimeout: number | null = null;
   const dismissToast = () => {
@@ -205,10 +406,6 @@ const showToast = (options: ToastOptions) => {
   };
 
   dismissButton.onclick = dismissToast;
-
-  toast.appendChild(messageContainer);
-  toast.appendChild(dismissButton);
-  document.body.appendChild(toast);
 
   // Auto-dismiss after timeout if provided
   if (timeout && timeout > 0) {
@@ -518,7 +715,7 @@ const MinimalAIButton = () => {
       // Close menu and show success toast after successful POST
       setOpenMenu(false);
       const toastMsg = `Action ${actionId} started`;
-      showToast({ message: toastMsg, type: "success", timeout: 3000 });
+      showToast({ message: toastMsg, type: "success", timeout: 1500 });
       const { task_id: taskId } = await res.json();
       if (!g.__AI_TASK_WS_LISTENERS__) g.__AI_TASK_WS_LISTENERS__ = {};
       if (!g.__AI_TASK_WS_LISTENERS__[taskId])
@@ -547,7 +744,7 @@ const MinimalAIButton = () => {
 
               // Construct scene URL from current origin
               const sceneUrl = `${window.location.origin}/scenes/${sceneId}/`;
-              showToast({ message, type: "success", link: { url: sceneUrl, text: "view" } });
+              showToast({ message, type: "success", link: { url: sceneUrl, text: "view" }, fullDetails: t.result });
               return; // Early return to avoid showing toast twice
             }
             // Check if it's a multiple scenes result
@@ -572,9 +769,8 @@ const MinimalAIButton = () => {
               }
               message = fullMessage;
 
-              // Construct URL to recently updated scenes
-              const scenesUrl = `${window.location.origin}/scenes?sortby=updated_at&sortdir=desc`;
-              showToast({ message, type: "success", link: { url: scenesUrl, text: "view" } });
+              // No link for multi-scene tagging (no way to construct list page from array of IDs)
+              showToast({ message, type: "success", fullDetails: t.result });
               return; // Early return to avoid showing toast twice
             }
             // Fallback for other result types
@@ -583,13 +779,14 @@ const MinimalAIButton = () => {
             }
 
             if (message) {
-              showToast({ message, type: "success" });
+              showToast({ message, type: "success", fullDetails: t.result });
             }
           }
         } else if (t.status === "failed") {
           showToast({
             message: `Action ${actionId} failed: ${t.error || "unknown error"}. Is the nsfw_ai_model_server (usually port 8000) running?`,
             type: "error",
+            fullDetails: { error: t.error, task: t },
           });
         }
         setActiveTasks((prev: string[]) =>
@@ -613,6 +810,7 @@ const MinimalAIButton = () => {
       showToast({
         message: `Action ${actionId} failed: ${e.message}. Is the nsfw_ai_model_server (usually port 8000) running?`,
         type: "error",
+        fullDetails: { error: e.message, stack: e.stack },
       });
     }
   };
