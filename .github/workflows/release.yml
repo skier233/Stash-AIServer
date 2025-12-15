@@ -114,7 +114,7 @@ jobs:
     if: needs.determine.outputs.is_release == 'true'
     steps:
       - name: Download wheel artifact
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           name: wheel
           path: dist_dl
@@ -302,7 +302,7 @@ jobs:
           fetch-depth: 0
       - name: Download frontend dist artifact
         if: steps.guard_pat.outputs.has_pat == 'true'
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           name: frontend-dist
           path: frontend/dist
@@ -441,7 +441,7 @@ jobs:
     needs: [determine, publish, image, package-assets]
     if: needs.determine.outputs.is_release == 'true'
     steps:
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v7
         with:
           name: release-bundles
           path: release_assets
