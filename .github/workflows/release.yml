@@ -102,7 +102,7 @@ jobs:
       - name: Show dist contents
         run: ls -l backend/dist
       - name: Upload wheel artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: wheel
           path: backend/dist/*.whl
@@ -261,12 +261,12 @@ jobs:
           (cd frontend/dist && zip -r "$ROOT/release/stash-ai-server-frontend-${VERSION}.zip" .)
           ls -l release
       - name: Upload frontend dist artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: frontend-dist
           path: frontend/dist
       - name: Upload release bundles
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: release-bundles
           path: |
