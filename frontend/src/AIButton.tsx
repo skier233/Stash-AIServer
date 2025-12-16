@@ -245,6 +245,50 @@ const debugEnabled = () => !!(window as any).AIDebug;
 const dlog = (...a: any[]) => {
   if (debugEnabled()) console.log("[AIButton]", ...a);
 };
+
+const getSharedApiKey = () => {
+  try {
+    const helper = (window as any).AISharedApiKeyHelper;
+    if (helper && typeof helper.get === "function") {
+      const value = helper.get();
+      if (typeof value === "string") return value.trim();
+    }
+  } catch {}
+  const raw = (window as any).AI_SHARED_API_KEY;
+  return typeof raw === "string" ? raw.trim() : "";
+};
+
+const withSharedHeaders = (init?: RequestInit): RequestInit => {
+  const helper = (window as any).AISharedApiKeyHelper;
+  if (helper && typeof helper.withHeaders === "function") {
+    return helper.withHeaders(init || {});
+  }
+  const key = getSharedApiKey();
+  if (!key) return init || {};
+  const next: RequestInit = { ...(init || {}) };
+  const headers = new Headers(init?.headers || {});
+  headers.set("x-ai-api-key", key);
+  next.headers = headers;
+  return next;
+};
+
+const appendSharedKeyQuery = (url: string): string => {
+  const helper = (window as any).AISharedApiKeyHelper;
+  if (helper && typeof helper.appendQuery === "function") {
+    return helper.appendQuery(url);
+  }
+  const key = getSharedApiKey();
+  if (!key) return url;
+  const hasProto = /^https?:\/\//i.test(url) || /^wss?:\/\//i.test(url);
+  try {
+    const resolved = new URL(url, hasProto ? undefined : window.location?.origin || undefined);
+    resolved.searchParams.set("api_key", key);
+    return resolved.toString();
+  } catch {
+    const sep = url.includes("?") ? "&" : "?";
+    return `${url}${sep}api_key=${encodeURIComponent(key)}`;
+  }
+};
 const parseActionsChanged = (prev: AIAction[] | null, next: AIAction[]) => {
   if (!prev || prev.length !== next.length) return true;
   for (let i = 0; i < next.length; i++) {
@@ -305,7 +349,7 @@ const ensureTaskWebSocket = (backendBase: string) => {
   if (g.__AI_TASK_WS_INIT__) return g.__AI_TASK_WS__;
   g.__AI_TASK_WS_INIT__ = true;
   const base = backendBase.replace(/^http/, "ws");
-  const paths = [`${base}/api/v1/ws/tasks`, `${base}/ws/tasks`];
+  const paths = [`${base}/api/v1/ws/tasks`, `${base}/ws/tasks`].map((candidate) => appendSharedKeyQuery(candidate));
   for (const url of paths) {
     try {
       dlog("Attempt WS connect", url);
@@ -426,19 +470,22 @@ const MinimalAIButton = () => {
       }
       if (!opts.silent) setLoadingActions(true);
       try {
-        const res = await fetch(`${backendBase}/api/v1/actions/available`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            context: {
-              page: ctx.page,
-              entityId: ctx.entityId,
-              isDetailView: ctx.isDetailView,
-              selectedIds: ctx.selectedIds || [],
-              visibleIds: ctx.visibleIds || [],
-            },
+        const res = await fetch(
+          `${backendBase}/api/v1/actions/available`,
+          withSharedHeaders({
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              context: {
+                page: ctx.page,
+                entityId: ctx.entityId,
+                isDetailView: ctx.isDetailView,
+                selectedIds: ctx.selectedIds || [],
+                visibleIds: ctx.visibleIds || [],
+              },
+            }),
           }),
-        });
+        );
         if (!res.ok) throw new Error("Failed to load actions");
         const data: AIAction[] = await res.json();
         if (parseActionsChanged(actionsRef.current, data)) {
@@ -456,51 +503,42 @@ const MinimalAIButton = () => {
   React.useEffect(() => {
     refetchActions(context);
   }, [context, refetchActions]);
-
-  // Websocket ensure
-  React.useEffect(() => {
-    if (!backendBase) return;
-    ensureTaskWebSocket(backendBase);
-  }, [backendBase]);
-
-  const executeAction = async (actionId: string) => {
-    if (!backendBase) {
-      alert(
-        "AI backend URL is not configured. Update it under AI Overhaul settings.",
-      );
-      return;
-    }
-    dlog("Execute action", actionId, "context", context);
-    ensureTaskWebSocket(backendBase);
-    try {
-      const g: any = window as any;
-      let liveContext: PageContext = context;
+  const executeAction = React.useCallback(
+    async (actionId: string) => {
+      dlog("Execute action", actionId, "context", context);
+      ensureTaskWebSocket(backendBase);
       try {
-        if (pageAPI.forceRefresh) pageAPI.forceRefresh();
-        if (pageAPI.get) {
-          liveContext = pageAPI.get();
-          setContext(liveContext);
+        const g: any = window as any;
+        let liveContext: PageContext = context;
+        try {
+          if (pageAPI.forceRefresh) pageAPI.forceRefresh();
+          if (pageAPI.get) {
+            liveContext = pageAPI.get();
+            setContext(liveContext);
+          }
+        } catch {
+          /* fall back to current state */
         }
-      } catch {
-        /* fall back to current state */
-      }
-      const actionMeta = actionsRef.current?.find((a) => a.id === actionId);
-      const resultKind = actionMeta?.result_kind || "none";
-      const res = await fetch(`${backendBase}/api/v1/actions/submit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action_id: actionId,
-          context: {
-            page: liveContext.page,
-            entityId: liveContext.entityId,
-            isDetailView: liveContext.isDetailView,
-            selectedIds: liveContext.selectedIds || [],
-            visibleIds: liveContext.visibleIds || [],
-          },
-          params: {},
-        }),
-      });
+        const actionMeta = actionsRef.current?.find((a) => a.id === actionId);
+        const resultKind = actionMeta?.result_kind || "none";
+        const res = await fetch(
+          `${backendBase}/api/v1/actions/submit`,
+          withSharedHeaders({
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action_id: actionId,
+              context: {
+                page: liveContext.page,
+                entityId: liveContext.entityId,
+                isDetailView: liveContext.isDetailView,
+                selectedIds: liveContext.selectedIds || [],
+                visibleIds: liveContext.visibleIds || [],
+              },
+              params: {},
+            }),
+          }),
+        );
       if (!res.ok) {
         let message = "Submit failed";
         try {
@@ -608,14 +646,16 @@ const MinimalAIButton = () => {
       };
       g.__AI_TASK_WS_LISTENERS__[taskId].push(listener);
       if (g.__AI_TASK_CACHE__?.[taskId]) listener(g.__AI_TASK_CACHE__[taskId]);
-    } catch (e: any) {
-      setOpenMenu(false);
-      showToast({
-        message: `Action ${actionId} failed: ${e.message}. Is the nsfw_ai_model_server (usually port 8000) running?`,
-        type: "error",
-      });
-    }
-  };
+      } catch (e: any) {
+        setOpenMenu(false);
+        showToast({
+          message: `Action ${actionId} failed: ${e.message}. Is the nsfw_ai_model_server (usually port 8000) running?`,
+          type: "error",
+        });
+      }
+    },
+    [backendBase, context, pageAPI],
+  );
 
   // Any-task listener for progress updates
   React.useEffect(() => {
@@ -662,21 +702,12 @@ const MinimalAIButton = () => {
       case "images":
         return "🖼️";
       case "performers":
-        return "👤";
-      case "studios":
-        return "🏢";
-      case "tags":
-        return "🔖";
-      case "markers":
-        return "⏱️";
-      case "home":
-        return "🏠";
-      case "settings":
-        return "⚙️";
+        return "⭐";
       default:
         return "🤖";
     }
   };
+
   // Map page keys to more compact labels where necessary (e.g. 'performers' -> 'Actors')
   const getButtonLabel = () => {
     if (!context || !context.page) return "AI";

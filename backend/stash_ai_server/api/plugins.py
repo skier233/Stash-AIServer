@@ -13,8 +13,9 @@ from stash_ai_server.plugin_runtime import loader as plugin_loader
 from stash_ai_server.core.system_settings import SYSTEM_PLUGIN_NAME, get_value as sys_get_value, invalidate_cache as sys_invalidate_cache
 from stash_ai_server.core.runtime import schedule_backend_restart
 from stash_ai_server.utils.path_mutation import invalidate_path_mapping_cache
+from stash_ai_server.core.api_key import require_shared_api_key
 
-router = APIRouter(prefix='/plugins', tags=['plugins'])
+router = APIRouter(prefix='/plugins', tags=['plugins'], dependencies=[Depends(require_shared_api_key)])
 
 # Dependency
 

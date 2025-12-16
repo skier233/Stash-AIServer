@@ -26,6 +26,41 @@ function resolveBackendBase(): string {
 const debug = () => !!(window as any).AIDebug;
 const dlog = (...a:any[]) => { if (debug()) console.debug('[TaskDashboard]', ...a); };
 
+function getSharedApiKey(): string {
+  try {
+    const helper = (window as any).AISharedApiKeyHelper;
+    if (helper && typeof helper.get === 'function') {
+      const value = helper.get();
+      if (typeof value === 'string') return value.trim();
+    }
+  } catch {}
+  const raw = (window as any).AI_SHARED_API_KEY;
+  return typeof raw === 'string' ? raw.trim() : '';
+}
+
+function withSharedKeyHeaders(init?: any): any {
+  const helper = (window as any).AISharedApiKeyHelper;
+  if (helper && typeof helper.withHeaders === 'function') {
+    return helper.withHeaders(init || {});
+  }
+  const key = getSharedApiKey();
+  if (!key) return init || {};
+  const headers = { ...(init && init.headers ? init.headers : {}) };
+  headers['x-ai-api-key'] = key;
+  return { ...(init || {}), headers };
+}
+
+function appendSharedKeyQuery(url: string): string {
+  const helper = (window as any).AISharedApiKeyHelper;
+  if (helper && typeof helper.appendQuery === 'function') {
+    return helper.appendQuery(url);
+  }
+  const key = getSharedApiKey();
+  if (!key) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}api_key=${encodeURIComponent(key)}`;
+}
+
 function ensureWS(baseHttp:string) {
   const g:any = window as any;
   if (!baseHttp) {
@@ -44,7 +79,9 @@ function ensureWS(baseHttp:string) {
   if (g.__AI_TASK_WS_INIT__) return;
   g.__AI_TASK_WS_INIT__ = true;
   g.__AI_TASK_WS_BASE__ = baseHttp;
-  const base = baseHttp.replace(/^http/, 'ws'); const urls = [`${base}/api/v1/ws/tasks`, `${base}/ws/tasks`];
+  const base = baseHttp.replace(/^http/, 'ws');
+  const candidates = [`${base}/api/v1/ws/tasks`, `${base}/ws/tasks`];
+  const urls = candidates.map((u) => appendSharedKeyQuery(u));
   let connected = false;
   for (const u of urls) {
     try {
@@ -126,7 +163,7 @@ const TaskDashboard = () => {
     setLoadingHistory(true);
     try {
       const url = new URL(`${backendBase}/api/v1/tasks/history`); url.searchParams.set('limit','50'); if (filterService) url.searchParams.set('service', filterService); if (debug()) dlog('Fetch history URL:', url.toString());
-      const res = await fetch(url.toString()); if (!res.ok) return; const ct = (res.headers.get('content-type') || '').toLowerCase(); if (!ct.includes('application/json')) return; const data = await res.json(); if (data && Array.isArray(data.history)) setHistory(data.history);
+      const res = await fetch(url.toString(), withSharedKeyHeaders()); if (!res.ok) return; const ct = (res.headers.get('content-type') || '').toLowerCase(); if (!ct.includes('application/json')) return; const data = await res.json(); if (data && Array.isArray(data.history)) setHistory(data.history);
     } finally { setLoadingHistory(false); }
   }, [backendBase, filterService]);
   React.useEffect(() => { fetchHistory(); }, [fetchHistory]);
@@ -139,7 +176,7 @@ const TaskDashboard = () => {
       return;
     }
     setCancelling((prev: Set<string>) => { const n = new Set(prev); n.add(id); return n; });
-    try { const res = await fetch(`${backendBase}/api/v1/tasks/${id}/cancel`, { method: 'POST' }); if (!res.ok) throw new Error('Cancel failed HTTP '+res.status); }
+    try { const res = await fetch(`${backendBase}/api/v1/tasks/${id}/cancel`, withSharedKeyHeaders({ method: 'POST' })); if (!res.ok) throw new Error('Cancel failed HTTP '+res.status); }
     catch (e: any) {
       setCancelling((prev: Set<string>) => { const n = new Set(prev); n.delete(id); return n; });
       alert('Cancel failed: ' + (e.message || 'unknown'));

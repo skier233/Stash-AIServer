@@ -7,8 +7,9 @@ from stash_ai_server.services.interactions import ingest_events
 import hashlib
 from sqlalchemy import select, func
 from stash_ai_server.models.interaction import InteractionEvent, InteractionSession, SceneWatchSegment, SceneDerived
+from stash_ai_server.core.api_key import require_shared_api_key
 
-router = APIRouter(prefix='/interactions', tags=['interactions'])
+router = APIRouter(prefix='/interactions', tags=['interactions'], dependencies=[Depends(require_shared_api_key)])
 
 
 @router.post('/sync', response_model=InteractionIngestResult)

@@ -23,6 +23,30 @@
     
     const { useState, useMemo, useEffect, useRef, useCallback } = React;
 
+    const getSharedApiKey = () => {
+      try {
+        const helper = (w as any).AISharedApiKeyHelper;
+        if (helper && typeof helper.get === 'function') {
+          const value = helper.get();
+          if (typeof value === 'string') return value.trim();
+        }
+      } catch {}
+      const raw = (w as any).AI_SHARED_API_KEY;
+      return typeof raw === 'string' ? raw.trim() : '';
+    };
+
+    const withSharedKeyHeaders = (init?: any) => {
+      const helper = (w as any).AISharedApiKeyHelper;
+      if (helper && typeof helper.withHeaders === 'function') {
+        return helper.withHeaders(init || {});
+      }
+      const key = getSharedApiKey();
+      if (!key) return init || {};
+      const headers = { ...(init && init.headers ? init.headers : {}) };
+      headers['x-ai-api-key'] = key;
+      return { ...(init || {}), headers };
+    };
+
   interface BasicSceneFile { duration?: number; size?: number; }
   interface BasicScene { 
     id: number; 
@@ -201,7 +225,7 @@
         setLoading(true);
         const recContext = 'similar_scene';
         const url = `${backendBase}/api/v1/recommendations/recommenders?context=${encodeURIComponent(recContext)}`;
-        const response = await fetch(url);
+        const response = await fetch(url, withSharedKeyHeaders());
         if (!response.ok) {
           if (backendHealthApi) {
             if ((response.status >= 500 || response.status === 0) && typeof backendHealthApi.reportError === 'function') {
@@ -280,11 +304,11 @@
         } as any;
 
   const url = `${backendBase}/api/v1/recommendations/query`;
-        const response = await fetch(url, {
+        const response = await fetch(url, withSharedKeyHeaders({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
-        });
+        }));
 
         if (!response.ok) {
           if (backendHealthApi) {

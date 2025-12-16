@@ -34,6 +34,30 @@
     
     const React = PluginApi.React; 
   const { useState, useMemo, useEffect, useRef, useCallback } = React;
+
+    const getSharedApiKey = () => {
+      try {
+        const helper = (w as any).AISharedApiKeyHelper;
+        if (helper && typeof helper.get === 'function') {
+          const value = helper.get();
+          if (typeof value === 'string') return value.trim();
+        }
+      } catch {}
+      const raw = (w as any).AI_SHARED_API_KEY;
+      return typeof raw === 'string' ? raw.trim() : '';
+    };
+
+    const withSharedKeyHeaders = (init?: any) => {
+      const helper = (w as any).AISharedApiKeyHelper;
+      if (helper && typeof helper.withHeaders === 'function') {
+        return helper.withHeaders(init || {});
+      }
+      const key = getSharedApiKey();
+      if (!key) return init || {};
+      const headers = { ...(init && init.headers ? init.headers : {}) };
+      headers['x-ai-api-key'] = key;
+      return { ...(init || {}), headers };
+    };
   // Using only the new backend hydrated recommendations API.
   // const GQL = {} as any; // (legacy GraphQL client removed)
   
@@ -1264,7 +1288,7 @@
   const ctxPage = pageAPI?.get?.()?.page;
         const recContext = 'global_feed';
         const url = `${backendBase}/api/v1/recommendations/recommenders?context=${encodeURIComponent(recContext)}`;
-        const res = await fetch(url);
+        const res = await fetch(url, withSharedKeyHeaders());
         if(!res.ok) throw new Error('status '+res.status);
         const j = await res.json();
         if(j && Array.isArray(j.recommenders)){
@@ -1338,7 +1362,7 @@
         if(ctx){ body.context = 'global_feed'; }
         const url = `${backendBase}/api/v1/recommendations/query`;
         if((w as any).AIDebug) console.log('[RecommendedScenes] query', body);
-        const res = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        const res = await fetch(url, withSharedKeyHeaders({ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) }));
         if(!res.ok){
           if(myId === latestRequestIdRef.current){
             if (backendHealthApi && typeof backendHealthApi.reportError === 'function' && (res.status >= 500 || res.status === 0)) {

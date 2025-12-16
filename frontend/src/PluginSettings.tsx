@@ -52,6 +52,13 @@ const SELF_SETTING_DEFS: SelfSettingDefinition[] = [
     default: true,
     description: 'Mirror Stash interaction events to the AI backend for training and analytics.',
   },
+  {
+    key: 'shared_api_key',
+    label: 'Shared API Key',
+    type: 'string',
+    default: '',
+    description: 'Secret sent with every AI Overhaul request when the backend shared key is enabled.',
+  },
 ];
 
 const SELF_SETTING_DEF_BY_KEY: Record<string, SelfSettingDefinition> = SELF_SETTING_DEFS.reduce((acc, def) => {
@@ -124,6 +131,32 @@ const coerceBoolean = (raw: any, defaultValue = false): boolean => {
   return defaultValue;
 };
 
+function getSharedApiKeyValue(): string {
+  try {
+    const helper = (window as any).AISharedApiKeyHelper;
+    if (helper && typeof helper.get === 'function') {
+      const value = helper.get();
+      if (typeof value === 'string') {
+        return value.trim();
+      }
+    }
+  } catch {}
+  const raw = (window as any).AI_SHARED_API_KEY;
+  return typeof raw === 'string' ? raw.trim() : '';
+}
+
+function applySharedKeyHeaders(opts?: any): any {
+  const helper = (window as any).AISharedApiKeyHelper;
+  if (helper && typeof helper.withHeaders === 'function') {
+    return helper.withHeaders(opts || {});
+  }
+  const key = getSharedApiKeyValue();
+  if (!key) return opts || {};
+  const headers = { ...(opts && opts.headers ? opts.headers : {}) };
+  headers['x-ai-api-key'] = key;
+  return { ...(opts || {}), headers };
+}
+
 // Use shared backend base helper when available. The build outputs each file as
 // an IIFE so we also support the global `window.AIDefaultBackendBase` for
 // consumers that execute before modules are loaded.
@@ -153,9 +186,11 @@ async function jfetch(url: string, opts: any = {}): Promise<any> {
     if (health && typeof health.reportChecking === 'function') {
       try { health.reportChecking(baseHint); } catch (_) {}
     }
-  const fetchOpts = { headers: { 'content-type': 'application/json', ...(opts.headers||{}) }, credentials: opts.credentials ?? 'same-origin', ...opts };
-  if ((window as any).AIDebug) console.debug('[jfetch] url=', url, 'opts=', fetchOpts);
-  const res = await fetch(url, fetchOpts);
+    const mergedHeaders = { 'content-type': 'application/json', ...(opts.headers || {}) };
+    const baseOpts = { ...opts, headers: mergedHeaders, credentials: opts.credentials ?? 'same-origin' };
+    const fetchOpts = applySharedKeyHeaders(baseOpts);
+    if ((window as any).AIDebug) console.debug('[jfetch] url=', url, 'opts=', fetchOpts);
+    const res = await fetch(url, fetchOpts);
     const ct = (res.headers.get('content-type')||'').toLowerCase();
     if (ct.includes('application/json')) { try { body = await res.json(); } catch { body = null; } }
     if (!res.ok) {
@@ -210,6 +245,9 @@ const PluginSettings = () => {
   const [selfMigrationAttempted, setSelfMigrationAttempted] = React.useState(false);
   const [backendSaving, setBackendSaving] = React.useState(false);
   const [interactionsSaving, setInteractionsSaving] = React.useState(false);
+  const [sharedKeyDraft, setSharedKeyDraft] = React.useState('');
+  const [sharedKeySaving, setSharedKeySaving] = React.useState(false);
+  const [sharedKeyReveal, setSharedKeyReveal] = React.useState(false);
   const selfConfigRef = React.useRef({} as any);
 
   const backendHealthApi: any = (window as any).AIBackendHealth;
@@ -225,6 +263,7 @@ const PluginSettings = () => {
   React.useEffect(() => { backendBaseRef.current = backendBase; }, [backendBase]);
   const interactionsRef = React.useRef(interactionsEnabled);
   React.useEffect(() => { interactionsRef.current = interactionsEnabled; }, [interactionsEnabled]);
+  const sharedKeyRef = React.useRef('');
   const backendHealthState = React.useMemo(() => {
     if (backendHealthApi && typeof backendHealthApi.getState === 'function') {
       return backendHealthApi.getState();
@@ -531,7 +570,7 @@ const PluginSettings = () => {
       }
       try {
         const helper = (window as any).AIDefaultBackendBase;
-        if (helper && typeof helper.applyPluginConfig === 'function') helper.applyPluginConfig(undefined, normalized);
+        if (helper && typeof helper.applyPluginConfig === 'function') helper.applyPluginConfig(undefined, normalized, undefined);
         else (window as any).__AI_INTERACTIONS_ENABLED__ = normalized;
       } catch {}
       try { await loadPluginSettings(THIS_PLUGIN_NAME); } catch {}
@@ -566,18 +605,24 @@ const PluginSettings = () => {
       return field.value !== undefined && field.value !== null ? field.value : field.default;
     };
     const remoteBase = normalizeBaseValue(lookup('backend_base_url'));
-  const remoteInteractions = coerceBoolean(lookup('capture_events'), true);
+    const remoteInteractions = coerceBoolean(lookup('capture_events'), true);
+    const remoteSharedRaw = lookup('shared_api_key');
+    const remoteSharedKey = typeof remoteSharedRaw === 'string' ? remoteSharedRaw.trim() : '';
 
     try {
       const helper = (window as any).AIDefaultBackendBase;
-      if (helper && typeof helper.applyPluginConfig === 'function') helper.applyPluginConfig(remoteBase, remoteInteractions);
+      if (helper && typeof helper.applyPluginConfig === 'function') helper.applyPluginConfig(remoteBase, remoteInteractions, remoteSharedKey);
       else {
         (window as any).AI_BACKEND_URL = remoteBase;
         (window as any).__AI_INTERACTIONS_ENABLED__ = remoteInteractions;
+        (window as any).AI_SHARED_API_KEY = remoteSharedKey;
       }
     } catch {}
 
     const editingDraft = normalizeBaseValue(backendDraft) !== backendBaseRef.current;
+    const prevShared = sharedKeyRef.current;
+    const editingSharedKey = sharedKeyDraft !== prevShared;
+    sharedKeyRef.current = remoteSharedKey;
     if (!selfSettingsInitialized) {
       if (remoteBase !== backendBaseRef.current) {
         setBackendBase(remoteBase);
@@ -586,6 +631,7 @@ const PluginSettings = () => {
       if (remoteInteractions !== interactionsRef.current) {
         setInteractionsEnabled(remoteInteractions);
       }
+      setSharedKeyDraft(remoteSharedKey);
       setSelfSettingsInitialized(true);
     } else {
       if (!editingDraft) {
@@ -598,6 +644,11 @@ const PluginSettings = () => {
       }
       if (remoteInteractions !== interactionsRef.current) {
         setInteractionsEnabled(remoteInteractions);
+      }
+      if (!editingSharedKey) {
+        if (remoteSharedKey !== sharedKeyDraft) {
+          setSharedKeyDraft(remoteSharedKey);
+        }
       }
     }
 
@@ -638,7 +689,7 @@ const PluginSettings = () => {
         }
       })();
     }
-  }, [backendDraft, pluginSettings, savePluginSetting, loadPluginSettings, selfMigrationAttempted, selfSettingsInitialized]);
+  }, [backendDraft, pluginSettings, savePluginSetting, loadPluginSettings, selfMigrationAttempted, selfSettingsInitialized, sharedKeyDraft]);
   React.useEffect(() => {
     (async () => {
       if (autoRefreshed.current) return; // only once
@@ -696,7 +747,7 @@ const PluginSettings = () => {
       setBackendDraft(target);
       try {
         const helper = (window as any).AIDefaultBackendBase;
-        if (helper && typeof helper.applyPluginConfig === 'function') helper.applyPluginConfig(target || '', undefined);
+        if (helper && typeof helper.applyPluginConfig === 'function') helper.applyPluginConfig(target || '', undefined, undefined);
         else (window as any).AI_BACKEND_URL = target;
       } catch {}
       setInstalled([]); setSources([]); setCatalog({}); setSelectedSource(null);
@@ -711,6 +762,39 @@ const PluginSettings = () => {
       setBackendSaving(false);
     }
   }, [backendDraft, loadInstalled, loadSources, savePluginSetting, loadPluginSettings, selfSettingsInitialized]);
+
+  const persistSharedApiKey = React.useCallback(async (rawValue: string) => {
+    const clean = (rawValue || '').trim();
+    const prev = sharedKeyRef.current || '';
+    if (clean === prev && selfSettingsInitialized) return;
+    setSharedKeySaving(true);
+    try {
+      const ok = await savePluginSetting(THIS_PLUGIN_NAME, 'shared_api_key', clean);
+      if (!ok) {
+        setSharedKeyDraft(prev);
+        return;
+      }
+      sharedKeyRef.current = clean;
+      setSharedKeyDraft(clean);
+      try {
+        const helper = (window as any).AIDefaultBackendBase;
+        if (helper && typeof helper.applyPluginConfig === 'function') helper.applyPluginConfig(undefined, undefined, clean);
+        else (window as any).AI_SHARED_API_KEY = clean;
+      } catch {}
+      try { await loadPluginSettings(THIS_PLUGIN_NAME); } catch {}
+    } finally {
+      setSharedKeySaving(false);
+    }
+  }, [loadPluginSettings, savePluginSetting, selfSettingsInitialized]);
+
+  const saveSharedApiKey = React.useCallback(async () => {
+    await persistSharedApiKey(sharedKeyDraft);
+  }, [persistSharedApiKey, sharedKeyDraft]);
+
+  const clearSharedApiKey = React.useCallback(async () => {
+    setSharedKeyDraft('');
+    await persistSharedApiKey('');
+  }, [persistSharedApiKey]);
 
   // UI helpers
   const sectionStyle: React.CSSProperties = { border: '1px solid #444', padding: '12px 14px', borderRadius: 6, marginBottom: 16, background: '#1e1e1e' };
@@ -1504,6 +1588,7 @@ const PluginSettings = () => {
     : null;
   const backendDraftClean = normalizeBaseValue(backendDraft);
   const backendDraftChanged = backendDraftClean !== backendBase;
+  const sharedKeyDirty = sharedKeyDraft !== (sharedKeyRef.current || '');
 
   return (
     <div style={{padding:16, color:'#ddd', fontFamily:'sans-serif'}}>
@@ -1541,6 +1626,36 @@ const PluginSettings = () => {
             />
             Capture interaction events
             {interactionsSaving && <span style={{fontSize:10, marginLeft:6, opacity:0.7}}>saving...</span>}
+          </label>
+          <label style={{fontSize:12, display:'flex', flexDirection:'column', gap:4}}>Shared API Key
+            <div style={{display:'flex', gap:4}}>
+              <input
+                type={sharedKeyReveal ? 'text' : 'password'}
+                value={sharedKeyDraft}
+                onChange={e=>setSharedKeyDraft((e.target as any).value)}
+                style={{flex:1, padding:6, background:'#111', color:'#eee', border:'1px solid #333'}}
+                placeholder="Not configured"
+                autoComplete="new-password"
+                disabled={!selfSettingsInitialized || sharedKeySaving}
+              />
+              <button
+                style={smallBtn}
+                type="button"
+                onClick={() => setSharedKeyReveal(v => !v)}
+                disabled={!selfSettingsInitialized}
+              >{sharedKeyReveal ? 'Hide' : 'Show'}</button>
+              <button
+                style={smallBtn}
+                onClick={() => { void saveSharedApiKey(); }}
+                disabled={!selfSettingsInitialized || sharedKeySaving || !sharedKeyDirty}
+              >{sharedKeySaving ? 'Saving…' : 'Save'}</button>
+              <button
+                style={{...smallBtn, color: '#f88'}}
+                onClick={() => { void clearSharedApiKey(); }}
+                disabled={!selfSettingsInitialized || sharedKeySaving || !(sharedKeyRef.current || '')}
+              >Clear</button>
+            </div>
+            <span style={{fontSize:10, opacity:0.7}}>Stored in the plugin config and sent as the <code>x-ai-api-key</code> header (and <code>api_key</code> websocket query). This must match the backend system setting to enable the shared secret.</span>
           </label>
           <div style={{fontSize:10, opacity:0.7}}>Task dashboard: <a href="plugins/ai-tasks" style={{color:'#9cf'}}>Open</a></div>
           <div style={{fontSize:10, opacity:0.5}}>Restart backend button not yet implemented (needs backend endpoint).</div>

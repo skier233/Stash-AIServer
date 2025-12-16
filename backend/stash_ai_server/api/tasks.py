@@ -8,8 +8,9 @@ from stash_ai_server.tasks.models import TaskPriority, TaskStatus
 from stash_ai_server.tasks.history import TaskHistory
 from stash_ai_server.actions.models import ContextInput
 from stash_ai_server.actions.registry import registry as action_registry
+from stash_ai_server.core.api_key import require_shared_api_key
 
-router = APIRouter(prefix='/tasks', tags=['tasks'])
+router = APIRouter(prefix='/tasks', tags=['tasks'], dependencies=[Depends(require_shared_api_key)])
 
 class SubmitTaskRequest(BaseModel):
     action_id: str

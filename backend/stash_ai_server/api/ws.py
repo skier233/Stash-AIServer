@@ -3,6 +3,7 @@ from typing import List
 from stash_ai_server.tasks.manager import manager
 import json
 import asyncio
+from stash_ai_server.core.api_key import enforce_shared_key_websocket
 
 router = APIRouter()
 
@@ -69,6 +70,7 @@ except Exception:
 @router.websocket('/ws/tasks')
 async def tasks_ws(ws: WebSocket):
     """Websocket endpoint that sends a task snapshot then streams updates."""
+    await enforce_shared_key_websocket(ws)
     await ws_manager.connect(ws)
     for t in manager.list():
         try:

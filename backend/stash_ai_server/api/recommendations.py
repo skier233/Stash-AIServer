@@ -1,5 +1,5 @@
 from __future__ import annotations
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, ValidationError
 from typing import List, Optional, Dict, Any
 from stash_ai_server.recommendations.registry import recommender_registry
@@ -10,8 +10,9 @@ from stash_ai_server.recommendations.models import (
     RecommenderDefinition,
     RecommenderConfigField,
 )
+from stash_ai_server.core.api_key import require_shared_api_key
 
-router = APIRouter(prefix='/recommendations', tags=['recommendations'])
+router = APIRouter(prefix='/recommendations', tags=['recommendations'], dependencies=[Depends(require_shared_api_key)])
 
 
 class RecommendationContext(BaseModel):
