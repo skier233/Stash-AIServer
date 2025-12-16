@@ -231,6 +231,9 @@ const PluginSettings = () => {
   const [pluginSettings, setPluginSettings] = React.useState({} as Record<string, any[]>);
   const [systemSettings, setSystemSettings] = React.useState([] as any[]);
   const [systemLoading, setSystemLoading] = React.useState(false);
+  const [systemHealth, setSystemHealth] = React.useState(null as any);
+  const [systemHealthError, setSystemHealthError] = React.useState(null as string | null);
+  const [systemHealthLoading, setSystemHealthLoading] = React.useState(false);
   const [openConfig, setOpenConfig] = React.useState(null as string | null);
   const [selectedSource, setSelectedSource] = React.useState(null as string | null);
   const [loading, setLoading] = React.useState({installed:false, sources:false, catalog:false} as {installed:boolean; sources:boolean; catalog:boolean; action?:string});
@@ -310,6 +313,20 @@ const PluginSettings = () => {
     setLoading((l:any) => ({...l, catalog:true}));
     try { const data = await jfetch(`${backendBase}/api/v1/plugins/catalog/${name}`); setCatalog((c:any) => ({...c, [name]: Array.isArray(data)?data:[]})); } catch(e:any){ setError(e.message); }
     finally { setLoading((l:any) => ({...l, catalog:false})); }
+  }, [backendBase]);
+
+  const loadSystemHealth = React.useCallback(async () => {
+    setSystemHealthLoading(true);
+    setSystemHealthError(null);
+    try {
+      const data = await jfetch(`${backendBase}/api/v1/system/health`);
+      setSystemHealth(data);
+    } catch (e: any) {
+      setSystemHealth(null);
+      setSystemHealthError(e?.message || 'Failed to load system health');
+    } finally {
+      setSystemHealthLoading(false);
+    }
   }, [backendBase]);
 
   const loadSystemSettings = React.useCallback(async () => {
@@ -594,6 +611,8 @@ const PluginSettings = () => {
   // Initial loads
   React.useEffect(() => { loadPluginSettings(THIS_PLUGIN_NAME); }, [loadPluginSettings]);
   React.useEffect(() => { loadInstalled(); loadSources(); }, [loadInstalled, loadSources]);
+  React.useEffect(() => { void loadSystemSettings(); }, [loadSystemSettings]);
+  React.useEffect(() => { void loadSystemHealth(); }, [loadSystemHealth]);
   // After sources load first time, auto refresh each source once to populate catalog
   const autoRefreshed = React.useRef(false);
   React.useEffect(() => {
@@ -881,7 +900,19 @@ const PluginSettings = () => {
     }));
   };
 
-  const PathMapEditor = ({ value, defaultValue, onChange, onReset }: { value: any; defaultValue: any; onChange: (next: any) => Promise<void> | void; onReset: () => Promise<void> | void; }) => {
+  const PathMapEditor = ({
+    value,
+    defaultValue,
+    onChange,
+    onReset,
+    variant,
+  }: {
+    value: any;
+    defaultValue: any;
+    onChange: (next: any) => Promise<void> | void;
+    onReset: () => Promise<void> | void;
+    variant: 'system' | 'plugin';
+  }) => {
     const storedRows = normalizePathMappingList(value);
     const defaultRows = normalizePathMappingList(defaultValue);
     const storedKey = JSON.stringify(storedRows);
@@ -974,13 +1005,19 @@ const PluginSettings = () => {
     };
     const footerStyle: React.CSSProperties = { display: 'flex', gap: 8, marginTop: 8 };
 
+    const introCopy = variant === 'system'
+      ? 'Convert the paths from the format used by stash into the format used by Stash-AI-Server (AI Overhaul Backend). This is needed when stash or Stash-AI-Server are running in docker or if they\'re on different computers.'
+      : "Convert the paths from the format used by stash into the format used by this plugin's server. This is needed when stash or this plugin's server are running in docker or if they're on different computers.";
+    const targetLabel = variant === 'system' ? 'Stash-AI-Server Path' : "Path From Plugin's Server";
+
     return (
       <div style={{ border: '1px solid #2a2a2a', borderRadius: 4, padding: 8, background: '#101010' }}>
+        <div style={{ fontSize: 11, opacity: 0.75, marginBottom: 6 }}>{introCopy}</div>
         <table style={{ ...tableStyle, marginBottom: 8 }}>
           <thead>
             <tr>
-              <th style={thtd}>Stash Prefix</th>
-              <th style={thtd}>Target Path</th>
+              <th style={thtd}>Stash Path</th>
+              <th style={thtd}>{targetLabel}</th>
               <th style={thtd}>Slash Mode</th>
               <th style={{ ...thtd, width: '1%', whiteSpace: 'nowrap' }}>Actions</th>
             </tr>
@@ -992,7 +1029,7 @@ const PluginSettings = () => {
                   <input
                     style={cellInputStyle}
                     value={row.source}
-                    placeholder="E:\\Content\\"
+                    placeholder="E:\\Media\\"
                     onChange={(e: any) => updateRow(idx, 'source', e.target.value)}
                     disabled={pending}
                   />
@@ -1001,7 +1038,7 @@ const PluginSettings = () => {
                   <input
                     style={cellInputStyle}
                     value={row.target}
-                    placeholder="/mnt/content/"
+                    placeholder="/media/"
                     onChange={(e: any) => updateRow(idx, 'target', e.target.value)}
                     disabled={pending}
                   />
@@ -1049,9 +1086,6 @@ const PluginSettings = () => {
           >
             Reset
           </button>
-        </div>
-        <div style={{ fontSize: 11, opacity: 0.7, marginTop: 6 }}>
-          Entries match stash paths by prefix before requests are made. Slash mode normalizes separators; unix also ensures a leading '/'.
         </div>
       </div>
     );
@@ -1208,6 +1242,7 @@ const PluginSettings = () => {
             defaultValue={f.default}
             onChange={async (next) => { await savePluginSetting(pluginName, f.key, next); }}
             onReset={async () => { await savePluginSetting(pluginName, f.key, null); }}
+            variant="plugin"
           />
         </div>
       );
@@ -1351,6 +1386,7 @@ const PluginSettings = () => {
             defaultValue={f.default}
             onChange={async (next) => { await saveSystemSetting(f.key, next); }}
             onReset={async () => { await saveSystemSetting(f.key, null); }}
+            variant="system"
           />
         </div>
       );
@@ -1513,6 +1549,7 @@ const PluginSettings = () => {
     }));
     try {
       await jfetch(`${backendBase}/api/v1/plugins/system/settings/${encodeURIComponent(key)}`, { method:'PUT', body: JSON.stringify({ value }) });
+      void loadSystemHealth();
       return true;
     } catch(e:any){
       setError(e.message);
@@ -1521,7 +1558,7 @@ const PluginSettings = () => {
       }
       return false;
     }
-  }, [backendBase]);
+  }, [backendBase, loadSystemHealth]);
 
   function renderSources() {
     return (
@@ -1583,6 +1620,128 @@ const PluginSettings = () => {
     );
   }
 
+  const statusColor = (status: string | undefined) => {
+    switch (status) {
+      case 'ok':
+        return '#2ea043';
+      case 'warn':
+        return '#d4a72c';
+      case 'error':
+        return '#f85149';
+      default:
+        return '#6e7681';
+    }
+  };
+
+  const renderHealthCard = (title: string, component: any, kind: 'stash' | 'database') => {
+    if (!component) return null;
+    const rows: { label: string; value: string }[] = [];
+    const details = (component?.details || {}) as Record<string, any>;
+
+    const pushRow = (label: string, raw: any, { allowEmpty = false } = {}) => {
+      if (raw === undefined || raw === null) {
+        if (allowEmpty) rows.push({ label, value: 'Not set' });
+        return;
+      }
+      let value: string;
+      if (typeof raw === 'boolean') {
+        value = raw ? 'Yes' : 'No';
+      } else if (typeof raw === 'number') {
+        value = String(raw);
+      } else {
+        const str = String(raw).trim();
+        if (!str && !allowEmpty) return;
+        value = str || 'Not set';
+      }
+      rows.push({ label, value });
+    };
+
+    if (kind === 'stash') {
+      pushRow('Configured URL', details.configured_url, { allowEmpty: true });
+      if (details.effective_url && details.effective_url !== details.configured_url) {
+        pushRow('Effective URL', details.effective_url);
+      }
+      if (typeof details.api_key_configured === 'boolean') {
+        pushRow('API Key', details.api_key_configured ? 'Configured' : 'Not configured');
+      }
+    } else if (kind === 'database') {
+      pushRow('Configured Path', details.configured_path, { allowEmpty: true });
+      if (details.mutated_path && details.mutated_path !== details.configured_path) {
+        pushRow('Mapped Path', details.mutated_path);
+      }
+      if (details.resolved_path && details.resolved_path !== details.mutated_path) {
+        pushRow('Resolved Path', details.resolved_path);
+      }
+      if (typeof details.path_exists === 'boolean') {
+        pushRow('Path Exists', details.path_exists ? 'Yes' : 'No');
+      }
+      if (details.mutation_error) {
+        pushRow('Mapping Error', details.mutation_error);
+      }
+    }
+
+    if (component.latency_ms != null) {
+      const latency = Number(component.latency_ms);
+      pushRow('Latency', `${latency.toFixed(latency >= 100 ? 0 : 1)} ms`);
+    }
+    if (details.last_error) {
+      pushRow('Last Error', details.last_error);
+    }
+
+    let hint: string | null = null;
+    if (kind === 'stash') {
+      if (component.status === 'warn' && component.message.includes('not configured')) {
+        hint = 'Set the Stash URL (and API key if needed) under Backend System Settings.';
+      } else if (component.status === 'warn' && component.message.includes('API key')) {
+        hint = 'Add the Stash API key in Backend System Settings if your Stash requires authentication.';
+      } else if (component.status === 'error') {
+        hint = 'Verify the Stash URL/API key and ensure the AI server can reach the Stash host.';
+      }
+    } else if (kind === 'database') {
+      if (component.status === 'warn') {
+        hint = 'Set the Stash database path in Backend System Settings.';
+      } else if (component.status === 'error') {
+        if (component.message.includes('not found')) {
+          hint = 'Update the database path or add a path mutation so the AI server can see the file.';
+        } else {
+          hint = 'Confirm the database path points to the Stash SQLite file and adjust path mutations if needed.';
+        }
+      }
+    }
+
+    const badgeStyle: React.CSSProperties = {
+      fontSize: 10,
+      padding: '2px 6px',
+      borderRadius: 999,
+      background: statusColor(component.status),
+      color: '#0d1117',
+      fontWeight: 600,
+      textTransform: 'uppercase',
+      letterSpacing: 0.4,
+    };
+
+    return (
+      <div key={title} style={{ flex: '1 1 280px', border: '1px solid #333', borderRadius: 6, background: '#121212', padding: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>{title}</div>
+          <span style={badgeStyle}>{(component.status || 'unknown').toUpperCase()}</span>
+        </div>
+        <div style={{ fontSize: 12, marginBottom: rows.length ? 8 : 0 }}>{component.message}</div>
+        {rows.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: hint ? 8 : 0 }}>
+            {rows.map((row) => (
+              <div key={`${title}:${row.label}`} style={{ display: 'flex', fontSize: 11, lineHeight: 1.4 }}>
+                <span style={{ width: 140, opacity: 0.7 }}>{row.label}</span>
+                <span style={{ flex: 1, wordBreak: 'break-word' }}>{row.value}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {hint && <div style={{ fontSize: 11, color: '#c9d1d9' }}>{hint}</div>}
+      </div>
+    );
+  };
+
   const backendNotice = backendHealthApi && typeof backendHealthApi.buildNotice === 'function'
     ? backendHealthApi.buildNotice(backendHealthState, { onRetry: retryBackendProbe, retryLabel: 'Retry backend request' })
     : null;
@@ -1597,6 +1756,38 @@ const PluginSettings = () => {
       {error && <div style={{background:'#402', color:'#fbb', padding:8, marginBottom:12, border:'1px solid #600'}}>
         <strong>Error:</strong> {error} <button style={smallBtn} onClick={()=>setError(null)}>x</button>
       </div>}
+      <div style={sectionStyle}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3 style={headingStyle}>System Status</h3>
+          <button
+            style={smallBtn}
+            onClick={() => { void loadSystemHealth(); }}
+            disabled={systemHealthLoading}
+          >{systemHealthLoading ? 'Checking…' : 'Refresh'}</button>
+        </div>
+        {systemHealthError && (
+          <div style={{ fontSize: 12, color: '#f88', marginBottom: 6 }}>
+            {systemHealthError}
+          </div>
+        )}
+        {systemHealthLoading && (
+          <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 6 }}>Checking status…</div>
+        )}
+        {!systemHealthLoading && !systemHealthError && !systemHealth && (
+          <div style={{ fontSize: 12, opacity: 0.7 }}>Health information unavailable.</div>
+        )}
+        {(systemHealthLoading || systemHealth) && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+            {renderHealthCard('Stash Connection', systemHealth?.stash_api, 'stash')}
+            {renderHealthCard('Database Access', systemHealth?.database, 'database')}
+          </div>
+        )}
+        {systemHealth?.timestamp && (
+          <div style={{ fontSize: 11, opacity: 0.6, marginTop: 8 }}>
+            Last checked: {new Date(systemHealth.timestamp).toLocaleString()}
+          </div>
+        )}
+      </div>
       <div style={sectionStyle}>
         <h3 style={headingStyle}>AI Overhaul Plugin Settings</h3>
         <div style={{display:'flex', flexDirection:'column', gap:8, maxWidth:500}}>

@@ -9,6 +9,7 @@ from stash_ai_server.api import tasks as tasks_router
 from stash_ai_server.api import ws as ws_router
 from stash_ai_server.api import recommendations as recommendations_router
 from stash_ai_server.api import plugins as plugins_router
+from stash_ai_server.api import system as system_router
 from stash_ai_server.recommendations.registry import recommender_registry
 from stash_ai_server.recommendations.models import RecContext
 from stash_ai_server.tasks.manager import manager
@@ -93,6 +94,7 @@ app.include_router(ws_router.router, prefix=settings.api_v1_prefix)
 app.include_router(recommendations_router.router, prefix=settings.api_v1_prefix)
 app.include_router(plugins_router.router, prefix=settings.api_v1_prefix)
 app.include_router(interactions_router.router, prefix=settings.api_v1_prefix)
+app.include_router(system_router.router, prefix=settings.api_v1_prefix)
 
 # Basic CORS (development) – restrict/adjust later as needed
 app.add_middleware(
