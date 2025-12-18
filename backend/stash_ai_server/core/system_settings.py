@@ -20,6 +20,7 @@ _DEFS: List[Dict[str, Any]] = [
     { 'key': 'STASH_API_KEY', 'type': 'string', 'label': 'Stash API Key', 'default': 'REPLACE_WITH_API_KEY', 'description': 'API key used to connect to Stash.' },
     { 'key': 'STASH_DB_PATH', 'type': 'string', 'label': 'Stash DB Path', 'default': 'REPLACE_WITH_DB_PATH', 'description': 'Path to the Stash database.' },
     { 'key': 'PATH_MAPPINGS', 'type': 'path_map', 'label': 'AI Overhaul Path Mappings', 'default': [], 'description': 'Rewrite stash file paths for the AI Overhaul backend when accessing media directly.' },
+    { 'key': 'UI_SHARED_API_KEY', 'type': 'string', 'label': 'Shared API Key', 'default': '', 'description': 'Optional secret that HTTP/WebSocket clients must present via x-ai-api-key header or api_key query param.' },
     { 'key': 'INTERACTION_MIN_SESSION_MINUTES', 'type': 'number', 'label': 'Interaction Min Session (min)', 'description': 'Minimum session duration in minutes for determining a derived o_count', 'default': 10 },
     { 'key': 'INTERACTION_MERGE_TTL_SECONDS', 'type': 'number', 'label': 'Interaction Merge sessions TTL (s)', 'description': 'Time to merge sessions together if they occur less than this amount of seconds apart', 'default': 120 },
     { 'key': 'SEGMENT_MERGE_GAP_SECONDS', 'type': 'number', 'label': 'Segment Merge Gap (s)', 'description': 'Merges interaction watch segments within this amount of seconds', 'default': 0.5 },

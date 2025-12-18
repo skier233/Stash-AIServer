@@ -75,10 +75,7 @@ def _label_or_literal(column: sa.ColumnElement[Any] | None, alias: str, default:
 
 
 def _build_scene_url(scene_id: int, endpoint: str, *, include_api_key: bool = False, params: Dict[str, Any] | None = None) -> str | None:
-    base = stash_api.stash_url
-    if not base:
-        return None
-    base = base.rstrip("/")
+    base_path = f"/scene/{scene_id}/{endpoint}"
     query: Dict[str, Any] = {}
     if params:
         query.update({k: v for k, v in params.items() if v not in (None, "")})
@@ -86,7 +83,7 @@ def _build_scene_url(scene_id: int, endpoint: str, *, include_api_key: bool = Fa
         query.setdefault("apikey", stash_api.api_key)
     query_string = urlencode(query) if query else ""
     suffix = f"?{query_string}" if query_string else ""
-    return f"{base}/scene/{scene_id}/{endpoint}{suffix}"
+    return f"{base_path}{suffix}" or base_path
 
 
 def _build_scene_paths(scene_id: int) -> Dict[str, str]:
@@ -134,17 +131,14 @@ def _coerce_unix_timestamp(raw: Any) -> int | None:
 
 
 def _build_performer_image_url(performer_id: int, *, updated_at: Any = None) -> str | None:
-    base = stash_api.stash_url
-    if not base:
-        return None
-    base = base.rstrip("/")
+    base_path = f"/performer/{performer_id}/image"
     query: Dict[str, Any] = {"default": "true"}
     ts = _coerce_unix_timestamp(updated_at)
     if ts is not None:
         query["t"] = str(ts)
     query_string = urlencode(query) if query else ""
     suffix = f"?{query_string}" if query_string else ""
-    return f"{base}/performer/{performer_id}/image{suffix}"
+    return f"{base_path}{suffix}" or base_path
 
 
 def fetch_scene_candidates_by_performers(

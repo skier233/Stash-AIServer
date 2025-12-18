@@ -7,6 +7,7 @@ const { execSync } = require('child_process');
 const path = require('path');
 
 let files = [
+  'src/VersionInfo.ts',
   'src/PageContext.ts',
   'src/InteractionTracker.ts',
   'src/RecommendationUtils.tsx',

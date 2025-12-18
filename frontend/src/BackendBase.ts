@@ -10,9 +10,14 @@ const CONFIG_QUERY = `query AIOverhaulPluginConfig($ids: [ID!]) {
     plugins(include: $ids)
   }
 }`;
+const SHARED_KEY_EVENT = 'AISharedApiKeyUpdated';
+const SHARED_KEY_HEADER = 'x-ai-api-key';
+const SHARED_KEY_QUERY = 'api_key';
+const SHARED_KEY_STORAGE = 'ai_shared_api_key';
 
 let configLoaded = false;
 let configLoading = false;
+let sharedApiKeyValue = '';
 
 function getOrigin(): string {
   try {
@@ -47,7 +52,70 @@ function interpretBool(raw: unknown): boolean | null {
   return null;
 }
 
-function applyPluginConfig(base: string | null | undefined, captureEvents: boolean | null | undefined) {
+function normalizeSharedKey(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  return raw.trim();
+}
+
+function setSharedApiKey(raw: unknown) {
+  const normalized = normalizeSharedKey(raw);
+  if (normalized === sharedApiKeyValue) return;
+  sharedApiKeyValue = normalized;
+  try {
+    if (normalized) {
+      try { sessionStorage.setItem(SHARED_KEY_STORAGE, normalized); } catch {}
+    } else {
+      try { sessionStorage.removeItem(SHARED_KEY_STORAGE); } catch {}
+    }
+    (window as any).AI_SHARED_API_KEY = normalized;
+    window.dispatchEvent(new CustomEvent(SHARED_KEY_EVENT, { detail: normalized }));
+  } catch {}
+}
+
+export function getSharedApiKey(): string {
+  if (sharedApiKeyValue) return sharedApiKeyValue;
+  try {
+    const stored = sessionStorage.getItem(SHARED_KEY_STORAGE);
+    if (typeof stored === 'string' && stored.trim()) {
+      sharedApiKeyValue = stored.trim();
+      return sharedApiKeyValue;
+    }
+  } catch {}
+  try {
+    const globalValue = (window as any).AI_SHARED_API_KEY;
+    if (typeof globalValue === 'string') {
+      sharedApiKeyValue = globalValue.trim();
+      return sharedApiKeyValue;
+    }
+  } catch {}
+  return '';
+}
+
+function withSharedKeyHeaders(init?: RequestInit): RequestInit {
+  const key = getSharedApiKey();
+  if (!key) return init ? init : {};
+  const next: RequestInit = { ...(init || {}) };
+  const headers = new Headers(init?.headers || {});
+  headers.set(SHARED_KEY_HEADER, key);
+  next.headers = headers;
+  return next;
+}
+
+function appendSharedApiKeyQuery(url: string): string {
+  const key = getSharedApiKey();
+  if (!key) return url;
+  try {
+    const base = getOrigin() || undefined;
+    const resolved = new URL(url, url.startsWith('http://') || url.startsWith('https://') || url.startsWith('ws://') || url.startsWith('wss://') ? undefined : base);
+    resolved.searchParams.set(SHARED_KEY_QUERY, key);
+    return resolved.toString();
+  } catch {
+    const sep = url.includes('?') ? '&' : '?';
+    return `${url}${sep}${SHARED_KEY_QUERY}=${encodeURIComponent(key)}`;
+  }
+}
+
+function applyPluginConfig(base: string | null | undefined, captureEvents: boolean | null | undefined, sharedKey: string | null | undefined) {
   if (base !== undefined) {
     const normalized = normalizeBase(base);
     if (normalized !== null) {
@@ -69,6 +137,9 @@ function applyPluginConfig(base: string | null | undefined, captureEvents: boole
       }
     } catch {}
   }
+  if (sharedKey !== undefined) {
+    setSharedApiKey(sharedKey);
+  }
 }
 
 async function loadPluginConfig(): Promise<void> {
@@ -89,7 +160,8 @@ async function loadPluginConfig(): Promise<void> {
       if (entry && typeof entry === 'object') {
         const backendBase = (entry as any).backend_base_url ?? (entry as any).backendBaseUrl ?? (entry as any).backendBaseURL;
         const captureEvents = (entry as any).capture_events ?? (entry as any).captureEvents ?? (entry as any).captureEventsEnabled;
-        applyPluginConfig(backendBase, interpretBool(captureEvents));
+        const sharedKey = (entry as any).shared_api_key ?? (entry as any).sharedApiKey ?? (entry as any).sharedKey;
+        applyPluginConfig(backendBase, interpretBool(captureEvents), typeof sharedKey === 'string' ? sharedKey : undefined);
       }
     }
   } catch {}
@@ -121,4 +193,9 @@ try {
   (window as any).AIDefaultBackendBase = defaultBackendBase;
   (defaultBackendBase as any).loadPluginConfig = loadPluginConfig;
   (defaultBackendBase as any).applyPluginConfig = applyPluginConfig;
+  (window as any).AISharedApiKeyHelper = {
+    get: getSharedApiKey,
+    withHeaders: withSharedKeyHeaders,
+    appendQuery: appendSharedApiKeyQuery,
+  };
 } catch {}

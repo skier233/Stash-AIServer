@@ -12,9 +12,12 @@ from stash_ai_server.models.plugin import PluginMeta, PluginSource, PluginCatalo
 from stash_ai_server.plugin_runtime import loader as plugin_loader
 from stash_ai_server.core.system_settings import SYSTEM_PLUGIN_NAME, get_value as sys_get_value, invalidate_cache as sys_invalidate_cache
 from stash_ai_server.core.runtime import schedule_backend_restart
+from stash_ai_server.core.config import settings
+from stash_ai_server.core.compat import version_satisfies
 from stash_ai_server.utils.path_mutation import invalidate_path_mapping_cache
+from stash_ai_server.core.api_key import require_shared_api_key
 
-router = APIRouter(prefix='/plugins', tags=['plugins'])
+router = APIRouter(prefix='/plugins', tags=['plugins'], dependencies=[Depends(require_shared_api_key)])
 
 # Dependency
 
@@ -24,6 +27,44 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def _require_plugin_active(db: Session, plugin_name: str):
+    meta = db.execute(select(PluginMeta).where(PluginMeta.name == plugin_name)).scalar_one_or_none()
+    if meta and meta.status == 'active':
+        return meta
+    status = meta.status if meta else 'missing'
+    message = (meta.last_error if meta and meta.last_error else 'Plugin did not activate successfully.')
+    raise HTTPException(
+        status_code=409,
+        detail={
+            'code': 'PLUGIN_INACTIVE',
+            'plugin': plugin_name,
+            'status': status,
+            'message': message,
+        },
+    )
+
+
+def _require_backend_compatibility(plan: plugin_loader.InstallPlanResult):
+    backend_version = getattr(settings, 'version', None)
+    for target in plan.order:
+        required = plan.required_backend.get(target)
+        if not required:
+            continue
+        if version_satisfies(backend_version, required):
+            continue
+        detected = backend_version or 'unknown'
+        raise HTTPException(
+            status_code=409,
+            detail={
+                'code': 'BACKEND_TOO_OLD',
+                'plugin': target,
+                'required_backend': required,
+                'backend_version': detected,
+                'message': f"Plugin '{target}' requires backend {required}, but the server is {detected}.",
+            },
+        )
 
 class PluginMetaModel(BaseModel):
     name: str
@@ -373,15 +414,17 @@ async def install_plugin(body: dict = Body(...), db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail='PLUGIN_NOT_FOUND')
     if plan.missing:
         raise HTTPException(status_code=400, detail={'code': 'DEPENDENCY_MISSING', 'missing': plan.missing})
+    _require_backend_compatibility(plan)
     deps_to_install = [name for name in plan.dependencies if name not in plan.already_active]
     if deps_to_install and not install_dependencies:
         raise HTTPException(status_code=409, detail={'code': 'DEPENDENCIES_REQUIRED', 'dependencies': deps_to_install, 'human_names': {n: plan.human_names.get(n) for n in deps_to_install}})
     try:
         installed = plugin_loader.execute_install_plan(db, plan, overwrite_target=overwrite, install_dependencies=install_dependencies or bool(deps_to_install))
         primary_version = next((ver for name, ver in installed if name == plugin_name), None)
-        return {'status': 'installed', 'plugin': plugin_name, 'version': primary_version, 'installed': installed}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    meta = _require_plugin_active(db, plugin_name)
+    return {'status': 'installed', 'plugin': plugin_name, 'version': primary_version or meta.version, 'installed': installed}
 
 
 @router.post('/update')
@@ -396,12 +439,14 @@ async def update_plugin(body: dict = Body(...), db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail='PLUGIN_NOT_FOUND')
     if plan.missing:
         raise HTTPException(status_code=400, detail={'code': 'DEPENDENCY_MISSING', 'missing': plan.missing})
+    _require_backend_compatibility(plan)
     try:
         installed = plugin_loader.execute_install_plan(db, plan, overwrite_target=True, install_dependencies=True)
         primary_version = next((ver for name, ver in installed if name == plugin_name), None)
-        return {'status': 'updated', 'plugin': plugin_name, 'version': primary_version, 'installed': installed}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    meta = _require_plugin_active(db, plugin_name)
+    return {'status': 'updated', 'plugin': plugin_name, 'version': primary_version or meta.version, 'installed': installed}
 
 
 @router.post('/remove/plan', response_model=RemovePlanResponse)

@@ -24,6 +24,10 @@ class RecommenderConfigField(BaseModel):
     tag_combination: str | None = None
     constraint_types: List[str] | None = None
     allowed_combination_modes: List[str] | None = None
+    persist: bool = Field(
+        default=True,
+        description="Controls whether the field participates in server-side persistence",
+    )
 
 class RecommenderDefinition(BaseModel):
     id: str

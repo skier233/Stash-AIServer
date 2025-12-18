@@ -23,6 +23,30 @@
     
     const { useState, useMemo, useEffect, useRef, useCallback } = React;
 
+    const getSharedApiKey = () => {
+      try {
+        const helper = (w as any).AISharedApiKeyHelper;
+        if (helper && typeof helper.get === 'function') {
+          const value = helper.get();
+          if (typeof value === 'string') return value.trim();
+        }
+      } catch {}
+      const raw = (w as any).AI_SHARED_API_KEY;
+      return typeof raw === 'string' ? raw.trim() : '';
+    };
+
+    const withSharedKeyHeaders = (init?: any) => {
+      const helper = (w as any).AISharedApiKeyHelper;
+      if (helper && typeof helper.withHeaders === 'function') {
+        return helper.withHeaders(init || {});
+      }
+      const key = getSharedApiKey();
+      if (!key) return init || {};
+      const headers = { ...(init && init.headers ? init.headers : {}) };
+      headers['x-ai-api-key'] = key;
+      return { ...(init || {}), headers };
+    };
+
   interface BasicSceneFile { duration?: number; size?: number; }
   interface BasicScene { 
     id: number; 
@@ -60,6 +84,8 @@
     if (sc.rating == null && typeof sc.rating100 === 'number') sc.rating = Math.round(sc.rating100 / 20);
     return sc as BasicScene;
   }
+
+  const RECOMMENDATION_CONTEXT = 'similar_scene';
 
   // Similar to QueueViewer but for similar scenes
   const SimilarScenesViewer: React.FC<any> = (props: any) => {
@@ -123,10 +149,22 @@
       scrollContainerRef.current = getScrollContainer();
     }, [getScrollContainer]);
 
+    const configCacheRef = useRef({} as Record<string, any>);
     const configValuesRef = useRef({} as any);
     const compositeRawRef = useRef({} as any);
+    const preferenceSaveTimerRef = useRef(null as any);
+    const lastPersistedSnapshotRef = useRef(null as any);
+    const serverSeedConfigRef = useRef({} as any);
 
     useEffect(() => { configValuesRef.current = configValues; }, [configValues]);
+
+    useEffect(() => {
+      return () => {
+        if (preferenceSaveTimerRef.current) {
+          clearTimeout(preferenceSaveTimerRef.current);
+        }
+      };
+    }, []);
 
     const currentRecommender = useMemo(() => 
       (recommenders || [])?.find((r: any) => r.id === recommenderId), 
@@ -190,6 +228,83 @@
       return null;
     }, [backendHealthApi, backendHealthTick]);
 
+    function sanitizeConfigPayload(config: any){
+      const out: any = {};
+      if(config && typeof config === 'object'){
+        Object.keys(config).forEach(key => {
+          const value = config[key];
+          if(value !== undefined){
+            out[key] = value;
+          }
+        });
+      }
+      return out;
+    }
+
+    function shouldPersistField(field: any){
+      if(!field) return true;
+      if(typeof field.persist === 'undefined') return true;
+      return Boolean(field.persist);
+    }
+
+    function isFieldPersistable(definition: any, fieldName: string){
+      if(!definition || !Array.isArray(definition.config)) return false;
+      const field = definition.config.find((f: any) => f.name === fieldName);
+      if(!field) return false;
+      return shouldPersistField(field);
+    }
+
+    function buildPersistableConfig(definition: any, values: any){
+      if(!definition || !Array.isArray(definition.config)) return {};
+      const out: any = {};
+      definition.config.forEach((field: any) => {
+        if(!shouldPersistField(field)) return;
+        if(values && Object.prototype.hasOwnProperty.call(values, field.name)){
+          const value = values[field.name];
+          if(value !== undefined){
+            out[field.name] = value;
+          }
+        }
+      });
+      return out;
+    }
+
+    const persistPreference = useCallback(async () => {
+      if(!backendBase || !recommenderId || !currentRecommender) return;
+      const payload = {
+        context: RECOMMENDATION_CONTEXT,
+        recommenderId,
+        config: sanitizeConfigPayload(buildPersistableConfig(currentRecommender, configValuesRef.current || {})),
+      };
+      const signature = JSON.stringify(payload);
+      if(lastPersistedSnapshotRef.current === signature){
+        return;
+      }
+      try {
+        const url = `${backendBase}/api/v1/recommendations/preferences`;
+        await fetch(url, withSharedKeyHeaders({
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        }));
+        lastPersistedSnapshotRef.current = signature;
+      } catch(err){
+        warn('Failed to persist similar-scene preference', err);
+      }
+    }, [backendBase, recommenderId, currentRecommender, withSharedKeyHeaders]);
+
+    const schedulePreferencePersist = useCallback((reason: 'recommender' | 'config', opts?: { debounce?: boolean }) => {
+      if(!backendBase || !recommenderId || !currentRecommender) return;
+      const delay = reason === 'recommender' ? 25 : (opts?.debounce ? 800 : 220);
+      if(preferenceSaveTimerRef.current){
+        clearTimeout(preferenceSaveTimerRef.current);
+      }
+      preferenceSaveTimerRef.current = setTimeout(() => {
+        preferenceSaveTimerRef.current = null;
+        persistPreference();
+      }, delay);
+    }, [backendBase, recommenderId, currentRecommender, persistPreference]);
+
     // Discover available recommenders using the backend recommendations API
     const discoverRecommenders = useCallback(async () => {
   if (!backendBase) return;
@@ -199,9 +314,9 @@
       }
       try {
         setLoading(true);
-        const recContext = 'similar_scene';
+        const recContext = RECOMMENDATION_CONTEXT;
         const url = `${backendBase}/api/v1/recommendations/recommenders?context=${encodeURIComponent(recContext)}`;
-        const response = await fetch(url);
+        const response = await fetch(url, withSharedKeyHeaders());
         if (!response.ok) {
           if (backendHealthApi) {
             if ((response.status >= 500 || response.status === 0) && typeof backendHealthApi.reportError === 'function') {
@@ -226,10 +341,22 @@
         const data = await response.json();
         if (Array.isArray(data.recommenders)) {
           setRecommenders(data.recommenders);
-          const similarContextRec = data.recommenders.find((r: any) => r.contexts?.includes('similar_scene'));
-          if (similarContextRec) {
-            setRecommenderId(similarContextRec.id);
-            log('Auto-selected recommender for similar_scene:', similarContextRec.id);
+          const savedId = typeof data.savedRecommenderId === 'string' ? data.savedRecommenderId : null;
+          const savedDef = savedId ? data.recommenders.find((r: any) => r.id === savedId) : null;
+          if (savedDef) {
+            const seedConfig = sanitizeConfigPayload(data.savedConfig || {});
+            serverSeedConfigRef.current[savedDef.id] = seedConfig;
+            lastPersistedSnapshotRef.current = JSON.stringify({
+              context: recContext,
+              recommenderId: savedDef.id,
+              config: seedConfig,
+            });
+          }
+          const similarContextRec = data.recommenders.find((r: any) => r.contexts?.includes(RECOMMENDATION_CONTEXT));
+          const nextId = savedDef?.id || similarContextRec?.id || null;
+          if (nextId) {
+            setRecommenderId((prev: string | null) => prev === nextId ? prev : nextId);
+            if((w as any).AIDebug) log('Selected recommender for similar_scene:', nextId);
           }
           if (backendHealthApi && typeof backendHealthApi.reportOk === 'function') {
             try { backendHealthApi.reportOk(backendBase); } catch (_) {}
@@ -271,7 +398,7 @@
         }
 
         const payload = {
-          context: 'similar_scene',
+          context: RECOMMENDATION_CONTEXT,
           recommenderId,
           seedSceneIds: [Number(currentSceneId)],
           config: configValuesRef.current || {},
@@ -280,11 +407,11 @@
         } as any;
 
   const url = `${backendBase}/api/v1/recommendations/query`;
-        const response = await fetch(url, {
+        const response = await fetch(url, withSharedKeyHeaders({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
-        });
+        }));
 
         if (!response.ok) {
           if (backendHealthApi) {
@@ -389,10 +516,22 @@
       const defaults: any = {};
       defs.forEach(f => {
         if (Object.prototype.hasOwnProperty.call(f, 'default')) defaults[f.name] = f.default;
+        if (f.type === 'tags' || f.type === 'performers') {
+          compositeRawRef.current[f.name] = '';
+        }
       });
-      setConfigValues(defaults);
-      configValuesRef.current = defaults;
-    }, [currentRecommender]);
+      const cached = configCacheRef.current[currentRecommender.id];
+      let merged = cached ? { ...defaults, ...cached } : { ...defaults };
+      const seed = serverSeedConfigRef.current[currentRecommender.id];
+      if (seed) {
+        merged = { ...merged, ...seed };
+        delete serverSeedConfigRef.current[currentRecommender.id];
+      }
+      configCacheRef.current[currentRecommender.id] = merged;
+      setConfigValues({ ...merged });
+      configValuesRef.current = merged;
+      schedulePreferencePersist('recommender');
+    }, [currentRecommender, schedulePreferencePersist]);
 
     // Fetch first page when recommender or scene changes
     useEffect(() => {
@@ -483,7 +622,13 @@
     // Config state update helper (simple debounce for text inputs)
     const textTimersRef = useRef({} as any);
     const updateConfigField = useCallback((name: string, value: any, opts?: { debounce?: boolean }) => {
-      setConfigValues((prev: any) => ({ ...prev, [name]: value }));
+      setConfigValues((prev: any) => {
+        const next = { ...prev, [name]: value };
+        if (recommenderId) {
+          configCacheRef.current[recommenderId] = next;
+        }
+        return next;
+      });
       configValuesRef.current = { ...configValuesRef.current, [name]: value };
       if (opts && opts.debounce) {
         if (textTimersRef.current[name]) clearTimeout(textTimersRef.current[name]);
@@ -494,7 +639,10 @@
         // immediate fetch
         fetchPage(0, false);
       }
-  }, [fetchPage]);
+      if (currentRecommender && isFieldPersistable(currentRecommender, name)) {
+        schedulePreferencePersist('config', { debounce: !!opts?.debounce });
+      }
+    }, [fetchPage, recommenderId, currentRecommender, schedulePreferencePersist]);
 
   // Shared config panel using AIRecommendationUtils.buildConfigRows for parity
     const renderConfigPanel = useCallback(() => {

@@ -11,11 +11,11 @@ Only path constant PLUGIN_DIR still points to the on-disk extensions folder
 import os, pathlib, yaml, importlib, sys, traceback, tempfile, zipfile, shutil, types, logging
 from dataclasses import dataclass, field
 from typing import List, Dict, Set, Optional, Tuple, Iterable, Any
-from packaging import version as _v
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from stash_ai_server.db.session import SessionLocal, engine
 from stash_ai_server.core.config import settings
+from stash_ai_server.core.compat import version_satisfies
 from stash_ai_server.models.plugin import PluginMeta, PluginSetting, PluginSource, PluginCatalog
 from stash_ai_server.utils.string_utils import normalize_null_strings
 from stash_ai_server.plugin_runtime.settings_registry import register_settings
@@ -103,6 +103,7 @@ class InstallPlanResult:
     missing: List[str] = field(default_factory=list)
     catalog_rows: Dict[str, PluginCatalog] = field(default_factory=dict)
     human_names: Dict[str, Optional[str]] = field(default_factory=dict)
+    required_backend: Dict[str, Optional[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -172,6 +173,22 @@ def _catalog_dependencies(row: PluginCatalog) -> List[str]:
     return cleaned_manifest
 
 
+def _catalog_required_backend(row: PluginCatalog) -> Optional[str]:
+    manifest = row.manifest_json or {}
+    candidates = (
+        manifest.get('required_backend'),
+        manifest.get('requiredBackend'),
+        getattr(row, 'required_backend', None),
+    )
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        text = str(candidate).strip()
+        if text:
+            return text
+    return None
+
+
 def _catalog_human_name(row: PluginCatalog) -> Optional[str]:
     manifest = row.manifest_json or {}
     return row.human_name or manifest.get('humanName') or manifest.get('human_name') or None
@@ -194,25 +211,20 @@ def _settings_definitions_from_raw(raw: dict | None) -> List[dict]:
     return definitions
 
 def _backend_version_ok(required: str) -> bool:
-    try:
-        cur = _v.parse(getattr(settings, 'version', '0.0.0'))
-        parts = [p.strip() for p in required.replace(',', ' ').split() if p.strip()]
-        for p in parts:
-            if p.startswith('>='):
-                if not (cur >= _v.parse(p[2:])): return False
-            elif p.startswith('>'):
-                if not (cur > _v.parse(p[1:])): return False
-            elif p.startswith('<='):
-                if not (cur <= _v.parse(p[2:])): return False
-            elif p.startswith('<'):
-                if not (cur < _v.parse(p[1:])): return False
-            elif p.startswith('=='):
-                if not (cur == _v.parse(p[2:])): return False
-            else:
-                if not (cur == _v.parse(p)): return False
-        return True
-    except Exception:
-        return False
+    version_value = getattr(settings, 'version', None)
+    return version_satisfies(version_value, required)
+
+
+def _format_backend_incompatibility(required: str | None) -> str:
+    detected = getattr(settings, 'version', None)
+    detected_label = detected or 'unknown'
+    requirement = (required or '').strip() or 'unspecified'
+    return f"requires backend {requirement}; detected {detected_label}"
+
+
+def _mark_incompatible(meta: PluginMeta, required: str | None) -> None:
+    meta.status = 'incompatible'
+    meta.last_error = _format_backend_incompatibility(required)
 
 def _load_or_create_meta(db: Session, manifest: PluginManifest) -> PluginMeta:
     row = db.execute(select(PluginMeta).where(PluginMeta.name == manifest.name)).scalar_one_or_none()
@@ -372,6 +384,7 @@ def plan_install(db: Session, plugin_name: str, preferred_source_id: Optional[in
     missing: List[str] = []
     catalog_rows: Dict[str, PluginCatalog] = {}
     human_names: Dict[str, Optional[str]] = {}
+    required_backend_map: Dict[str, Optional[str]] = {}
 
     def dfs(name: str, source_hint: Optional[int]) -> None:
         if name in visited:
@@ -383,6 +396,7 @@ def plan_install(db: Session, plugin_name: str, preferred_source_id: Optional[in
             return
         catalog_rows[name] = row
         human_names[name] = _catalog_human_name(row)
+        required_backend_map[name] = _catalog_required_backend(row)
         deps = _catalog_dependencies(row)
         for dep in deps:
             dfs(dep, row.source_id)
@@ -401,6 +415,7 @@ def plan_install(db: Session, plugin_name: str, preferred_source_id: Optional[in
         missing=missing,
         catalog_rows=catalog_rows,
         human_names=human_names,
+        required_backend=required_backend_map,
     )
 
 
@@ -518,7 +533,7 @@ def initialize_plugins():
                     continue
                 meta = metas[name]
                 if not _backend_version_ok(mf.required_backend):
-                    meta.status = 'incompatible'; db.commit(); remaining.remove(name); progressed = True
+                    _mark_incompatible(meta, mf.required_backend); db.commit(); remaining.remove(name); progressed = True
                     print(f"[plugin] name={name} incompatible required_backend={mf.required_backend}", flush=True)
                     continue
                 try:
@@ -623,6 +638,10 @@ def install_plugin_from_catalog(db: Session, source_row, catalog_row, overwrite:
     plugin_path_in_repo = (catalog_row.manifest_json or {}).get('path') or (catalog_row.manifest_json or {}).get('plugin_path') or catalog_row.plugin_name
     if not plugin_path_in_repo: raise ValueError('catalog entry missing path')
     target_dir = PLUGIN_DIR / plugin_name
+    try:
+        _unload_plugin(plugin_name)
+    except Exception:
+        pass
     if target_dir.exists():
         if not overwrite: raise FileExistsError(f'plugin {plugin_name} already exists')
         shutil.rmtree(target_dir)
@@ -635,6 +654,15 @@ def install_plugin_from_catalog(db: Session, source_row, catalog_row, overwrite:
     manifest = _parse_manifest(manifest_file)
     if not manifest: raise RuntimeError('invalid manifest after extraction')
     meta = _load_or_create_meta(db, manifest)
+    meta.version = manifest.version
+    meta.human_name = manifest.human_name
+    meta.server_link = manifest.server_link
+
+    if not _backend_version_ok(manifest.required_backend):
+        _mark_incompatible(meta, manifest.required_backend)
+        db.commit()
+        print(f"[plugin] install blocked name={manifest.name} required_backend={manifest.required_backend}", flush=True)
+        return meta
 
     # Validate declared plugin dependencies exist on disk before activating.
     missing = [d for d in manifest.depends_on if not (PLUGIN_DIR / d / 'plugin.yml').exists()]
@@ -663,7 +691,6 @@ def install_plugin_from_catalog(db: Session, source_row, catalog_row, overwrite:
             except Exception as e:  # noqa: BLE001
                 print(f"[plugin] settings registration failed name={manifest.name}: {e}", flush=True)
         _import_files(manifest)
-        meta.version = manifest.version; meta.human_name = manifest.human_name; meta.server_link = manifest.server_link
         meta.status = 'active'
         meta.last_error = None
         db.commit(); return meta
@@ -770,8 +797,7 @@ def reload_plugin(db: Session, plugin_name: str) -> PluginMeta:
     meta = _load_or_create_meta(db, manifest)
 
     if not _backend_version_ok(manifest.required_backend):
-        meta.status = 'incompatible'
-        meta.last_error = f"requires backend {manifest.required_backend}"
+        _mark_incompatible(meta, manifest.required_backend)
         db.commit()
         raise RuntimeError(f'backend version incompatible for {plugin_name}')
 

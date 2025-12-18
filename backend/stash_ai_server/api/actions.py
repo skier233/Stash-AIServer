@@ -1,12 +1,13 @@
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from stash_ai_server.actions.registry import registry as action_registry
 from stash_ai_server.actions.models import ContextInput, ActionDefinition
 from stash_ai_server.tasks.manager import manager as task_manager
 from stash_ai_server.tasks.models import TaskPriority
 from pydantic import BaseModel
 from typing import Any, Optional, Dict
+from stash_ai_server.core.api_key import require_shared_api_key
 
-router = APIRouter(prefix='/actions', tags=['actions'])
+router = APIRouter(prefix='/actions', tags=['actions'], dependencies=[Depends(require_shared_api_key)])
 
 
 class ActionsAvailableResponse(ActionDefinition):

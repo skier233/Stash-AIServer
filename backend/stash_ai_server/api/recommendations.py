@@ -1,7 +1,8 @@
 from __future__ import annotations
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, ValidationError
 from typing import List, Optional, Dict, Any
+from sqlalchemy.orm import Session
 from stash_ai_server.recommendations.registry import recommender_registry
 from stash_ai_server.recommendations.models import (
     RecContext,
@@ -10,8 +11,11 @@ from stash_ai_server.recommendations.models import (
     RecommenderDefinition,
     RecommenderConfigField,
 )
+from stash_ai_server.core.api_key import require_shared_api_key
+from stash_ai_server.db.session import get_db
+from stash_ai_server.recommendations.storage import get_preference, save_preference
 
-router = APIRouter(prefix='/recommendations', tags=['recommendations'])
+router = APIRouter(prefix='/recommendations', tags=['recommendations'], dependencies=[Depends(require_shared_api_key)])
 
 
 class RecommendationContext(BaseModel):
@@ -29,6 +33,8 @@ class RecommenderListResponse(BaseModel):
     context: RecContext
     recommenders: list[dict]
     defaultRecommenderId: str
+    savedRecommenderId: Optional[str] = None
+    savedConfig: Optional[dict] = None
 
 class RecommendationQueryBody(BaseModel):
     context: RecContext
@@ -44,6 +50,19 @@ class RecommendationQueryResponse(BaseModel):
     scenes: list[dict]
     # meta structure (design add): { total, offset, limit, nextOffset, hasMore }
     meta: dict
+    warnings: list[str] | None = None
+
+
+class PreferenceUpsertBody(BaseModel):
+    context: RecContext
+    recommenderId: str
+    config: dict = Field(default_factory=dict)
+
+
+class PreferenceResponse(BaseModel):
+    context: RecContext
+    recommenderId: str
+    config: dict
     warnings: list[str] | None = None
 
 """Recommenders are initialized at FastAPI startup (see main._init_recommenders)."""
@@ -88,16 +107,45 @@ def _validate_config(defn: RecommenderDefinition, raw: dict) -> tuple[dict, list
             warnings.append(f'config.{k} ignored (undeclared)')
     return out, warnings
 
+
+def _should_persist_field(field: RecommenderConfigField) -> bool:
+    value = getattr(field, 'persist', True)
+    if value is None:
+        return False
+    return bool(value)
+
+
+def _filter_persistable_config(defn: RecommenderDefinition, config: dict) -> dict:
+    if not defn.config or not config:
+        return config or {}
+    allowed: dict[str, Any] = {}
+    for field in defn.config:
+        if not _should_persist_field(field):
+            continue
+        if field.name in config:
+            allowed[field.name] = config[field.name]
+    return allowed
+
 @router.get('/recommenders', response_model=RecommenderListResponse)
-async def list_recommenders(context: RecContext = Query(...)):
+async def list_recommenders(context: RecContext = Query(...), db: Session = Depends(get_db)):
     defs = recommender_registry.list_for_context(context)
     if not defs:
         return RecommenderListResponse(context=context, recommenders=[], defaultRecommenderId='')
     default_id = defs[0].id
+    saved_id: str | None = None
+    saved_cfg: dict | None = None
+    pref = get_preference(db, context)
+    if pref:
+        match = next((d for d in defs if d.id == pref.recommender_id), None)
+        if match:
+            saved_id = pref.recommender_id
+            saved_cfg = pref.config or {}
     return RecommenderListResponse(
         context=context,
         recommenders=[d.dict() for d in defs],
-        defaultRecommenderId=default_id
+        defaultRecommenderId=default_id,
+        savedRecommenderId=saved_id,
+        savedConfig=saved_cfg,
     )
 
 @router.post('/query', response_model=RecommendationQueryResponse)
@@ -175,3 +223,25 @@ async def query_recommendations(payload: RecommendationQueryBody = Body(...)):
     total_val = max(total_available, computed_floor)
     meta = {'total': total_val, 'offset': offset, 'limit': limit, 'nextOffset': next_offset, 'hasMore': has_more}
     return RecommendationQueryResponse(recommenderId=payload.recommenderId, scenes=page_slice, meta=meta, warnings=warnings or None)
+
+
+@router.put('/preferences', response_model=PreferenceResponse)
+async def upsert_recommendation_preference(
+    payload: PreferenceUpsertBody = Body(...),
+    db: Session = Depends(get_db)
+):
+    resolved = recommender_registry.get(payload.recommenderId)
+    if not resolved:
+        raise HTTPException(status_code=404, detail='Recommender not found')
+    definition, _ = resolved
+    if payload.context not in definition.contexts:
+        raise HTTPException(status_code=400, detail='Recommender not valid for context')
+    validated_config, warnings = _validate_config(definition, payload.config or {})
+    persistable = _filter_persistable_config(definition, validated_config)
+    row = save_preference(db, payload.context, payload.recommenderId, persistable)
+    return PreferenceResponse(
+        context=payload.context,
+        recommenderId=row.recommender_id,
+        config=row.config or {},
+        warnings=warnings or None,
+    )
