@@ -374,15 +374,26 @@ async function jfetch(url: string, opts: any = {}): Promise<any> {
     const ct = (res.headers.get('content-type')||'').toLowerCase();
     if (ct.includes('application/json')) { try { body = await res.json(); } catch { body = null; } }
     if (!res.ok) {
-      const detail = body?.detail || res.statusText;
+      const detailPayload = (body && Object.prototype.hasOwnProperty.call(body, 'detail')) ? body.detail : body;
+      let detailText: string | undefined;
+      if (typeof detailPayload === 'string') {
+        detailText = detailPayload;
+      } else if (detailPayload && typeof detailPayload === 'object') {
+        detailText = detailPayload.message || detailPayload.code;
+      }
       if (health) {
         if ((res.status >= 500 || res.status === 0) && typeof health.reportError === 'function') {
-          try { health.reportError(baseHint, detail || ('HTTP '+res.status)); reportedError = true; } catch (_) {}
+          try { health.reportError(baseHint, detailText || ('HTTP '+res.status)); reportedError = true; } catch (_) {}
         } else if (typeof health.reportOk === 'function') {
           try { health.reportOk(baseHint); } catch (_) {}
         }
       }
-      throw new Error(detail || ('HTTP '+res.status));
+      const error: any = new Error(detailText || res.statusText || ('HTTP '+res.status));
+      error.status = res.status;
+      error.detail = detailPayload;
+      error.body = body;
+      error.response = body;
+      throw error;
     }
     if (health && typeof health.reportOk === 'function') {
       try { health.reportOk(baseHint); } catch (_) {}
@@ -394,6 +405,36 @@ async function jfetch(url: string, opts: any = {}): Promise<any> {
     }
     throw err;
   }
+}
+
+function formatPluginActionError(error: any, pluginLabel?: string, actionLabel?: string): string | null {
+  const detail = error?.detail;
+  const pluginName = detail?.plugin || pluginLabel || 'This plugin';
+  const verb = actionLabel || 'complete this action';
+  if (!detail) {
+    return null;
+  }
+  if (typeof detail === 'string') {
+    return detail;
+  }
+  if (typeof detail !== 'object') {
+    return null;
+  }
+  const code = (detail.code || detail.error || detail.status || '').toString();
+  const requiredBackend = detail.required_backend || detail.requiredBackend;
+  const backendVersion = detail.backend_version || detail.backendVersion || detail.detected_backend;
+
+  if (code === 'BACKEND_TOO_OLD' && requiredBackend) {
+    const detected = backendVersion || 'your current backend version';
+    return `${pluginName} requires backend ${requiredBackend}, but the server is ${detected}. Upgrade the backend before trying to ${verb}.`;
+  }
+  if (code === 'PLUGIN_INACTIVE' && detail.message) {
+    return detail.message;
+  }
+  if (detail.message) {
+    return detail.message;
+  }
+  return null;
 }
 
 const PluginSettings = () => {
@@ -418,6 +459,7 @@ const PluginSettings = () => {
   const [backendVersionStatus, setBackendVersionStatus] = React.useState('idle');
   const [backendVersionError, setBackendVersionError] = React.useState(null as string | null);
   const [backendVersionInfo, setBackendVersionInfo] = React.useState(null as any);
+  const [pluginActionNotice, setPluginActionNotice] = React.useState(null as { level: 'error' | 'info' | 'success'; message: string } | null);
   const [frontendVersion, setFrontendVersion] = React.useState(() => detectFrontendVersion()) as [string | null, (next: string | null) => void];
   const [openConfig, setOpenConfig] = React.useState(null as string | null);
   const [selectedSource, setSelectedSource] = React.useState(null as string | null);
@@ -437,6 +479,14 @@ const PluginSettings = () => {
   const [sharedKeySaving, setSharedKeySaving] = React.useState(false);
   const [sharedKeyReveal, setSharedKeyReveal] = React.useState(false);
   const selfConfigRef = React.useRef({} as any);
+
+  const showPluginActionMessage = React.useCallback((message: string, level: 'error' | 'info' | 'success' = 'error') => {
+    if (!message) return;
+    setPluginActionNotice({ level, message });
+    if (level === 'error') {
+      setError(message);
+    }
+  }, [setError]);
 
   const backendHealthApi: any = (window as any).AIBackendHealth;
   const backendHealthEvent = backendHealthApi?.EVENT_NAME || 'AIBackendHealthChange';
@@ -596,14 +646,18 @@ const PluginSettings = () => {
     try { await jfetch(`${backendBase}/api/v1/plugins/sources/${name}`, { method:'DELETE' }); setCatalog((c:any) => { const n = {...c}; delete n[name]; return n; }); if (selectedSource === name) setSelectedSource(null); await loadSources(); } catch(e:any){ setError(e.message); }
   }, [backendBase, selectedSource, loadSources]);
 
-  const installPlugin = React.useCallback(async (source: string, plugin: string, overwrite=false, installDependencies=false) => {
+  const installPlugin = React.useCallback(async (source: string, plugin: string, overwrite=false, installDependencies=false, displayName?: string) => {
     try {
       await jfetch(`${backendBase}/api/v1/plugins/install`, { method:'POST', body: JSON.stringify({ source, plugin, overwrite, install_dependencies: installDependencies }) });
       await loadInstalled();
-    } catch(e:any){ setError(e.message); }
-  }, [backendBase, loadInstalled]);
+      showPluginActionMessage(`${displayName || plugin} installed successfully.`, 'success');
+    } catch(e:any){
+      const friendly = formatPluginActionError(e, displayName || plugin, 'install');
+      showPluginActionMessage(friendly || e.message || 'Failed to install plugin');
+    }
+  }, [backendBase, loadInstalled, showPluginActionMessage]);
 
-  const startInstall = React.useCallback(async (source: string, plugin: string, overwrite=false) => {
+  const startInstall = React.useCallback(async (source: string, plugin: string, overwrite=false, displayName?: string) => {
     try {
       const plan = await jfetch(`${backendBase}/api/v1/plugins/install/plan`, { method:'POST', body: JSON.stringify({ source, plugin }) });
       const missing = (plan?.missing || []) as string[];
@@ -620,13 +674,24 @@ const PluginSettings = () => {
         if (!confirm(`Installing ${plan?.human_names?.[plugin] || plugin} will also install: ${friendly}. Continue?`)) return;
         installDeps = true;
       }
-      await installPlugin(source, plugin, overwrite, installDeps);
-    } catch(e:any){ setError(e.message); }
-  }, [backendBase, installPlugin]);
+      const pluginLabel = plan?.human_names?.[plugin] || displayName || plugin;
+      await installPlugin(source, plugin, overwrite, installDeps, pluginLabel);
+    } catch(e:any){
+      const friendly = formatPluginActionError(e, displayName || plugin, 'install');
+      showPluginActionMessage(friendly || e.message || 'Failed to install plugin');
+    }
+  }, [backendBase, installPlugin, showPluginActionMessage]);
 
-  const updatePlugin = React.useCallback(async (source: string, plugin: string) => {
-    try { await jfetch(`${backendBase}/api/v1/plugins/update`, { method:'POST', body: JSON.stringify({ source, plugin }) }); await loadInstalled(); } catch(e:any){ setError(e.message); }
-  }, [backendBase, loadInstalled]);
+  const updatePlugin = React.useCallback(async (source: string, plugin: string, displayName?: string) => {
+    try {
+      await jfetch(`${backendBase}/api/v1/plugins/update`, { method:'POST', body: JSON.stringify({ source, plugin }) });
+      await loadInstalled();
+      showPluginActionMessage(`${displayName || plugin} updated.`, 'success');
+    } catch(e:any){
+      const friendly = formatPluginActionError(e, displayName || plugin, 'update');
+      showPluginActionMessage(friendly || e.message || 'Failed to update plugin');
+    }
+  }, [backendBase, loadInstalled, showPluginActionMessage]);
 
   const reloadPlugin = React.useCallback(async (plugin: string) => {
     try {
@@ -1405,7 +1470,7 @@ const PluginSettings = () => {
                 alert('Latest version not found in loaded catalogs. Refresh sources and try again.');
                 return;
               }
-              await updatePlugin(match.source, p.name);
+              await updatePlugin(match.source, p.name, p.human_name || p.name);
             };
 
             const handleReinstall = async () => {
@@ -1414,7 +1479,7 @@ const PluginSettings = () => {
                 alert('No catalog entry found to reinstall this plugin.');
                 return;
               }
-              await startInstall(match.source, p.name, true);
+              await startInstall(match.source, p.name, true, p.human_name || p.name);
             };
 
             const handleConfigure = async () => {
@@ -1428,7 +1493,8 @@ const PluginSettings = () => {
               }
             };
             const statusTheme = pluginStatusTheme(p.status);
-            const requirementLabel = p.required_backend ? formatVersionRequirement(p.required_backend) : null;
+            const requirementSpec = inferPluginBackendRequirement(p);
+            const requirementLabel = requirementSpec ? formatVersionRequirement(requirementSpec) : null;
             const statusDetail = (() => {
               if (p.status === 'incompatible') {
                 if (requirementLabel) {
@@ -1904,8 +1970,8 @@ const PluginSettings = () => {
               {(!serverLink && !docsLink) && <span style={{fontSize:10, opacity:0.4}}>—</span>}
             </td>
             <td style={thtd}>
-              {!inst && <button style={smallBtn} onClick={()=> { if (selectedSource) startInstall(selectedSource, e.plugin_name); }} disabled={!selectedSource}>Install</button>}
-              {inst && newer && <button style={smallBtn} onClick={()=>updatePlugin(selectedSource, e.plugin_name)}>Update</button>}
+              {!inst && <button style={smallBtn} onClick={()=> { if (selectedSource) startInstall(selectedSource, e.plugin_name, false, e.manifest?.humanName || e.manifest?.human_name || e.plugin_name); }} disabled={!selectedSource}>Install</button>}
+              {inst && newer && <button style={smallBtn} onClick={()=>updatePlugin(selectedSource, e.plugin_name, e.manifest?.humanName || e.manifest?.human_name || e.plugin_name)}>Update</button>}
               {inst && !newer && <span style={{fontSize:10, opacity:0.7}}>Installed</span>}
             </td>
           </tr>;
@@ -1938,6 +2004,30 @@ const PluginSettings = () => {
       default:
         return '#6e7681';
     }
+  };
+
+  const sanitizeRequirement = (rule: string | null | undefined) => {
+    if (!rule) return '';
+    const trimmed = rule.trim();
+    if (!trimmed) return '';
+    return trimmed.replace(/\s+/g, ' ');
+  };
+
+  const inferPluginBackendRequirement = (plugin: InstalledPlugin | null | undefined): string | null => {
+    if (!plugin) return null;
+    const direct = sanitizeRequirement(plugin.required_backend);
+    if (direct && direct !== '0.0.0' && direct !== '>=0.0.0' && direct !== '= 0.0.0') {
+      return direct;
+    }
+    const rawError = typeof plugin.last_error === 'string' ? plugin.last_error : '';
+    if (rawError) {
+      const match = rawError.match(/requires backend ([^;\n]+)(?:;|$)/i);
+      if (match && match[1]) {
+        const inferred = sanitizeRequirement(match[1]);
+        if (inferred) return inferred;
+      }
+    }
+    return direct || null;
   };
 
   const infoItemStyle: React.CSSProperties = {
@@ -1987,6 +2077,27 @@ const PluginSettings = () => {
     letterSpacing: 0.4,
     background: color,
   });
+  const pluginActionNoticePalette = {
+    error: { bg: '#401', border: '#f85149', color: '#fbb' },
+    info: { bg: '#123', border: '#246', color: '#9fc5ff' },
+    success: { bg: '#142', border: '#2e8', color: '#b9ffcb' },
+  } as const;
+  const pluginActionNoticeStyle = (level: 'error' | 'info' | 'success'): React.CSSProperties => {
+    const palette = pluginActionNoticePalette[level] || pluginActionNoticePalette.info;
+    return {
+      background: palette.bg,
+      border: `1px solid ${palette.border}`,
+      color: palette.color,
+      padding: '10px 12px',
+      borderRadius: 6,
+      fontSize: 12,
+      marginBottom: 12,
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      gap: 12,
+    };
+  };
 
   const renderHealthCard = (title: string, component: any, kind: 'stash' | 'database') => {
     if (!component) return null;
@@ -2422,6 +2533,12 @@ const PluginSettings = () => {
       </div>
       <div style={sectionStyle}>
         <h3 style={headingStyle}>Installed Plugins {loading.installed && <span style={{fontSize:11, opacity:0.7}}>loading…</span>}</h3>
+        {pluginActionNotice && (
+          <div style={pluginActionNoticeStyle(pluginActionNotice.level)}>
+            <span style={{ flex: 1 }}>{pluginActionNotice.message}</span>
+            <button style={smallBtn} onClick={() => setPluginActionNotice(null)}>Dismiss</button>
+          </div>
+        )}
         {renderInstalled()}
   {openConfig && pluginSettings[openConfig] && <div style={{marginTop:12, padding:10, border:'1px solid #333', borderRadius:6, background:'#151515'}}>
           <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
@@ -2439,6 +2556,12 @@ const PluginSettings = () => {
       </div>
       <div style={sectionStyle}>
         <h3 style={headingStyle}>Catalog {selectedSource && <span style={{fontSize:11, opacity:0.7}}>({selectedSource})</span>} {loading.catalog && <span style={{fontSize:11, opacity:0.7}}>loading…</span>}</h3>
+        {pluginActionNotice && (
+          <div style={pluginActionNoticeStyle(pluginActionNotice.level)}>
+            <span style={{ flex: 1 }}>{pluginActionNotice.message}</span>
+            <button style={smallBtn} onClick={() => setPluginActionNotice(null)}>Dismiss</button>
+          </div>
+        )}
         {renderCatalog()}
       </div>
     </div>
