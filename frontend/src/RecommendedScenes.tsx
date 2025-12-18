@@ -149,6 +149,7 @@
   const Button = Bootstrap.Button || ((p:any)=>React.createElement('button', p, p.children));
 
   const ROUTE = '/plugins/recommended-scenes';
+  const RECOMMENDATION_CONTEXT = 'global_feed';
   const LS_PER_PAGE_KEY = 'aiRec.perPage';
   const LS_ZOOM_KEY = 'aiRec.zoom';
   const LS_PAGE_KEY = 'aiRec.page';
@@ -234,6 +235,97 @@
   const compositeRawRef = useRef({} as any); // raw text for tags/performers inputs
   useEffect(()=>{ (configValuesRef as any).current = configValues; }, [configValues]);
   const currentRecommender = React.useMemo(()=> (recommenders||[])?.find((r:any)=> r.id===recommenderId), [recommenders, recommenderId]);
+  const preferenceSaveTimerRef = useRef(null as any);
+  const lastPersistedSnapshotRef = useRef(null as any);
+  const serverSeedConfigRef = useRef({} as any);
+  const backendBaseRef = useRef('');
+
+  useEffect(()=>{
+    return ()=>{
+      if(preferenceSaveTimerRef.current){
+        clearTimeout(preferenceSaveTimerRef.current);
+      }
+    };
+  }, []);
+
+  function sanitizeConfigPayload(config:any){
+    const out:any = {};
+    if(config && typeof config === 'object'){
+      Object.keys(config).forEach((key)=>{
+        const value = (config as any)[key];
+        if(value !== undefined){
+          out[key] = value;
+        }
+      });
+    }
+    return out;
+  }
+
+  function shouldPersistField(field:any){
+    if(!field) return true;
+    if(typeof field.persist === 'undefined') return true;
+    return Boolean(field.persist);
+  }
+
+  function isFieldPersistable(definition:any, fieldName:string){
+    if(!definition || !Array.isArray(definition.config)) return false;
+    const field = definition.config.find((f:any)=> f.name === fieldName);
+    if(!field) return false;
+    return shouldPersistField(field);
+  }
+
+  function buildPersistableConfig(definition:any, values:any){
+    if(!definition || !Array.isArray(definition.config)) return {};
+    const out:any = {};
+    definition.config.forEach((field:any)=>{
+      if(!shouldPersistField(field)) return;
+      if(values && Object.prototype.hasOwnProperty.call(values, field.name)){
+        const value = values[field.name];
+        if(value !== undefined){
+          out[field.name] = value;
+        }
+      }
+    });
+    return out;
+  }
+
+  const persistPreference = React.useCallback(async () => {
+    const base = backendBaseRef.current;
+    if(!base || !recommenderId || !currentRecommender) return;
+    const persistable = sanitizeConfigPayload(buildPersistableConfig(currentRecommender, (configValuesRef as any).current || {}));
+    const payload = {
+      context: RECOMMENDATION_CONTEXT,
+      recommenderId,
+      config: persistable,
+    };
+    const signature = JSON.stringify(payload);
+    if(lastPersistedSnapshotRef.current === signature){
+      return;
+    }
+    try {
+      const url = `${base}/api/v1/recommendations/preferences`;
+      await fetch(url, withSharedKeyHeaders({
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }));
+      lastPersistedSnapshotRef.current = signature;
+    } catch(err){
+      warn('Failed to persist recommender preference', err);
+    }
+  }, [recommenderId, currentRecommender, withSharedKeyHeaders]);
+
+  const schedulePreferencePersist = React.useCallback((reason: 'recommender' | 'config', opts?: { debounce?: boolean }) => {
+    if(!backendBaseRef.current || !recommenderId || !currentRecommender) return;
+    const delay = reason === 'recommender' ? 25 : (opts?.debounce ? 800 : 220);
+    if(preferenceSaveTimerRef.current){
+      clearTimeout(preferenceSaveTimerRef.current);
+    }
+    preferenceSaveTimerRef.current = setTimeout(()=>{
+      preferenceSaveTimerRef.current = null;
+      persistPreference();
+    }, delay);
+  }, [recommenderId, currentRecommender, persistPreference]);
 
   // ---------------- Tag Include/Exclude Selector (Unified) -----------------
   // Sole implementation: single bar with inline mode toggle (+ include / - exclude) and chips inline.
@@ -1029,19 +1121,25 @@
   useEffect(()=>{
     if(!currentRecommender) return;
     const defs = (currentRecommender as any).config || [];
-    let cached = configCacheRef.current[currentRecommender.id];
-    if(!cached){
-      cached = {};
-      for(const field of defs){
-        cached[field.name] = field.default;
-        if(field.type==='tags' || field.type==='performers'){
-          compositeRawRef.current[field.name] = '';
-        }
+    const base:any = {};
+    for(const field of defs){
+      base[field.name] = field.default;
+      if(field.type === 'tags' || field.type === 'performers'){
+        compositeRawRef.current[field.name] = '';
       }
-      configCacheRef.current[currentRecommender.id] = cached;
     }
-    setConfigValues({...cached});
-  }, [currentRecommender]);
+    const existing = configCacheRef.current[currentRecommender.id];
+    let merged = existing ? { ...base, ...existing } : { ...base };
+    const seeded = serverSeedConfigRef.current[currentRecommender.id];
+    if(seeded){
+      merged = { ...merged, ...seeded };
+      delete serverSeedConfigRef.current[currentRecommender.id];
+    }
+    configCacheRef.current[currentRecommender.id] = merged;
+    setConfigValues({ ...merged });
+    (configValuesRef as any).current = merged;
+    schedulePreferencePersist('recommender');
+  }, [currentRecommender, schedulePreferencePersist]);
 
   function scheduleFetchAfterConfigChange(previousPage:number){
     // If page changed to 1 because of config change, we rely on page effect; otherwise manual fetch
@@ -1069,6 +1167,9 @@
     } else {
       applyConfigImmediate({ [name]: value });
       scheduleFetchAfterConfigChange(prevPage);
+    }
+    if(currentRecommender && isFieldPersistable(currentRecommender, name)){
+      schedulePreferencePersist('config', { debounce: !!opts?.debounce });
     }
   }
 
@@ -1235,6 +1336,10 @@
 
     const [backendBase, setBackendBase] = useState(() => resolveBackendBase());
 
+    useEffect(() => {
+      backendBaseRef.current = backendBase || '';
+    }, [backendBase]);
+
     const applyBackendBase = useCallback((nextRaw: string) => {
       const next = sanitizeBase(nextRaw || '');
       let changed = false;
@@ -1286,7 +1391,7 @@
           try { backendHealthApi.reportChecking(backendBase); } catch (_) {}
         }
   const ctxPage = pageAPI?.get?.()?.page;
-        const recContext = 'global_feed';
+        const recContext = RECOMMENDATION_CONTEXT;
         const url = `${backendBase}/api/v1/recommendations/recommenders?context=${encodeURIComponent(recContext)}`;
         const res = await fetch(url, withSharedKeyHeaders());
         if(!res.ok) throw new Error('status '+res.status);
@@ -1306,15 +1411,32 @@
             setError(null);
             return { success: true, recommenderId: null };
           }
+          let savedId: string | null = typeof j.savedRecommenderId === 'string' ? j.savedRecommenderId : null;
+          let savedDef = savedId ? defs.find(r => r.id === savedId) : null;
+          if(savedDef){
+            const seedConfig = sanitizeConfigPayload(j.savedConfig || {});
+            serverSeedConfigRef.current[savedDef.id] = seedConfig;
+            lastPersistedSnapshotRef.current = JSON.stringify({
+              context: recContext,
+              recommenderId: savedDef.id,
+              config: seedConfig,
+            });
+          } else {
+            savedId = null;
+          }
           const existingMatch = recommenderId && defs.find(r => r.id === recommenderId);
           const defaultDef = (j.defaultRecommenderId && defs.find(r=>r.id===j.defaultRecommenderId)) || defs[0];
           let nextId: string | null = null;
-          if(existingMatch){
+          if(savedDef){
+            nextId = savedDef.id;
+          } else if(existingMatch){
             nextId = existingMatch.id;
           } else if(defaultDef){
             if((w as any).AIDebug) console.log('[RecommendedScenes] default recommender', defaultDef.id);
             nextId = defaultDef.id;
-            setRecommenderId(defaultDef.id);
+          }
+          if(nextId){
+            setRecommenderId((prev)=> prev === nextId ? prev : nextId);
           }
           if (backendHealthApi && typeof backendHealthApi.reportOk === 'function') {
             try { backendHealthApi.reportOk(backendBase); } catch (_) {}
@@ -1358,8 +1480,8 @@
         }
         const ctx = pageAPI?.get ? pageAPI.get() : null; // reserved for future context mapping
         const offset = (page-1) * itemsPerPage;
-        const body:any = { context: 'global_feed', recommenderId: activeRecommenderId, limit: itemsPerPage, offset, config: configValuesRef.current || {} };
-        if(ctx){ body.context = 'global_feed'; }
+        const body:any = { context: RECOMMENDATION_CONTEXT, recommenderId: activeRecommenderId, limit: itemsPerPage, offset, config: configValuesRef.current || {} };
+        if(ctx){ body.context = RECOMMENDATION_CONTEXT; }
         const url = `${backendBase}/api/v1/recommendations/query`;
         if((w as any).AIDebug) console.log('[RecommendedScenes] query', body);
         const res = await fetch(url, withSharedKeyHeaders({ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) }));
