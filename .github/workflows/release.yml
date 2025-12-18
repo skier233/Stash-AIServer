@@ -198,6 +198,8 @@ jobs:
           fi
           cp backend/config.sample.env "$BACK_STAGE/config.env"
           mkdir -p "$BACK_STAGE/data" "$BACK_STAGE/plugins"
+          mkdir -p "$BACK_STAGE/scripts/install"
+          cp -R scripts/install/conda "$BACK_STAGE/scripts/"
           (cd "$BACK_STAGE" && zip -r "$ROOT/release/stash-ai-server-backend-${VERSION}.zip" .)
           rm -rf "$BACK_STAGE"
 
@@ -212,6 +214,8 @@ jobs:
           fi
           cp backend/config.docker.sample.env "$DOCKER_STAGE/config.env"
           mkdir -p "$DOCKER_STAGE/data" "$DOCKER_STAGE/plugins"
+          mkdir -p "$DOCKER_STAGE/scripts/install"
+          cp -R scripts/install/docker "$DOCKER_STAGE/scripts/"
           (cd "$DOCKER_STAGE" && zip -r "$ROOT/release/stash-ai-server-docker-${VERSION}.zip" .)
           rm -rf "$DOCKER_STAGE"
 
