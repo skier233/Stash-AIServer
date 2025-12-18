@@ -7,7 +7,35 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$rootDir = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..\..')).Path
+
+function Get-StashRootDir {
+    param([string]$StartPath)
+
+    if ($env:STASH_AI_ROOT) {
+        return (Resolve-Path -LiteralPath $env:STASH_AI_ROOT).Path
+    }
+
+    $current = $StartPath
+    while ($true) {
+        $hasMarker = (
+            (Test-Path -LiteralPath (Join-Path $current 'docker-compose.yml') -PathType Leaf -ErrorAction SilentlyContinue) -or
+            (Test-Path -LiteralPath (Join-Path $current 'config.env') -PathType Leaf -ErrorAction SilentlyContinue) -or
+            (Test-Path -LiteralPath (Join-Path $current 'environment.yml') -PathType Leaf -ErrorAction SilentlyContinue) -or
+            (Test-Path -LiteralPath (Join-Path $current 'backend') -PathType Container -ErrorAction SilentlyContinue)
+        )
+        if ($hasMarker) {
+            return $current
+        }
+        $parent = Split-Path -Path $current -Parent
+        if (-not $parent -or $parent -eq $current) {
+            break
+        }
+        $current = $parent
+    }
+    throw 'Unable to locate project root. Set STASH_AI_ROOT environment variable.'
+}
+
+$rootDir = Get-StashRootDir -StartPath ((Resolve-Path -LiteralPath $PSScriptRoot).Path)
 if (-not $ComposeFile) {
     $ComposeFile = Join-Path $rootDir 'docker-compose.yml'
 }
@@ -34,12 +62,11 @@ if (-not $composeCommand) {
 }
 
 function Invoke-Compose {
-    param([string[]]$Args)
-    & $composeCommand @composePrefix -f $ComposeFile @Args
+    & $composeCommand @composePrefix -f $ComposeFile @args
 }
 
 Write-Host "Pulling latest image for $Service"
-Invoke-Compose -Args @('pull', $Service)
+Invoke-Compose 'pull' $Service
 
 $upArgs = @('up')
 if (-not $NoDetach) {
@@ -50,10 +77,10 @@ if ($Service) {
 }
 
 Write-Host "Restarting $Service"
-Invoke-Compose -Args $upArgs
+Invoke-Compose @upArgs
 
 if ($FollowLogs) {
     Write-Host ''
     Write-Host 'Tailing logs (Ctrl+C to stop)'
-    Invoke-Compose -Args @('logs','-f',$Service)
+    Invoke-Compose 'logs' '-f' $Service
 }

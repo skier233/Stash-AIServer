@@ -2,7 +2,30 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd -- "$SCRIPT_DIR/../../.." && pwd)"
+
+resolve_root_dir() {
+  if [[ -n "${STASH_AI_ROOT:-}" ]]; then
+    ROOT_DIR="$(cd -- "$STASH_AI_ROOT" && pwd)"
+    return
+  fi
+  local candidate="$SCRIPT_DIR"
+  while true; do
+    if [[ -f "$candidate/docker-compose.yml" || -f "$candidate/config.env" || -f "$candidate/environment.yml" || -d "$candidate/backend" ]]; then
+      ROOT_DIR="$candidate"
+      return
+    fi
+    local parent="$(dirname "$candidate")"
+    if [[ "$parent" == "$candidate" ]]; then
+      break
+    fi
+    candidate="$parent"
+  done
+  echo "Unable to locate project root. Set STASH_AI_ROOT." >&2
+  exit 1
+}
+
+resolve_root_dir
+
 DEFAULT_ENV_FILE="$ROOT_DIR/environment.yml"
 DEFAULT_ENV_NAME="stash-ai-server"
 
@@ -56,17 +79,19 @@ if ! command -v conda >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! conda env list | awk '{print $1}' | grep -Fxq "$ENV_NAME"; then
+CONDA_CMD=(conda --no-plugins)
+
+if ! "${CONDA_CMD[@]}" env list | awk '{print $1}' | grep -Fxq "$ENV_NAME"; then
   echo "Environment '$ENV_NAME' does not exist. Run install.sh first." >&2
   exit 1
 fi
 
 if [[ -f "$ENV_FILE" ]]; then
   echo "Refreshing dependencies from $ENV_FILE"
-  conda env update --name "$ENV_NAME" --file "$ENV_FILE" --prune
+  "${CONDA_CMD[@]}" env update --name "$ENV_NAME" --file "$ENV_FILE" --prune
 fi
 
 echo "Forcing pip to pull the newest stash-ai-server wheel"
-conda run -n "$ENV_NAME" python -m pip install --upgrade --no-cache-dir stash-ai-server
+"${CONDA_CMD[@]}" run -n "$ENV_NAME" python -m pip install --upgrade --no-cache-dir stash-ai-server
 
-echo "Restart the server with scripts/install/conda/start.sh --name $ENV_NAME"
+echo "Restart the server with scripts/conda/start.sh --name $ENV_NAME (scripts/install/conda/start.sh in source)."

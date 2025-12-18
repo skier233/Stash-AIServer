@@ -2,7 +2,30 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd -- "$SCRIPT_DIR/../../.." && pwd)"
+
+resolve_root_dir() {
+  if [[ -n "${STASH_AI_ROOT:-}" ]]; then
+    ROOT_DIR="$(cd -- "$STASH_AI_ROOT" && pwd)"
+    return
+  fi
+  local candidate="$SCRIPT_DIR"
+  while true; do
+    if [[ -f "$candidate/docker-compose.yml" || -f "$candidate/config.env" || -f "$candidate/environment.yml" || -d "$candidate/backend" ]]; then
+      ROOT_DIR="$candidate"
+      return
+    fi
+    local parent="$(dirname "$candidate")"
+    if [[ "$parent" == "$candidate" ]]; then
+      break
+    fi
+    candidate="$parent"
+  done
+  echo "Unable to locate project root. Set STASH_AI_ROOT." >&2
+  exit 1
+}
+
+resolve_root_dir
+
 DEFAULT_ENV_FILE="$ROOT_DIR/environment.yml"
 DEFAULT_ENV_NAME="stash-ai-server"
 PRUNE_ENV=1
@@ -59,21 +82,23 @@ if ! command -v conda >/dev/null 2>&1; then
   exit 1
 fi
 
-if conda env list | awk '{print $1}' | grep -Fxq "$ENV_NAME"; then
+CONDA_CMD=(conda --no-plugins)
+
+if "${CONDA_CMD[@]}" env list | awk '{print $1}' | grep -Fxq "$ENV_NAME"; then
   echo "Updating existing environment '$ENV_NAME' with $ENV_FILE"
-  UPDATE_CMD=(conda env update --name "$ENV_NAME" --file "$ENV_FILE")
+  UPDATE_CMD=("${CONDA_CMD[@]}" env update --name "$ENV_NAME" --file "$ENV_FILE")
   if [[ $PRUNE_ENV -ne 0 ]]; then
     UPDATE_CMD+=(--prune)
   fi
   "${UPDATE_CMD[@]}"
 else
   echo "Creating environment '$ENV_NAME' from $ENV_FILE"
-  conda env create --name "$ENV_NAME" --file "$ENV_FILE"
+  "${CONDA_CMD[@]}" env create --name "$ENV_NAME" --file "$ENV_FILE"
 fi
 
 echo "Installing latest stash-ai-server package from PyPI"
-conda run -n "$ENV_NAME" python -m pip install --upgrade --no-cache-dir stash-ai-server
+"${CONDA_CMD[@]}" run -n "$ENV_NAME" python -m pip install --upgrade --no-cache-dir stash-ai-server
 
 echo
 echo "Environment '$ENV_NAME' is ready."
-echo "Use scripts/install/conda/start.sh --name $ENV_NAME to launch the server."
+echo "Use scripts/conda/start.sh --name $ENV_NAME to launch the server (scripts/install/conda/start.sh in source)."

@@ -2,7 +2,30 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd -- "$SCRIPT_DIR/../../.." && pwd)"
+
+resolve_root_dir() {
+  if [[ -n "${STASH_AI_ROOT:-}" ]]; then
+    ROOT_DIR="$(cd -- "$STASH_AI_ROOT" && pwd)"
+    return
+  fi
+  local candidate="$SCRIPT_DIR"
+  while true; do
+    if [[ -f "$candidate/docker-compose.yml" || -f "$candidate/config.env" || -f "$candidate/environment.yml" || -d "$candidate/backend" ]]; then
+      ROOT_DIR="$candidate"
+      return
+    fi
+    local parent="$(dirname "$candidate")"
+    if [[ "$parent" == "$candidate" ]]; then
+      break
+    fi
+    candidate="$parent"
+  done
+  echo "Unable to locate project root. Set STASH_AI_ROOT." >&2
+  exit 1
+}
+
+resolve_root_dir
+
 COMPOSE_FILE="$ROOT_DIR/docker-compose.yml"
 STASH_ROOT=""
 
@@ -93,5 +116,5 @@ compose pull backend_prod
 echo
 cat <<EOF
 Docker install ready.
-Use scripts/install/docker/start.sh to launch the container.
+Use scripts/docker/start.sh to launch the container (scripts/install/docker/start.sh in source).
 EOF

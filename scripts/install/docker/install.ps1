@@ -1,9 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$ComposeFile,
-    [string]$Service = 'backend_prod',
-    [switch]$FollowLogs,
-    [switch]$NoDetach
+    [string]$StashRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -44,13 +42,29 @@ if (-not (Test-Path -LiteralPath $ComposeFile)) {
 }
 $ComposeFile = (Resolve-Path -LiteralPath $ComposeFile).Path
 
+$placeholder = '/path/to/your/stash_root_folder'
+$composeText = Get-Content -LiteralPath $ComposeFile -Raw
+$placeholderPresent = $composeText.Contains($placeholder)
+if ($placeholderPresent) {
+    if (-not $StashRoot) {
+        throw 'The compose file still contains the placeholder path. Re-run with -StashRoot <path>.'
+    }
+    $resolvedStashRoot = (Resolve-Path -LiteralPath $StashRoot).Path
+    $composeText = $composeText.Replace($placeholder, $resolvedStashRoot)
+    Set-Content -LiteralPath $ComposeFile -Value $composeText
+    Write-Host "Updated docker-compose.yml to mount $resolvedStashRoot"
+}
+
+New-Item -ItemType Directory -Path (Join-Path $rootDir 'data') -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $rootDir 'plugins') -Force | Out-Null
+
 if (Get-Command docker -ErrorAction SilentlyContinue) {
     try {
         docker compose version *> $null
         $composeCommand = 'docker'
         $composePrefix = @('compose')
     } catch {
-        # Ignore and try docker-compose
+        # fall back to docker-compose
     }
 }
 if (-not $composeCommand -and (Get-Command docker-compose -ErrorAction SilentlyContinue)) {
@@ -65,19 +79,9 @@ function Invoke-Compose {
     & $composeCommand @composePrefix -f $ComposeFile @args
 }
 
-$upArgs = @('up')
-if (-not $NoDetach) {
-    $upArgs += '-d'
-}
-if ($Service) {
-    $upArgs += $Service
-}
+Write-Host 'Pulling latest ghcr.io stash-ai-server image'
+Invoke-Compose 'pull' 'backend_prod'
 
-Write-Host "Starting $Service via docker compose"
-Invoke-Compose @upArgs
-
-if ($FollowLogs) {
-    Write-Host ''
-    Write-Host 'Tailing logs (Ctrl+C to stop)'
-    Invoke-Compose 'logs' '-f' $Service
-}
+Write-Host ''
+Write-Host 'Docker install ready.'
+Write-Host 'Use scripts/docker/start.ps1 to launch the container (scripts/install/docker/start.ps1 in source).'

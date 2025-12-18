@@ -198,8 +198,14 @@ jobs:
           fi
           cp backend/config.sample.env "$BACK_STAGE/config.env"
           mkdir -p "$BACK_STAGE/data" "$BACK_STAGE/plugins"
-          mkdir -p "$BACK_STAGE/scripts/install"
+          mkdir -p "$BACK_STAGE/scripts"
           cp -R scripts/install/conda "$BACK_STAGE/scripts/"
+          cp scripts/install/conda/install.sh "$BACK_STAGE/scripts/install.sh"
+          cp scripts/install/conda/start.sh "$BACK_STAGE/scripts/start.sh"
+          cp scripts/install/conda/update.sh "$BACK_STAGE/scripts/update.sh"
+          cp scripts/install/conda/install.ps1 "$BACK_STAGE/scripts/install.ps1"
+          cp scripts/install/conda/start.ps1 "$BACK_STAGE/scripts/start.ps1"
+          cp scripts/install/conda/update.ps1 "$BACK_STAGE/scripts/update.ps1"
           (cd "$BACK_STAGE" && zip -r "$ROOT/release/stash-ai-server-backend-${VERSION}.zip" .)
           rm -rf "$BACK_STAGE"
 
@@ -214,8 +220,14 @@ jobs:
           fi
           cp backend/config.docker.sample.env "$DOCKER_STAGE/config.env"
           mkdir -p "$DOCKER_STAGE/data" "$DOCKER_STAGE/plugins"
-          mkdir -p "$DOCKER_STAGE/scripts/install"
+          mkdir -p "$DOCKER_STAGE/scripts"
           cp -R scripts/install/docker "$DOCKER_STAGE/scripts/"
+          cp scripts/install/docker/install.sh "$DOCKER_STAGE/scripts/install.sh"
+          cp scripts/install/docker/start.sh "$DOCKER_STAGE/scripts/start.sh"
+          cp scripts/install/docker/update.sh "$DOCKER_STAGE/scripts/update.sh"
+          cp scripts/install/docker/install.ps1 "$DOCKER_STAGE/scripts/install.ps1"
+          cp scripts/install/docker/start.ps1 "$DOCKER_STAGE/scripts/start.ps1"
+          cp scripts/install/docker/update.ps1 "$DOCKER_STAGE/scripts/update.ps1"
           (cd "$DOCKER_STAGE" && zip -r "$ROOT/release/stash-ai-server-docker-${VERSION}.zip" .)
           rm -rf "$DOCKER_STAGE"
 
