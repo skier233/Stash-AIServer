@@ -32,6 +32,18 @@ class SystemHealthSnapshot(BaseModel):
     )
     stash_api: HealthComponent
     database: HealthComponent
+    backend_version: Optional[str] = Field(
+        default=None,
+        description="Backend package version string reported by the server",
+    )
+    db_alembic_head: Optional[str] = Field(
+        default=None,
+        description="Latest Alembic migration revision applied to the backend database",
+    )
+    version_payload: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Full payload returned by the version endpoint for feature gating",
+    )
 
     class Config:
         use_enum_values = True

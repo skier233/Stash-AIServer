@@ -11,11 +11,11 @@ Only path constant PLUGIN_DIR still points to the on-disk extensions folder
 import os, pathlib, yaml, importlib, sys, traceback, tempfile, zipfile, shutil, types, logging
 from dataclasses import dataclass, field
 from typing import List, Dict, Set, Optional, Tuple, Iterable, Any
-from packaging import version as _v
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from stash_ai_server.db.session import SessionLocal, engine
 from stash_ai_server.core.config import settings
+from stash_ai_server.core.compat import version_satisfies
 from stash_ai_server.models.plugin import PluginMeta, PluginSetting, PluginSource, PluginCatalog
 from stash_ai_server.utils.string_utils import normalize_null_strings
 from stash_ai_server.plugin_runtime.settings_registry import register_settings
@@ -194,25 +194,20 @@ def _settings_definitions_from_raw(raw: dict | None) -> List[dict]:
     return definitions
 
 def _backend_version_ok(required: str) -> bool:
-    try:
-        cur = _v.parse(getattr(settings, 'version', '0.0.0'))
-        parts = [p.strip() for p in required.replace(',', ' ').split() if p.strip()]
-        for p in parts:
-            if p.startswith('>='):
-                if not (cur >= _v.parse(p[2:])): return False
-            elif p.startswith('>'):
-                if not (cur > _v.parse(p[1:])): return False
-            elif p.startswith('<='):
-                if not (cur <= _v.parse(p[2:])): return False
-            elif p.startswith('<'):
-                if not (cur < _v.parse(p[1:])): return False
-            elif p.startswith('=='):
-                if not (cur == _v.parse(p[2:])): return False
-            else:
-                if not (cur == _v.parse(p)): return False
-        return True
-    except Exception:
-        return False
+    version_value = getattr(settings, 'version', None)
+    return version_satisfies(version_value, required)
+
+
+def _format_backend_incompatibility(required: str | None) -> str:
+    detected = getattr(settings, 'version', None)
+    detected_label = detected or 'unknown'
+    requirement = (required or '').strip() or 'unspecified'
+    return f"requires backend {requirement}; detected {detected_label}"
+
+
+def _mark_incompatible(meta: PluginMeta, required: str | None) -> None:
+    meta.status = 'incompatible'
+    meta.last_error = _format_backend_incompatibility(required)
 
 def _load_or_create_meta(db: Session, manifest: PluginManifest) -> PluginMeta:
     row = db.execute(select(PluginMeta).where(PluginMeta.name == manifest.name)).scalar_one_or_none()
@@ -518,7 +513,7 @@ def initialize_plugins():
                     continue
                 meta = metas[name]
                 if not _backend_version_ok(mf.required_backend):
-                    meta.status = 'incompatible'; db.commit(); remaining.remove(name); progressed = True
+                    _mark_incompatible(meta, mf.required_backend); db.commit(); remaining.remove(name); progressed = True
                     print(f"[plugin] name={name} incompatible required_backend={mf.required_backend}", flush=True)
                     continue
                 try:
@@ -770,8 +765,7 @@ def reload_plugin(db: Session, plugin_name: str) -> PluginMeta:
     meta = _load_or_create_meta(db, manifest)
 
     if not _backend_version_ok(manifest.required_backend):
-        meta.status = 'incompatible'
-        meta.last_error = f"requires backend {manifest.required_backend}"
+        _mark_incompatible(meta, manifest.required_backend)
         db.commit()
         raise RuntimeError(f'backend version incompatible for {plugin_name}')
 

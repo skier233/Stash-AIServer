@@ -8,6 +8,7 @@ from typing import Tuple
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends
 
+from stash_ai_server.api.version import get_version_payload
 from stash_ai_server.core.api_key import require_shared_api_key
 from stash_ai_server.core.system_settings import get_value as sys_get
 from stash_ai_server.schemas.health import HealthComponent, HealthStatus, SystemHealthSnapshot
@@ -160,8 +161,13 @@ async def get_system_health() -> SystemHealthSnapshot:
         if _STATUS_ORDER[status] > _STATUS_ORDER[overall]:
             overall = status
 
+    version_payload = get_version_payload()
+
     return SystemHealthSnapshot(
         status=overall,
         stash_api=stash_component,
         database=db_component,
+        backend_version=version_payload.get('version'),
+        db_alembic_head=version_payload.get('db_alembic_head'),
+        version_payload=version_payload,
     )

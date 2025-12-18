@@ -3,6 +3,7 @@ description: AI Overhaul for Stash
 version: 0.5.0
 ui:
   javascript:
+    - VersionInfo.js
     - BackendBase.js
     - BackendHealth.js
     - PageContext.js

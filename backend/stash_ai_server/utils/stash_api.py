@@ -86,6 +86,7 @@ class StashAPI:
         else:
             tag = self.stash_interface.find_tag(tag_name)
             tag = tag["id"]  if tag else None
+        tag = int(tag) if tag is not None else None
         if tag:
             self.tag_id_cache[tag_name] = tag
             self.tag_name_cache[tag] = tag_name 
@@ -127,7 +128,10 @@ class StashAPI:
 
     async def get_image_paths_async(self, images_ids: list[int]) -> Dict[int, str]:
         return await asyncio.to_thread(self.get_image_paths, images_ids)
-    
+
+    async def get_image_paths_and_tags_async(self, images_ids: list[int]) -> Dict[int, Dict[str, Any]]:
+        return await asyncio.to_thread(self.get_image_paths_and_tags, images_ids)
+
     def get_image_paths(self, images_ids: list[int]) -> Dict[int, str]:
         """Fetch image paths for given image IDs."""
         out: Dict[int, str] = {}
@@ -147,6 +151,41 @@ class StashAPI:
                 # defensive: skip malformed entries
                 continue
         _log.warning("Fetched image paths for ids=%s -> %s", images_ids, out)
+        return out
+
+    def get_image_paths_and_tags(self, images_ids: list[int]) -> Dict[int, Dict[str, Any]]:
+        """Fetch image paths and tag ids for given image IDs."""
+        out: Dict[int, Dict[str, Any]] = {}
+        if not self.stash_interface:
+            _log.warning("Stash interface not configured; returning empty image metadata map")
+            return out
+        fragment = "id files {path} tags {id}"
+        try:
+            images = self.stash_interface.find_images(image_ids=images_ids, fragment=fragment)
+        except Exception as exc:  # pragma: no cover - defensive
+            _log.warning("Failed to fetch image metadata for ids=%s: %s", images_ids, exc)
+            return out
+
+        for img in images or []:
+            try:
+                image_id = int(img.get("id"))
+            except Exception:
+                continue
+            try:
+                files = img.get("files") or []
+                first_file = files[0] if files else {}
+                path = first_file.get("path")
+            except Exception:
+                path = None
+            tag_ids: list[int] = []
+            for raw_tag in img.get("tags") or []:
+                try:
+                    tag_id = int(raw_tag.get("id"))
+                except Exception:
+                    continue
+                tag_ids.append(tag_id)
+            out[image_id] = {"path": path, "tag_ids": tag_ids}
+
         return out
     
     async def get_all_images_async(self) -> List[str]:

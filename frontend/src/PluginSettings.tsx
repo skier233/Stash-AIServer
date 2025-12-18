@@ -28,6 +28,141 @@ const LEGACY_INTERACTIONS = 'AI_INTERACTIONS_ENABLED';
 const THIS_PLUGIN_NAME = 'AIOverhaul';
 // Fallback base used when no override has been persisted yet.
 const DEFAULT_BACKEND_BASE_URL = 'http://localhost:4153';
+
+const DEFAULT_MIN_BACKEND_VERSION = '>=0.8.0';
+const DEV_VERSION_PATTERN = /(dev|local|snapshot|dirty)/i;
+
+function resolveFrontendBackendRequirement(): string {
+  try {
+    if (typeof window !== 'undefined') {
+      const globals = window as any;
+      const override = globals.AIRequiredBackendVersion || globals.AI_MIN_BACKEND_VERSION || globals.AI_FRONTEND_MIN_BACKEND_VERSION;
+      if (typeof override === 'string' && override.trim()) {
+        return override.trim();
+      }
+    }
+  } catch (_) {}
+  return DEFAULT_MIN_BACKEND_VERSION;
+}
+
+const FRONTEND_MIN_BACKEND_VERSION = resolveFrontendBackendRequirement();
+
+type VersionClause = { operator: string; version: string };
+
+function isDevBuildVersion(value: string | null | undefined): boolean {
+  if (typeof value !== 'string') return false;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return false;
+  if (normalized.startsWith('0.0.0')) return true;
+  return DEV_VERSION_PATTERN.test(normalized);
+}
+
+function parseVersionClause(raw: string): VersionClause {
+  const trimmed = raw.trim();
+  if (!trimmed) return { operator: '==', version: '' };
+  for (const op of ['>=', '<=', '>', '<', '==', '=']) {
+    if (trimmed.startsWith(op)) {
+      return { operator: op, version: trimmed.slice(op.length).trim() };
+    }
+  }
+  return { operator: '==', version: trimmed };
+}
+
+type Token = { numeric: boolean; num: number; raw: string };
+
+function tokenizeVersion(value: string): Token[] {
+  return value
+    .split(/[.\-+]/)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0)
+    .map((segment) => {
+      const parsed = parseInt(segment, 10);
+      if (!Number.isNaN(parsed)) {
+        return { numeric: true, num: parsed, raw: segment.toLowerCase() };
+      }
+      return { numeric: false, num: 0, raw: segment.toLowerCase() };
+    });
+}
+
+function compareVersionsLoose(aRaw: string | null | undefined, bRaw: string | null | undefined): number {
+  const a = typeof aRaw === 'string' ? aRaw.trim() : '';
+  const b = typeof bRaw === 'string' ? bRaw.trim() : '';
+  if (!a && !b) return 0;
+  if (!a) return -1;
+  if (!b) return 1;
+  const tokensA = tokenizeVersion(a);
+  const tokensB = tokenizeVersion(b);
+  const max = Math.max(tokensA.length, tokensB.length);
+  for (let i = 0; i < max; i += 1) {
+    const tokenA = tokensA[i] || { numeric: true, num: 0, raw: '0' };
+    const tokenB = tokensB[i] || { numeric: true, num: 0, raw: '0' };
+    if (tokenA.numeric && tokenB.numeric) {
+      if (tokenA.num > tokenB.num) return 1;
+      if (tokenA.num < tokenB.num) return -1;
+      continue;
+    }
+    if (tokenA.numeric !== tokenB.numeric) {
+      return tokenA.numeric ? 1 : -1;
+    }
+    if (tokenA.raw === tokenB.raw) continue;
+    return tokenA.raw > tokenB.raw ? 1 : -1;
+  }
+  return 0;
+}
+
+function versionSatisfiesRule(actual: string | null | undefined, rule: string | null | undefined): boolean {
+  if (!rule || !rule.trim()) return true;
+  if (!actual) return false;
+  if (isDevBuildVersion(actual)) return true;
+  const clauses = rule.replace(/,/g, ' ').split(/\s+/).map((c) => c.trim()).filter(Boolean);
+  if (!clauses.length) return true;
+  for (const clause of clauses) {
+    const { operator, version } = parseVersionClause(clause);
+    if (!version) continue;
+    const cmp = compareVersionsLoose(actual, version);
+    switch (operator) {
+      case '>=':
+        if (cmp < 0) return false;
+        break;
+      case '>':
+        if (cmp <= 0) return false;
+        break;
+      case '<=':
+        if (cmp > 0) return false;
+        break;
+      case '<':
+        if (cmp >= 0) return false;
+        break;
+      case '=':
+      case '==':
+      default:
+        if (cmp !== 0) return false;
+        break;
+    }
+  }
+  return true;
+}
+
+function formatVersionRequirement(rule: string | null | undefined): string {
+  if (!rule || !rule.trim()) return '';
+  const clauses = rule.replace(/,/g, ' ').split(/\s+/).map((c) => c.trim()).filter(Boolean);
+  const symbolFor = (op: string) => {
+    if (op === '>=') return '≥';
+    if (op === '<=') return '≤';
+    if (op === '==') return '=';
+    if (op === '=') return '=';
+    return op;
+  };
+  return clauses
+    .map((clause) => {
+      const { operator, version } = parseVersionClause(clause);
+      if (!version) return '';
+      return `${symbolFor(operator)} ${version}`.trim();
+    })
+    .filter(Boolean)
+    .join(' ');
+}
+
 type SelfSettingDefinition = {
   key: string;
   label: string;
@@ -157,6 +292,51 @@ function applySharedKeyHeaders(opts?: any): any {
   return { ...(opts || {}), headers };
 }
 
+function detectFrontendVersion(): string | null {
+  try {
+    if (typeof window === 'undefined') {
+      return null;
+    }
+    const w: any = window as any;
+    const direct = w.AIOverhaulFrontendVersion;
+    if (direct !== undefined && direct !== null) {
+      const normalized = String(direct).trim();
+      if (normalized) return normalized;
+    }
+    const pluginApi = w.PluginApi;
+    if (pluginApi) {
+      const manifest = pluginApi.manifest || pluginApi.pluginManifest || (pluginApi.plugin && pluginApi.plugin.manifest);
+      if (manifest && typeof manifest.version === 'string') {
+        const normalized = manifest.version.trim();
+        if (normalized) return normalized;
+      }
+      if (pluginApi.plugin && typeof pluginApi.plugin.version === 'string') {
+        const normalized = pluginApi.plugin.version.trim();
+        if (normalized) return normalized;
+      }
+      if (pluginApi.plugins) {
+        const named = pluginApi.plugins.AIOverhaul || pluginApi.plugins.aioverhaul;
+        if (named) {
+          if (named.manifest && typeof named.manifest.version === 'string') {
+            const normalized = named.manifest.version.trim();
+            if (normalized) return normalized;
+          }
+          if (typeof named.version === 'string') {
+            const normalized = named.version.trim();
+            if (normalized) return normalized;
+          }
+        }
+      }
+    }
+    const manifest = w.AIOverhaulManifest;
+    if (manifest && typeof manifest.version === 'string') {
+      const normalized = manifest.version.trim();
+      if (normalized) return normalized;
+    }
+  } catch (_) {}
+  return null;
+}
+
 // Use shared backend base helper when available. The build outputs each file as
 // an IIFE so we also support the global `window.AIDefaultBackendBase` for
 // consumers that execute before modules are loaded.
@@ -234,6 +414,11 @@ const PluginSettings = () => {
   const [systemHealth, setSystemHealth] = React.useState(null as any);
   const [systemHealthError, setSystemHealthError] = React.useState(null as string | null);
   const [systemHealthLoading, setSystemHealthLoading] = React.useState(false);
+  const [backendVersion, setBackendVersion] = React.useState(null as string | null);
+  const [backendVersionStatus, setBackendVersionStatus] = React.useState('idle');
+  const [backendVersionError, setBackendVersionError] = React.useState(null as string | null);
+  const [backendVersionInfo, setBackendVersionInfo] = React.useState(null as any);
+  const [frontendVersion, setFrontendVersion] = React.useState(() => detectFrontendVersion()) as [string | null, (next: string | null) => void];
   const [openConfig, setOpenConfig] = React.useState(null as string | null);
   const [selectedSource, setSelectedSource] = React.useState(null as string | null);
   const [loading, setLoading] = React.useState({installed:false, sources:false, catalog:false} as {installed:boolean; sources:boolean; catalog:boolean; action?:string});
@@ -267,12 +452,36 @@ const PluginSettings = () => {
   const interactionsRef = React.useRef(interactionsEnabled);
   React.useEffect(() => { interactionsRef.current = interactionsEnabled; }, [interactionsEnabled]);
   const sharedKeyRef = React.useRef('');
+  const frontendVersionRef = React.useRef(frontendVersion);
   const backendHealthState = React.useMemo(() => {
     if (backendHealthApi && typeof backendHealthApi.getState === 'function') {
       return backendHealthApi.getState();
     }
     return null;
   }, [backendHealthApi, backendHealthTick]);
+  React.useEffect(() => { frontendVersionRef.current = frontendVersion; }, [frontendVersion]);
+  React.useEffect(() => {
+    if (frontendVersionRef.current) return;
+    let cancelled = false;
+    let timer: number | null = null;
+    const attempt = () => {
+      if (cancelled) return;
+      const resolved = detectFrontendVersion();
+      if (resolved) {
+        setFrontendVersion(resolved);
+        try { (window as any).AIOverhaulFrontendVersion = resolved; } catch (_) {}
+        return;
+      }
+      timer = window.setTimeout(attempt, 500);
+    };
+    attempt();
+    return () => {
+      cancelled = true;
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, []);
 
   // Derived: update availability map plugin->latestVersionAcrossCatalogs
   const latestVersions = React.useMemo(() => {
@@ -287,13 +496,7 @@ const PluginSettings = () => {
   }, [catalog]);
 
   function isVersionNewer(a: string, b: string) {
-    // naive semver-ish compare fall back lexicographic
-    try {
-      const pa = a.split(/\.|-/).map(x=>parseInt(x,10)||0);
-      const pb = b.split(/\.|-/).map(x=>parseInt(x,10)||0);
-      for (let i=0;i<Math.max(pa.length,pb.length);i++) { const av=pa[i]||0, bv=pb[i]||0; if (av>bv) return true; if (av<bv) return false; }
-      return false;
-    } catch { return a > b; }
+    return compareVersionsLoose(a, b) > 0;
   }
 
   // Loaders
@@ -318,12 +521,49 @@ const PluginSettings = () => {
   const loadSystemHealth = React.useCallback(async () => {
     setSystemHealthLoading(true);
     setSystemHealthError(null);
+    setBackendVersionStatus('loading');
+    setBackendVersionError(null);
+
+    const interpretVersionPayload = (snapshot: any) => {
+      if (!snapshot || typeof snapshot !== 'object') return null;
+      const candidate = snapshot.version_payload || snapshot.versionPayload;
+      const info = candidate && typeof candidate === 'object' ? { ...candidate } : {};
+      const fallbackVersionRaw = typeof snapshot.backend_version === 'string' ? snapshot.backend_version : (typeof snapshot.version === 'string' ? snapshot.version : undefined);
+      const fallbackVersion = fallbackVersionRaw ? fallbackVersionRaw.trim() : undefined;
+      const fallbackHeadRaw = typeof snapshot.db_alembic_head === 'string' ? snapshot.db_alembic_head : undefined;
+      const fallbackHead = fallbackHeadRaw ? fallbackHeadRaw.trim() : undefined;
+      if (fallbackVersion && !info.version) info.version = fallbackVersion;
+      if (fallbackHead && !info.db_alembic_head) info.db_alembic_head = fallbackHead;
+      return Object.keys(info).length ? info : null;
+    };
+
     try {
       const data = await jfetch(`${backendBase}/api/v1/system/health`);
       setSystemHealth(data);
+      const payload = interpretVersionPayload(data);
+      const normalizedVersion = payload && typeof payload.version === 'string' ? payload.version.trim() : '';
+      if (payload) {
+        setBackendVersionInfo(payload);
+      } else {
+        const fallbackHead = typeof data?.db_alembic_head === 'string' ? data.db_alembic_head.trim() : null;
+        setBackendVersionInfo({ version: normalizedVersion || null, db_alembic_head: fallbackHead });
+      }
+      if (normalizedVersion) {
+        setBackendVersion(normalizedVersion);
+        setBackendVersionStatus('ok');
+      } else {
+        setBackendVersion(null);
+        setBackendVersionStatus('error');
+        setBackendVersionError('Backend did not report a version');
+      }
     } catch (e: any) {
+      const message = e?.message || 'Failed to load system health';
       setSystemHealth(null);
-      setSystemHealthError(e?.message || 'Failed to load system health');
+      setSystemHealthError(message);
+      setBackendVersion(null);
+      setBackendVersionInfo(null);
+      setBackendVersionStatus('error');
+      setBackendVersionError(message);
     } finally {
       setSystemHealthLoading(false);
     }
@@ -606,7 +846,8 @@ const PluginSettings = () => {
     } else if (sources && sources.length && sources[0]?.name) {
       loadCatalogFor(sources[0].name);
     }
-  }, [loadInstalled, loadSources, loadCatalogFor, selectedSource, sources]);
+    void loadSystemHealth();
+  }, [loadInstalled, loadSources, loadCatalogFor, loadSystemHealth, selectedSource, sources]);
 
   // Initial loads
   React.useEffect(() => { loadPluginSettings(THIS_PLUGIN_NAME); }, [loadPluginSettings]);
@@ -1108,6 +1349,33 @@ const PluginSettings = () => {
       return null;
     };
 
+    const backendVersionLabel = backendVersion || (backendVersionStatus === 'loading' ? 'detecting…' : 'unknown');
+    const pluginStatusTheme = (status?: string) => {
+      const normalized = (status || 'unknown').toLowerCase();
+      switch (normalized) {
+        case 'active':
+          return { label: 'Active', bg: '#2ea043', fg: '#0d1117', detailColor: '#b6f0c1' };
+        case 'incompatible':
+          return { label: 'Incompatible', bg: '#f85149', fg: '#0d1117', detailColor: '#f9b3ad' };
+        case 'dependency_inactive':
+          return { label: 'Dependency inactive', bg: '#d4a72c', fg: '#0d1117', detailColor: '#fbe39c' };
+        case 'dependency_missing':
+          return { label: 'Dependency missing', bg: '#d4a72c', fg: '#0d1117', detailColor: '#fbe39c' };
+        case 'error':
+          return { label: 'Error', bg: '#f85149', fg: '#0d1117', detailColor: '#f9b3ad' };
+        case 'removed':
+          return { label: 'Removed', bg: '#484f58', fg: '#f0f6fc', detailColor: '#c9d1d9' };
+        default:
+          return { label: normalized.replace(/_/g, ' ') || 'unknown', bg: '#484f58', fg: '#f0f6fc', detailColor: '#c9d1d9' };
+      }
+    };
+    const shortenStatusDetail = (text: string) => {
+      const trimmed = (text || '').trim();
+      if (!trimmed) return trimmed;
+      if (trimmed.length > 220) return `${trimmed.slice(0, 217)}...`;
+      return trimmed;
+    };
+
     return (
       <table style={tableStyle}>
         <thead>
@@ -1159,6 +1427,23 @@ const PluginSettings = () => {
                 await loadPluginSettings(p.name);
               }
             };
+            const statusTheme = pluginStatusTheme(p.status);
+            const requirementLabel = p.required_backend ? formatVersionRequirement(p.required_backend) : null;
+            const statusDetail = (() => {
+              if (p.status === 'incompatible') {
+                if (requirementLabel) {
+                  return `Requires backend ${requirementLabel}; detected ${backendVersionLabel}.`;
+                }
+                if (p.last_error) {
+                  return shortenStatusDetail(p.last_error);
+                }
+                return 'This plugin targets a newer backend build.';
+              }
+              if (p.status && p.status !== 'active' && p.last_error) {
+                return shortenStatusDetail(p.last_error);
+              }
+              return null;
+            })();
 
             return (
               <tr key={p.name} style={{ background: rowBackground }}>
@@ -1188,9 +1473,18 @@ const PluginSettings = () => {
                 <td style={thtd}>{p.version || '—'}</td>
                 <td style={thtd}>{latest || '—'}</td>
                 <td style={thtd}>
-                  <div>{p.status || 'unknown'}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ background: statusTheme.bg, color: statusTheme.fg, fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, padding: '2px 8px', borderRadius: 999 }}>
+                      {statusTheme.label}
+                    </span>
+                  </div>
                   {p.migration_head && (
-                    <div style={{ fontSize: 10, opacity: 0.6 }}>Migration: {p.migration_head}</div>
+                    <div style={{ fontSize: 10, opacity: 0.6, marginTop: 4 }}>Migration: {p.migration_head}</div>
+                  )}
+                  {statusDetail && (
+                    <div style={{ fontSize: 10, marginTop: 4, color: statusTheme.detailColor }}>
+                      {statusDetail}
+                    </div>
                   )}
                 </td>
                 <td style={{ ...thtd, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
@@ -1633,6 +1927,67 @@ const PluginSettings = () => {
     }
   };
 
+  const backendStatusColor = (status: string | undefined) => {
+    switch (status) {
+      case 'ok':
+        return '#2ea043';
+      case 'checking':
+        return '#d4a72c';
+      case 'error':
+        return '#f85149';
+      default:
+        return '#6e7681';
+    }
+  };
+
+  const infoItemStyle: React.CSSProperties = {
+    border: '1px solid #333',
+    borderRadius: 6,
+    background: '#121212',
+    padding: '10px 12px',
+    minWidth: 0,
+  };
+  const infoLabelStyle: React.CSSProperties = {
+    fontSize: 10,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    opacity: 0.6,
+    marginBottom: 4,
+  };
+  const infoValueStyle: React.CSSProperties = {
+    fontSize: 12,
+    lineHeight: 1.4,
+  };
+  const statusGridStyle: React.CSSProperties = {
+    width: '100%',
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+    gap: 12,
+  };
+  const summaryCardStyle: React.CSSProperties = {
+    border: '1px solid #333',
+    borderRadius: 6,
+    background: '#161b22',
+    padding: '12px 14px',
+  };
+  const summaryListStyle: React.CSSProperties = {
+    margin: 0,
+    paddingLeft: 18,
+    fontSize: 12,
+    lineHeight: 1.4,
+  };
+  const infoBadgeStyle = (color: string): React.CSSProperties => ({
+    display: 'inline-block',
+    padding: '2px 6px',
+    borderRadius: 999,
+    fontSize: 10,
+    fontWeight: 600,
+    color: '#0d1117',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    background: color,
+  });
+
   const renderHealthCard = (title: string, component: any, kind: 'stash' | 'database') => {
     if (!component) return null;
     const rows: { label: string; value: string }[] = [];
@@ -1745,9 +2100,168 @@ const PluginSettings = () => {
   const backendNotice = backendHealthApi && typeof backendHealthApi.buildNotice === 'function'
     ? backendHealthApi.buildNotice(backendHealthState, { onRetry: retryBackendProbe, retryLabel: 'Retry backend request' })
     : null;
+  const backendConnectionStatus = backendHealthState?.status || 'idle';
+  let backendConnectionLabel = 'Idle';
+  switch (backendConnectionStatus) {
+    case 'ok':
+      backendConnectionLabel = 'Connected';
+      break;
+    case 'checking':
+      backendConnectionLabel = 'Checking';
+      break;
+    case 'error':
+      backendConnectionLabel = 'Offline';
+      break;
+    default:
+      backendConnectionLabel = 'Idle';
+      break;
+  }
+  const backendConnectionColor = backendStatusColor(backendConnectionStatus);
+  const backendBaseDisplay = backendHealthState && typeof backendHealthState.backendBase === 'string'
+    ? backendHealthState.backendBase.trim()
+    : '';
+  let backendConnectionErrorDetail: string | null = null;
+  if (backendConnectionStatus === 'error') {
+    const detail = backendHealthState?.lastError || backendHealthState?.message;
+    if (detail) {
+      backendConnectionErrorDetail = String(detail).trim();
+      if (backendConnectionErrorDetail.length > 160) {
+        backendConnectionErrorDetail = `${backendConnectionErrorDetail.slice(0, 157)}...`;
+      }
+    }
+  }
+
+  const backendVersionDisplay = (() => {
+    if (backendVersionStatus === 'loading' || backendVersionStatus === 'idle') return 'Checking...';
+    if (backendVersionStatus === 'ok') return backendVersion || 'Unknown';
+    if (backendVersionStatus === 'error') return backendVersion || 'Unavailable';
+    return backendVersion || 'Unknown';
+  })();
+  const backendSchemaHead = (() => {
+    const infoValue = backendVersionInfo && typeof backendVersionInfo.db_alembic_head === 'string' ? backendVersionInfo.db_alembic_head.trim() : '';
+    const snapshotValue = systemHealth && typeof systemHealth.db_alembic_head === 'string' ? systemHealth.db_alembic_head.trim() : '';
+    const selected = infoValue || snapshotValue;
+    return selected || null;
+  })();
+  const resolvedFrontendVersion = (() => {
+    if (typeof frontendVersion === 'string') {
+      const trimmed = frontendVersion.trim();
+      return trimmed || 'Unknown';
+    }
+    return 'Detecting...';
+  })();
   const backendDraftClean = normalizeBaseValue(backendDraft);
   const backendDraftChanged = backendDraftClean !== backendBase;
   const sharedKeyDirty = sharedKeyDraft !== (sharedKeyRef.current || '');
+
+  const backendRequirementSpec = FRONTEND_MIN_BACKEND_VERSION && FRONTEND_MIN_BACKEND_VERSION.trim()
+    ? FRONTEND_MIN_BACKEND_VERSION.trim()
+    : null;
+  const backendRequirementLabel = backendRequirementSpec ? formatVersionRequirement(backendRequirementSpec) : '';
+  const backendRequiresFrontendSpec = React.useMemo(() => {
+    const raw = backendVersionInfo?.frontend_min_version ?? backendVersionInfo?.frontendMinVersion;
+    if (typeof raw === 'string') {
+      const trimmed = raw.trim();
+      if (trimmed) return trimmed;
+    }
+    return null;
+  }, [backendVersionInfo]);
+  const backendRequiresFrontendLabel = backendRequiresFrontendSpec ? formatVersionRequirement(backendRequiresFrontendSpec) : '';
+  const backendRequirementMet = versionSatisfiesRule(backendVersion, backendRequirementSpec);
+  const frontendRequirementMet = versionSatisfiesRule(frontendVersion, backendRequiresFrontendSpec);
+  const compatibilityWarnings = React.useMemo(() => {
+    const warnings: string[] = [];
+    if (backendRequirementSpec) {
+      if (backendVersion) {
+        if (!backendRequirementMet) {
+          warnings.push(`Frontend requires backend ${backendRequirementLabel || backendRequirementSpec}, but the detected backend is ${backendVersion}.`);
+        }
+      } else if (backendVersionStatus !== 'loading') {
+        warnings.push(`Frontend requires backend ${backendRequirementLabel || backendRequirementSpec}, but the backend version is unavailable.`);
+      }
+    }
+    if (backendRequiresFrontendSpec) {
+      if (frontendVersion) {
+        if (!frontendRequirementMet) {
+          warnings.push(`Backend requires frontend ${backendRequiresFrontendLabel || backendRequiresFrontendSpec}, but this UI is ${frontendVersion}.`);
+        }
+      } else {
+        warnings.push(`Backend requires frontend ${backendRequiresFrontendLabel || backendRequiresFrontendSpec}, but the frontend version has not been detected yet.`);
+      }
+    }
+    return warnings;
+  }, [backendRequirementLabel, backendRequirementMet, backendRequirementSpec, backendRequiresFrontendLabel, backendRequiresFrontendSpec, backendVersion, backendVersionStatus, frontendRequirementMet, frontendVersion]);
+  const compatibilitySatisfiedLines = React.useMemo(() => {
+    const lines: string[] = [];
+    if (backendRequirementSpec && backendRequirementMet && backendVersion) {
+      const label = backendRequirementLabel || backendRequirementSpec;
+      lines.push(`Frontend requires backend ${label}; detected ${backendVersion}.`);
+    }
+    if (backendRequiresFrontendSpec && frontendRequirementMet && frontendVersion) {
+      const label = backendRequiresFrontendLabel || backendRequiresFrontendSpec;
+      lines.push(`Backend requires frontend ${label}; this UI is ${frontendVersion}.`);
+    }
+    return lines;
+  }, [backendRequirementLabel, backendRequirementMet, backendRequirementSpec, backendRequiresFrontendLabel, backendRequiresFrontendSpec, backendVersion, frontendRequirementMet, frontendVersion]);
+  const overallStatus = React.useMemo(() => {
+    type Level = 'ok' | 'warn' | 'error';
+    let level: Level = 'ok';
+    const details: string[] = [];
+    const push = (severity: Level, text?: string | null) => {
+      if (severity === 'error') {
+        level = 'error';
+      } else if (severity === 'warn' && level === 'ok') {
+        level = 'warn';
+      }
+      if (text) {
+        details.push(text);
+      }
+    };
+
+    if (backendConnectionStatus === 'error') {
+      push('error', backendConnectionErrorDetail || 'Frontend cannot reach the backend service.');
+    } else if (backendConnectionStatus === 'checking') {
+      push('warn', 'Backend connection still initializing.');
+    }
+
+    if (backendVersionStatus === 'error') {
+      push('warn', backendVersionError || 'Unable to determine backend version.');
+    } else if (backendVersionStatus === 'loading' || backendVersionStatus === 'idle') {
+      push('warn', 'Backend version check in progress.');
+    }
+
+    compatibilityWarnings.forEach((msg) => push('error', msg));
+
+    if (systemHealthError) {
+      push('warn', systemHealthError);
+    } else if (systemHealthLoading) {
+      push('warn', 'System health check running…');
+    }
+
+    const healthComponents = [
+      { label: 'Stash API', data: systemHealth?.stash_api },
+      { label: 'Database access', data: systemHealth?.database },
+    ];
+    healthComponents.forEach(({ label, data }) => {
+      if (!data) return;
+      if (data.status === 'error') {
+        push('error', `${label}: ${data.message || 'error'}`);
+      } else if (data.status === 'warn') {
+        push('warn', `${label}: ${data.message || 'warning'}`);
+      }
+    });
+
+    if (!details.length && compatibilitySatisfiedLines.length) {
+      details.push(...compatibilitySatisfiedLines);
+    }
+    if (!details.length) {
+      details.push('All required services reachable and versions compatible.');
+    }
+
+    const label = level === 'ok' ? 'Ready' : level === 'warn' ? 'Needs Attention' : 'Action Required';
+    const color = level === 'ok' ? '#2ea043' : level === 'warn' ? '#d4a72c' : '#f85149';
+    return { level, label, color, details };
+  }, [backendConnectionErrorDetail, backendConnectionStatus, backendVersionError, backendVersionStatus, compatibilitySatisfiedLines, compatibilityWarnings, systemHealth, systemHealthError, systemHealthLoading]);
 
   return (
     <div style={{padding:16, color:'#ddd', fontFamily:'sans-serif'}}>
@@ -1763,7 +2277,7 @@ const PluginSettings = () => {
             style={smallBtn}
             onClick={() => { void loadSystemHealth(); }}
             disabled={systemHealthLoading}
-          >{systemHealthLoading ? 'Checking…' : 'Refresh'}</button>
+          >{systemHealthLoading ? 'Checking...' : 'Refresh'}</button>
         </div>
         {systemHealthError && (
           <div style={{ fontSize: 12, color: '#f88', marginBottom: 6 }}>
@@ -1771,11 +2285,55 @@ const PluginSettings = () => {
           </div>
         )}
         {systemHealthLoading && (
-          <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 6 }}>Checking status…</div>
+          <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 6 }}>Checking status...</div>
         )}
         {!systemHealthLoading && !systemHealthError && !systemHealth && (
           <div style={{ fontSize: 12, opacity: 0.7 }}>Health information unavailable.</div>
         )}
+        <div style={{ ...statusGridStyle, marginBottom: (systemHealthLoading || systemHealth) ? 12 : 0 }}>
+          <div style={summaryCardStyle}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+              <span style={{ width: 18, height: 18, borderRadius: '50%', background: overallStatus.color, boxShadow: `0 0 12px ${overallStatus.color}66` }} />
+              <div>
+                <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.4, opacity: 0.7 }}>Configuration</div>
+                <div style={{ fontSize: 18, fontWeight: 600 }}>{overallStatus.label}</div>
+              </div>
+            </div>
+            <ul style={summaryListStyle}>
+              {overallStatus.details.map((detail, idx) => (
+                <li key={`overall-detail-${idx}`}>{detail}</li>
+              ))}
+            </ul>
+          </div>
+          <div style={infoItemStyle}>
+            <div style={infoLabelStyle}>Backend Connection</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={infoBadgeStyle(backendConnectionColor)}>{backendConnectionLabel}</span>
+            </div>
+            {(backendBaseDisplay || backendConnectionStatus !== 'error') && (
+              <div style={{ fontSize: 11, opacity: 0.7, marginTop: 6 }}>
+                Base: {backendBaseDisplay || 'Auto-detected'}
+              </div>
+            )}
+            {backendConnectionErrorDetail && (
+              <div style={{ fontSize: 11, color: '#f85149', marginTop: 6 }}>{backendConnectionErrorDetail}</div>
+            )}
+          </div>
+          <div style={infoItemStyle}>
+            <div style={infoLabelStyle}>Backend Version</div>
+            <div style={infoValueStyle}>{backendVersionDisplay}</div>
+            {backendSchemaHead && (
+              <div style={{ fontSize: 10, opacity: 0.7, marginTop: 4 }}>DB migration: {backendSchemaHead}</div>
+            )}
+            {backendVersionStatus === 'error' && backendVersionError && (
+              <div style={{ fontSize: 10, color: '#f85149', marginTop: 4 }}>{backendVersionError}</div>
+            )}
+          </div>
+          <div style={infoItemStyle}>
+            <div style={infoLabelStyle}>Frontend Version</div>
+            <div style={infoValueStyle}>{resolvedFrontendVersion}</div>
+          </div>
+        </div>
         {(systemHealthLoading || systemHealth) && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
             {renderHealthCard('Stash Connection', systemHealth?.stash_api, 'stash')}
