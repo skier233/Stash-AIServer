@@ -18,10 +18,8 @@ function Get-StashRootDir {
     $current = $StartPath
     while ($true) {
         $hasMarker = (
-            (Test-Path -LiteralPath (Join-Path $current 'docker-compose.yml') -PathType Leaf -ErrorAction SilentlyContinue) -or
             (Test-Path -LiteralPath (Join-Path $current 'config.env') -PathType Leaf -ErrorAction SilentlyContinue) -or
             (Test-Path -LiteralPath (Join-Path $current 'environment.yml') -PathType Leaf -ErrorAction SilentlyContinue) -or
-            (Test-Path -LiteralPath (Join-Path $current 'backend') -PathType Container -ErrorAction SilentlyContinue)
         )
         if ($hasMarker) {
             return $current
@@ -39,6 +37,31 @@ $rootDir = Get-StashRootDir -StartPath ((Resolve-Path -LiteralPath $PSScriptRoot
 
 function Invoke-CondaEntry {
     & conda --no-plugins @args
+}
+
+function Test-CondaEnvExists {
+    param([string]$EnvName)
+
+    try {
+        $lines = Invoke-CondaEntry env list
+    } catch {
+        return $false
+    }
+
+    foreach ($line in $lines) {
+        $trimmed = $line.Trim()
+        if (-not $trimmed -or $trimmed.StartsWith('#')) { continue }
+
+        if ($trimmed -match '^(?<name>\S+)\s+(?<path>.+)$') {
+            $name = $Matches['name']
+            $path = $Matches['path']
+            if ($name -eq $EnvName -or $path.EndsWith($EnvName)) {
+                return $true
+            }
+        }
+    }
+
+    return $false
 }
 
 function Import-EnvFile {
@@ -61,9 +84,9 @@ if (-not (Get-Command conda -ErrorAction SilentlyContinue)) {
     throw 'conda is required but was not found in PATH.'
 }
 
-if (-not $env:CONDA_NO_PLUGINS) {
-    $env:CONDA_NO_PLUGINS = '1'
-}
+if (-not $env:CONDA_NO_PLUGINS) { $env:CONDA_NO_PLUGINS = '1' }
+if (-not $env:CONDA_DONT_LOAD_PLUGINS) { $env:CONDA_DONT_LOAD_PLUGINS = '1' }
+$env:CONDA_SOLVER = 'classic'
 
 $previousConfig = $env:AI_SERVER_CONFIG_FILE
 if ($Config) {
@@ -115,6 +138,11 @@ function Stop-Postgres {
 $cmd = @('run','--no-capture-output','--cwd',$rootDir,'-n',$Name,'python','-m','stash_ai_server.entrypoint')
 if ($PassThruArgs) {
     $cmd += $PassThruArgs
+}
+
+if (-not (Test-CondaEnvExists -EnvName $Name)) {
+    $hint = "Run scripts/install/conda/install.ps1 -Name $Name -EnvironmentFile backend/environment.yml"
+    throw "Conda environment '$Name' is missing or invalid. $hint"
 }
 
 $pgStarted = $false
