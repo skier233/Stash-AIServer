@@ -24,6 +24,9 @@ from stash_ai_server.schemas.interaction import InteractionEventIn
 
 CONTROL_EVENT_TYPES = {'scene_watch_start', 'scene_watch_pause', 'scene_watch_complete', 'scene_seek'}
 
+# PG integer max
+PG_INT_MAX = 2147483647
+
 _log = logging.getLogger(__name__)
 
 class _SyntheticInteractionEvent:
@@ -52,6 +55,17 @@ def _to_naive(dt: datetime | None) -> datetime | None:
         return dt
     return dt.astimezone(timezone.utc).replace(tzinfo=None)
 
+
+def _sanitize_entity_id(raw) -> int:
+    """Ensure entity_id fits Postgres integer; fall back to 0 when invalid/overflow."""
+    try:
+        val = int(raw)
+    except Exception:
+        return 0
+    if val > PG_INT_MAX or val < -PG_INT_MAX:
+        return 0
+    return val
+
 # Reconstruct segments for a session+scene from ordered events
 
 def ingest_events(db: Session, events: Iterable[InteractionEventIn], client_fingerprint: str | None = None) -> Tuple[int,int,list[str]]:
@@ -79,6 +93,10 @@ def ingest_events(db: Session, events: Iterable[InteractionEventIn], client_fing
             session_resolution_cache[incoming] = _find_or_create_session_id(db, incoming, client_fingerprint)
         except Exception:
             # leave unresolved; events will error later
+            try:
+                db.rollback()
+            except Exception:
+                pass
             pass
 
     # Fetch InteractionSession objects for canonical ids used in this batch to avoid per-event session queries
@@ -95,6 +113,9 @@ def ingest_events(db: Session, events: Iterable[InteractionEventIn], client_fing
     for ev in ev_list:
     # determine canonical session first (so stored events and summaries use same session id)
         try:
+            # Normalize entity_id to safe int range; sessions may send large ids
+            if hasattr(ev, 'entity_id'):
+                ev.entity_id = _sanitize_entity_id(getattr(ev, 'entity_id', None))
             client_ts_val = _to_naive(ev.ts)
             setattr(ev, '_client_ts_naive', client_ts_val)
             # find or use cached canonical session id
@@ -111,6 +132,10 @@ def ingest_events(db: Session, events: Iterable[InteractionEventIn], client_fing
         except Exception as e:
             tb = traceback.format_exc()
             errors.append(f'event={getattr(ev, "id", None)} session={getattr(ev, "session_id", None)} type={getattr(ev, "type", None)} err={e} trace={tb}')
+            try:
+                db.rollback()
+            except Exception:
+                pass
             continue
 
     # Dedup by client_event_id (ev.id) using pre-fetched set
@@ -158,6 +183,11 @@ def ingest_events(db: Session, events: Iterable[InteractionEventIn], client_fing
         except Exception as e:  # pragma: no cover (best-effort logging)
             tb = traceback.format_exc()
             errors.append(f'event={getattr(ev, "id", None)} session={getattr(ev, "session_id", None)} type={getattr(ev, "type", None)} err={e} trace={tb}')
+            # Clear the failed transaction so later events/queries can proceed
+            try:
+                db.rollback()
+            except Exception:
+                pass
     # Flush so events are queryable for aggregation helpers
     db.flush()
     # Aggregate & derived updates
@@ -228,6 +258,10 @@ def _finalize_stale_sessions_for_fingerprint(db: Session, client_fingerprint: st
             )
         ).scalars().all()
     except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
         return
     if not stale_sessions:
         return
@@ -273,41 +307,59 @@ def _finalize_stale_sessions_for_fingerprint(db: Session, client_fingerprint: st
                 .values(ended_at=InteractionSession.last_event_ts)
             )
         except Exception:
-            pass
+            try:
+                db.rollback()
+            except Exception:
+                pass
 
     # Increment scene derived counts
     if scene_counts:
-        existing = db.execute(select(SceneDerived).where(SceneDerived.scene_id.in_(list(scene_counts.keys())))).scalars().all()
-        existing_map = {r.scene_id: r for r in existing}
-        for sid, inc in scene_counts.items():
-            row = existing_map.get(sid)
-            if row:
-                try:
-                    row.derived_o_count = (row.derived_o_count or 0) + inc
-                except Exception:
-                    pass
-            else:
-                db.add(SceneDerived(scene_id=sid, derived_o_count=inc, view_count=inc, last_viewed_at=None))
+        try:
+            existing = db.execute(select(SceneDerived).where(SceneDerived.scene_id.in_(list(scene_counts.keys())))).scalars().all()
+            existing_map = {r.scene_id: r for r in existing}
+            for sid, inc in scene_counts.items():
+                row = existing_map.get(sid)
+                if row:
+                    try:
+                        row.derived_o_count = (row.derived_o_count or 0) + inc
+                    except Exception:
+                        pass
+                else:
+                    db.add(SceneDerived(scene_id=sid, derived_o_count=inc, view_count=inc, last_viewed_at=None))
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
 
     # Increment image derived counts
     if image_counts:
-        existing = db.execute(select(ImageDerived).where(ImageDerived.image_id.in_(list(image_counts.keys())))).scalars().all()
-        existing_map = {r.image_id: r for r in existing}
-        for iid, inc in image_counts.items():
-            row = existing_map.get(iid)
-            if row:
-                try:
-                    row.derived_o_count = (row.derived_o_count or 0) + inc
-                except Exception:
-                    pass
-            else:
-                db.add(ImageDerived(image_id=iid, derived_o_count=inc, view_count=inc, last_viewed_at=None))
+        try:
+            existing = db.execute(select(ImageDerived).where(ImageDerived.image_id.in_(list(image_counts.keys())))).scalars().all()
+            existing_map = {r.image_id: r for r in existing}
+            for iid, inc in image_counts.items():
+                row = existing_map.get(iid)
+                if row:
+                    try:
+                        row.derived_o_count = (row.derived_o_count or 0) + inc
+                    except Exception:
+                        pass
+                else:
+                    db.add(ImageDerived(image_id=iid, derived_o_count=inc, view_count=inc, last_viewed_at=None))
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
 
     # Flush so increments are persisted before new session proceeds
     try:
         db.flush()
     except Exception:
-        pass
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
 
 def _find_or_create_session_id(db: Session, incoming_session_id: str, client_fingerprint: str | None):
@@ -317,9 +369,16 @@ def _find_or_create_session_id(db: Session, incoming_session_id: str, client_fin
     """
 
     # 1) Direct session id exists -> canonical
-    direct = db.execute(select(InteractionSession.session_id).where(InteractionSession.session_id == incoming_session_id)).first()
-    if direct:
-        return incoming_session_id
+    try:
+        direct = db.execute(select(InteractionSession.session_id).where(InteractionSession.session_id == incoming_session_id)).first()
+        if direct:
+            return incoming_session_id
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise exc
 
     now = datetime.now(timezone.utc)
     merge_ttl_seconds = int(sys_get('INTERACTION_MERGE_TTL_SECONDS', 120))
@@ -336,6 +395,10 @@ def _find_or_create_session_id(db: Session, incoming_session_id: str, client_fin
             return alias_row[0]
     except Exception:
         # alias table might not exist yet; ignore
+        try:
+            db.rollback()
+        except Exception:
+            pass
         pass
 
     # 3) Fingerprint merge: recent non-finalized session for same fingerprint
@@ -365,6 +428,10 @@ def _find_or_create_session_id(db: Session, incoming_session_id: str, client_fin
                         pass
                 return canonical_id
         except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
             pass
 
     # 4) Create new session with incoming id

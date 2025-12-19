@@ -41,8 +41,28 @@ function Invoke-CondaEntry {
     & conda --no-plugins @args
 }
 
+function Import-EnvFile {
+    param([string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+    Get-Content -LiteralPath $Path | ForEach-Object {
+        $line = $_.Trim()
+        if (-not $line -or $line.StartsWith('#')) { return }
+        $pair = $line -split '=', 2
+        if ($pair.Count -ne 2) { return }
+        $key = $pair[0].Trim()
+        $value = $pair[1].Trim().Trim('"').Trim("'")
+        [System.Environment]::SetEnvironmentVariable($key, $value)
+    }
+}
+
 if (-not (Get-Command conda -ErrorAction SilentlyContinue)) {
     throw 'conda is required but was not found in PATH.'
+}
+
+if (-not $env:CONDA_NO_PLUGINS) {
+    $env:CONDA_NO_PLUGINS = '1'
 }
 
 $previousConfig = $env:AI_SERVER_CONFIG_FILE
@@ -51,15 +71,62 @@ if ($Config) {
     $env:AI_SERVER_CONFIG_FILE = $resolvedConfig
 }
 
+$configPath = if ($Config) { $Config } else { Join-Path $rootDir 'config.env' }
+Import-EnvFile $configPath
+
+$pgDataDir = if ($env:AI_SERVER_PG_DATA_DIR) { (Resolve-Path -LiteralPath $env:AI_SERVER_PG_DATA_DIR).Path } else { Join-Path $rootDir 'data\postgres' }
+$pgUser = if ($env:AI_SERVER_DB_USER) { $env:AI_SERVER_DB_USER } else { 'stash_ai_server' }
+$pgPassword = if ($env:AI_SERVER_DB_PASSWORD) { $env:AI_SERVER_DB_PASSWORD } else { 'stash_ai_server' }
+$pgDatabase = if ($env:AI_SERVER_DB_NAME) { $env:AI_SERVER_DB_NAME } else { 'stash_ai_server' }
+$pgPort = if ($env:AI_SERVER_DB_PORT) { [int]$env:AI_SERVER_DB_PORT } else { 5544 }
+$pgLog = Join-Path $pgDataDir 'postgres.log'
+$postgresServiceScript = Join-Path $PSScriptRoot 'postgres_service.py'
+if (-not (Test-Path -LiteralPath $postgresServiceScript)) {
+    $candidate = Join-Path $PSScriptRoot 'conda\postgres_service.py'
+    if (Test-Path -LiteralPath $candidate) {
+        $postgresServiceScript = $candidate
+    }
+}
+if (-not (Test-Path -LiteralPath $postgresServiceScript)) {
+    throw "postgres_service.py not found (looked for $postgresServiceScript)"
+}
+
+function Invoke-PgService {
+    param([string[]]$PgArgs)
+    $condaArgs = @('--no-plugins','run','--no-capture-output','-n',$Name,'python',$postgresServiceScript)
+    if ($PgArgs) {
+        $condaArgs += $PgArgs
+    }
+    & conda @condaArgs
+}
+
+function Start-Postgres {
+    Invoke-PgService -PgArgs @('init','--data-dir',$pgDataDir,'--user',$pgUser,'--password',$pgPassword,'--port',$pgPort,'--log-file',$pgLog)
+    Invoke-PgService -PgArgs @('start','--data-dir',$pgDataDir,'--port',$pgPort,'--log-file',$pgLog)
+    Invoke-PgService -PgArgs @('ensure-db','--data-dir',$pgDataDir,'--user',$pgUser,'--password',$pgPassword,'--database',$pgDatabase,'--port',$pgPort)
+}
+
+function Stop-Postgres {
+    if (Test-Path -LiteralPath (Join-Path $pgDataDir 'postmaster.pid')) {
+        Invoke-PgService -PgArgs @('stop','--data-dir',$pgDataDir,'--port',$pgPort,'--log-file',$pgLog) | Out-Null
+    }
+}
+
 $cmd = @('run','--no-capture-output','--cwd',$rootDir,'-n',$Name,'python','-m','stash_ai_server.entrypoint')
 if ($PassThruArgs) {
     $cmd += $PassThruArgs
 }
 
+$pgStarted = $false
 try {
+    Start-Postgres
+    $pgStarted = $true
     Invoke-CondaEntry @cmd
 }
 finally {
+    if ($pgStarted) {
+        Stop-Postgres
+    }
     if ($Config) {
         if ($previousConfig) {
             $env:AI_SERVER_CONFIG_FILE = $previousConfig

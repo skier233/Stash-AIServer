@@ -11,6 +11,22 @@ from stashapi.stashapp import StashInterface
 
 _log = logging.getLogger(__name__)
 
+
+def _to_relative_path(url: str | None) -> str | None:
+    """Convert an absolute Stash URL to a relative path (preserve query/path).
+
+    This prevents leaking container-specific hosts (e.g., host.docker.internal)
+    to clients while keeping any query string intact.
+    """
+    if not url or not isinstance(url, str):
+        return url
+    parsed = urlparse(url)
+    if not parsed.scheme and not parsed.netloc:
+        return url
+    path = parsed.path or ''
+    query = f"?{parsed.query}" if parsed.query else ''
+    return f"{path}{query}" or '/'
+
 class StashAPI:
     stash_url: str
     api_key: str | None
@@ -298,7 +314,25 @@ class StashAPI:
             if slice_start < 0:
                 slice_start = 0
             slice_end = slice_start + limit
-            page_slice = aggregated[slice_start:slice_end]
+            page_slice = []
+            for sc in aggregated[slice_start:slice_end]:
+                if isinstance(sc, dict):
+                    paths = sc.get('paths') or {}
+                    if isinstance(paths, dict):
+                        for k in ('screenshot', 'preview', 'stream', 'webp'):
+                            if k in paths:
+                                paths[k] = _to_relative_path(paths[k])
+                        sc['paths'] = paths
+                    image_path = sc.get('image_path')
+                    if image_path:
+                        sc['image_path'] = _to_relative_path(image_path)
+                    files = sc.get('files') or []
+                    if isinstance(files, list):
+                        for f in files:
+                            if isinstance(f, dict) and 'path' in f:
+                                f['path'] = _to_relative_path(f.get('path'))
+                    sc = dict(sc)
+                page_slice.append(sc)
             return page_slice, approx_total, has_more
         except Exception as e:
             print(f"[stash] paginated tag query failure tag={tag_id}: {e}", flush=True)

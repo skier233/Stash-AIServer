@@ -94,24 +94,38 @@ if env_data_dir and data_dir and 'site-packages' in str(data_dir) and Path(env_d
     except Exception as e:  # pragma: no cover
         _diagnostics.append(f"override_env_data_dir_failed path={env_p} err={e}")
 
-db_path = os.getenv('AI_SERVER_DB_PATH')
-if db_path:
-    db_path = Path(db_path)
-else:
-    db_path = data_dir / 'app.db'
+db_host = os.getenv('AI_SERVER_DB_HOST', '127.0.0.1')
+db_port = int(os.getenv('AI_SERVER_DB_PORT', '5544'))
+db_name = os.getenv('AI_SERVER_DB_NAME', 'stash_ai_server')
+db_user = os.getenv('AI_SERVER_DB_USER', 'stash_ai_server')
+db_password = os.getenv('AI_SERVER_DB_PASSWORD', 'stash_ai_server')
+db_pool_size = int(os.getenv('AI_SERVER_DB_POOL_SIZE', '10'))
+db_max_overflow = int(os.getenv('AI_SERVER_DB_MAX_OVERFLOW', '10'))
+db_echo = _env_flag('AI_SERVER_DB_ECHO', False)
 
 class Settings(BaseModel):
     app_name: str = 'AI Overhaul Backend'
-    database_url: str = f'sqlite:///{db_path}'
+    database_url: str = (
+        f"postgresql+psycopg://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+    )
     api_v1_prefix: str = '/api/v1'
     version: str = os.getenv('AI_SERVER_VERSION', __version__)
     data_dir: Path = data_dir
-    db_file: Path = db_path
+    db_credentials: dict[str, str | int | bool] = {
+        'host': db_host,
+        'port': db_port,
+        'name': db_name,
+        'user': db_user,
+        'pool_size': db_pool_size,
+        'max_overflow': db_max_overflow,
+        'echo': db_echo,
+    }
     # Logging level for the backend (DEBUG, INFO, WARNING, ERROR, CRITICAL)
     # Can be set via the environment variable AI_SERVER_LOG_LEVEL
     log_level: str = os.getenv('AI_SERVER_LOG_LEVEL', 'DEBUG')
     docker_mode: bool = _docker_mode
     diagnostics: list[str] | None = _diagnostics
+    legacy_sqlite_path: Path = data_dir / 'app.db'
 
 settings = Settings()
 

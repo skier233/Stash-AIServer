@@ -92,6 +92,49 @@ if [[ -n "$CONFIG_OVERRIDE" ]]; then
   export AI_SERVER_CONFIG_FILE="$CONFIG_OVERRIDE"
 fi
 
+CONFIG_PATH="${CONFIG_OVERRIDE:-$ROOT_DIR/config.env}"
+if [[ -f "$CONFIG_PATH" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$CONFIG_PATH"
+  set +a
+fi
+
+PG_DATA_DIR="${AI_SERVER_PG_DATA_DIR:-$ROOT_DIR/data/postgres}"
+PG_USER="${AI_SERVER_DB_USER:-stash_ai_server}"
+PG_PASSWORD="${AI_SERVER_DB_PASSWORD:-stash_ai_server}"
+PG_DB="${AI_SERVER_DB_NAME:-stash_ai_server}"
+PG_PORT="${AI_SERVER_DB_PORT:-5544}"
+PG_LOG_FILE="$PG_DATA_DIR/postgres.log"
+POSTGRES_SERVICE_SCRIPT="$SCRIPT_DIR/postgres_service.py"
+if [[ ! -f "$POSTGRES_SERVICE_SCRIPT" && -f "$SCRIPT_DIR/conda/postgres_service.py" ]]; then
+  POSTGRES_SERVICE_SCRIPT="$SCRIPT_DIR/conda/postgres_service.py"
+fi
+
+if [[ ! -f "$POSTGRES_SERVICE_SCRIPT" ]]; then
+  echo "postgres_service.py not found at $POSTGRES_SERVICE_SCRIPT" >&2
+  exit 1
+fi
+
+pg_service() {
+  "${CONDA_CMD[@]}" run --no-capture-output -n "$ENV_NAME" python "$POSTGRES_SERVICE_SCRIPT" "$@"
+}
+
+start_postgres() {
+  pg_service init --data-dir "$PG_DATA_DIR" --user "$PG_USER" --password "$PG_PASSWORD" --port "$PG_PORT" --log-file "$PG_LOG_FILE"
+  pg_service start --data-dir "$PG_DATA_DIR" --port "$PG_PORT" --log-file "$PG_LOG_FILE"
+  pg_service ensure-db --data-dir "$PG_DATA_DIR" --user "$PG_USER" --password "$PG_PASSWORD" --database "$PG_DB" --port "$PG_PORT"
+}
+
+stop_postgres() {
+  if [[ -f "$PG_DATA_DIR/postmaster.pid" ]]; then
+    pg_service stop --data-dir "$PG_DATA_DIR" --port "$PG_PORT" --log-file "$PG_LOG_FILE" || true
+  fi
+}
+
+trap stop_postgres EXIT INT TERM
+start_postgres
+
 CMD=("${CONDA_CMD[@]}" run --no-capture-output --cwd "$ROOT_DIR" -n "$ENV_NAME" python -m stash_ai_server.entrypoint)
 if [[ ${#ENTRYPOINT_ARGS[@]} -gt 0 ]]; then
   CMD+=("${ENTRYPOINT_ARGS[@]}")

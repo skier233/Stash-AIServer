@@ -59,6 +59,17 @@ def _resolve_db_path() -> Path | None:
     return None
 
 
+def get_stash_db_path(refresh: bool = False) -> Path | None:
+    """Public helper to obtain the resolved Stash DB path (cached).
+
+    Set refresh=True to bypass the cache and re-resolve.
+    """
+    global _CACHED_DB_PATH
+    if refresh:
+        _CACHED_DB_PATH = None
+    return _resolve_db_path()
+
+
 def _dispose_locked() -> None:
     global _STASH_ENGINE, _STASH_SESSION_FACTORY, _STASH_DB_PATH, _METADATA, _TABLE_CACHE
 
