@@ -25,40 +25,60 @@ function Get-StashRootDir {
             return $current
         }
         $parent = Split-Path -Path $current -Parent
-        if (-not $parent -or $parent -eq $current) {
-            break
-        }
+        if (-not $parent -or $parent -eq $current) { break }
         $current = $parent
     }
     throw 'Unable to locate project root. Set STASH_AI_ROOT environment variable.'
 }
 
+function Resolve-EnvFile {
+    param([string]$Root, [string]$EnvFile)
+
+    if ($EnvFile) {
+        if (-not (Test-Path -LiteralPath $EnvFile)) { throw "Environment file not found at '$EnvFile'" }
+        return (Resolve-Path -LiteralPath $EnvFile).Path
+    }
+
+    $candidates = @(
+        (Join-Path $Root 'environment.yml'),
+        (Join-Path $Root 'backend\environment.yml')
+    )
+
+    foreach ($path in $candidates) {
+        if (Test-Path -LiteralPath $path) {
+            return (Resolve-Path -LiteralPath $path).Path
+        }
+    }
+
+    throw "Environment file not found. Pass -EnvironmentFile to specify one."
+}
+
+function Ensure-Conda {
+    if (-not (Get-Command conda -ErrorAction SilentlyContinue)) {
+        throw 'conda is required but was not found in PATH.'
+    }
+}
+
+function Get-EnvExists {
+    param([string]$EnvName)
+    try {
+        $lines = conda env list
+    } catch {
+        return $false
+    }
+    return $lines -match "^$EnvName\s"
+}
+
 $rootDir = Get-StashRootDir -StartPath ((Resolve-Path -LiteralPath $PSScriptRoot).Path)
-if (-not $EnvironmentFile) {
-    $EnvironmentFile = Join-Path $rootDir 'environment.yml'
-}
-if (-not (Test-Path -LiteralPath $EnvironmentFile)) {
-    throw "Environment file not found at '$EnvironmentFile'"
-}
-$EnvironmentFile = (Resolve-Path -LiteralPath $EnvironmentFile).Path
+$envFile = Resolve-EnvFile -Root $rootDir -EnvFile $EnvironmentFile
 
-if (-not (Get-Command conda -ErrorAction SilentlyContinue)) {
-    throw 'conda is required but was not found in PATH.'
-}
+Ensure-Conda
 
-function Invoke-Conda {
-    param([string[]]$Args)
-    & conda --no-plugins @Args
-}
-
-if (-not (Invoke-Conda env list | Select-String -SimpleMatch " $Name ")) {
+if (-not (Get-EnvExists -EnvName $Name)) {
     throw "Environment '$Name' was not found. Run install.ps1 first."
 }
 
-Write-Host "Refreshing dependencies defined in $EnvironmentFile"
-Invoke-Conda env update --name $Name --file $EnvironmentFile --prune
-
-Write-Host 'Forcing pip to download the newest stash-ai-server wheel'
-Invoke-Conda run -n $Name python -m pip install --upgrade --no-cache-dir stash-ai-server
+Write-Host "Refreshing environment '$Name' with $envFile"
+conda env update --name $Name --file $envFile --prune
 
 Write-Host "Restart the server with scripts/conda/start.ps1 -Name $Name (scripts/install/conda/start.ps1 in source)"

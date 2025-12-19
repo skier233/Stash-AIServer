@@ -26,8 +26,35 @@ resolve_root_dir() {
 
 resolve_root_dir
 
-DEFAULT_ENV_FILE="$ROOT_DIR/environment.yml"
 DEFAULT_ENV_NAME="stash-ai-server"
+
+find_env_file() {
+  local explicit="$1"
+
+  if [[ -n "$explicit" ]]; then
+    if [[ -f "$explicit" ]]; then
+      printf '%s\n' "$explicit"
+      return 0
+    fi
+    echo "Environment file not found: $explicit" >&2
+    exit 1
+  fi
+
+  local root_candidate="$ROOT_DIR/environment.yml"
+  local backend_candidate="$ROOT_DIR/backend/environment.yml"
+
+  if [[ -f "$root_candidate" ]]; then
+    printf '%s\n' "$root_candidate"
+    return 0
+  fi
+  if [[ -f "$backend_candidate" ]]; then
+    printf '%s\n' "$backend_candidate"
+    return 0
+  fi
+
+  echo "Environment file not found. Pass --file <path> to specify one." >&2
+  exit 1
+}
 
 usage() {
   cat <<'EOF'
@@ -43,7 +70,7 @@ EOF
 }
 
 ENV_NAME="$DEFAULT_ENV_NAME"
-ENV_FILE="$DEFAULT_ENV_FILE"
+ENV_FILE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -n|--name)
@@ -79,19 +106,14 @@ if ! command -v conda >/dev/null 2>&1; then
   exit 1
 fi
 
-CONDA_CMD=(conda --no-plugins)
+ENV_FILE="$(find_env_file "$ENV_FILE")"
 
-if ! "${CONDA_CMD[@]}" env list | awk '{print $1}' | grep -Fxq "$ENV_NAME"; then
+if ! conda env list | awk '{print $1}' | grep -Fxq "$ENV_NAME"; then
   echo "Environment '$ENV_NAME' does not exist. Run install.sh first." >&2
   exit 1
 fi
 
-if [[ -f "$ENV_FILE" ]]; then
-  echo "Refreshing dependencies from $ENV_FILE"
-  "${CONDA_CMD[@]}" env update --name "$ENV_NAME" --file "$ENV_FILE" --prune
-fi
-
-echo "Forcing pip to pull the newest stash-ai-server wheel"
-"${CONDA_CMD[@]}" run -n "$ENV_NAME" python -m pip install --upgrade --no-cache-dir stash-ai-server
+echo "Refreshing environment '$ENV_NAME' with $ENV_FILE"
+conda env update --name "$ENV_NAME" --file "$ENV_FILE" --prune
 
 echo "Restart the server with scripts/conda/start.sh --name $ENV_NAME (scripts/install/conda/start.sh in source)."

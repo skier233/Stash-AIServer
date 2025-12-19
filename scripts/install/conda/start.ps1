@@ -19,7 +19,7 @@ function Get-StashRootDir {
     while ($true) {
         $hasMarker = (
             (Test-Path -LiteralPath (Join-Path $current 'config.env') -PathType Leaf -ErrorAction SilentlyContinue) -or
-            (Test-Path -LiteralPath (Join-Path $current 'environment.yml') -PathType Leaf -ErrorAction SilentlyContinue) -or
+            (Test-Path -LiteralPath (Join-Path $current 'environment.yml') -PathType Leaf -ErrorAction SilentlyContinue)
         )
         if ($hasMarker) {
             return $current
