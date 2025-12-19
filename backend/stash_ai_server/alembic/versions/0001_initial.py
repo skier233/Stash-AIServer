@@ -42,7 +42,7 @@ def upgrade() -> None:  # noqa: D401
         sa.Column('id', sa.Integer, primary_key=True),
         sa.Column('name', sa.String(length=100), nullable=False, unique=True),
         sa.Column('url', sa.String(length=500), nullable=False),
-        sa.Column('enabled', sa.Boolean, nullable=False, server_default=sa.text('1')),
+        sa.Column('enabled', sa.Boolean, nullable=False, server_default=sa.text('true')),
         sa.Column('last_refreshed_at', sa.DateTime, nullable=True),
         sa.Column('last_error', sa.Text, nullable=True),
         sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),

@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: pgvector/pgvector:0.5.1-pg16
+    image: pgvector/pgvector:pg16
     container_name: ai-overhaul-postgres
     restart: unless-stopped
     environment:
@@ -13,7 +13,7 @@ services:
       timeout: 5s
       retries: 5
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
+      - ./data/docker/postgres:/var/lib/postgresql/data
 
   backend_dev:
     build:
@@ -31,6 +31,7 @@ services:
       - ./backend/alembic.ini:/app/alembic.ini:ro
       - ./backend/data:/app/data
       - ./backend/plugins:/app/plugins:rw
+      - /path/to/your/stash_root_folder:/app/stash:ro
     env_file:
       - ./backend/config.env
     command: python -m stash_ai_server.dev_entrypoint

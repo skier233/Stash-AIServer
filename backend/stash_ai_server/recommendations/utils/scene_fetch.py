@@ -347,13 +347,8 @@ def _fetch_scenes_via_db(scene_ids: Sequence[int]) -> Dict[int, Dict[str, Any]]:
                     scene.pop("_studio_id", None)
 
             for scene_id, scene in scenes.items():
-                default_paths = _build_scene_paths(scene_id)
-                if default_paths:
-                    existing_paths = scene.get("paths") or {}
-                    if not isinstance(existing_paths, dict):
-                        existing_paths = {}
-                    merged = {**default_paths, **{k: v for k, v in existing_paths.items() if v}}
-                    scene["paths"] = merged
+                # Always emit relative stash routes we construct; ignore any absolute URLs from upstream
+                scene["paths"] = _build_scene_paths(scene_id)
 
             performer_link = stash_db.get_first_available_table(
                 "performers_scenes", "scene_performers", "performer_scenes", required_columns=("scene_id", "performer_id")
