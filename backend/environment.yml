@@ -3,6 +3,8 @@ channels:
   - conda-forge
 dependencies:
   - python=3.12
+  - postgresql>=16
+  - pgvector>=0.5
   - pip
   - pip:
     - -r requirements.txt

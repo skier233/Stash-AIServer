@@ -11,6 +11,7 @@ backend/config.env
 /backend/data/app.db
 .vscode/launch.json
 backend/plugins/*
+/data/*
 
 # System files
 .DS_Store

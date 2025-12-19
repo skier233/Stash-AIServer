@@ -1,9 +1,28 @@
 services:
+  postgres:
+    image: pgvector/pgvector:0.5.1-pg16
+    container_name: ai-overhaul-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${AI_SERVER_DB_NAME:-stash_ai_server}
+      POSTGRES_USER: ${AI_SERVER_DB_USER:-stash_ai_server}
+      POSTGRES_PASSWORD: ${AI_SERVER_DB_PASSWORD:-stash_ai_server}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+
   backend_dev:
     build:
       context: ./backend
       target: dev
     container_name: ai-overhaul-backend-dev
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "4153:4153"
     volumes:
@@ -23,6 +42,9 @@ services:
   backend_prod:
     image: ghcr.io/skier233/stash-ai-server:latest
     container_name: ai-overhaul-backend-prod
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "4153:4153"
     env_file:

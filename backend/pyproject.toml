@@ -18,6 +18,8 @@ dependencies = [
   "uvicorn[standard]==0.38.0",
   "SQLAlchemy==2.0.44",
   "alembic==1.17.1",
+  "psycopg[binary]==3.2.1",
+  "pgvector==0.2.5",
   "pydantic==2.12.4",
   "python-dotenv==1.2.1",
   "httpx==0.28.1",
