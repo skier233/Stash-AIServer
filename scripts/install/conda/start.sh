@@ -36,7 +36,14 @@ if ! command -v conda >/dev/null 2>&1; then
   exit 1
 fi
 
-CONDA_CMD=(conda --no-plugins)
+CONDA_CMD=(conda)
+
+ensure_env_exists() {
+  if ! "${CONDA_CMD[@]}" env list | awk '{print $1}' | grep -Fxq "$ENV_NAME"; then
+    echo "Conda environment '$ENV_NAME' is missing. Run scripts/install/conda/install.sh --name $ENV_NAME first." >&2
+    exit 1
+  fi
+}
 
 usage() {
   cat <<'EOF'
@@ -100,7 +107,31 @@ if [[ -f "$CONFIG_PATH" ]]; then
   set +a
 fi
 
-PG_DATA_DIR="${AI_SERVER_PG_DATA_DIR:-$ROOT_DIR/data/postgres}"
+resolve_pg_data_dir() {
+  local candidate="$1"
+  local home_fallback="$HOME/.stash-ai-server/postgres"
+
+  if [[ "$candidate" == /mnt/* ]]; then
+    candidate="$home_fallback"
+  fi
+
+  mkdir -p "$candidate"
+  local fs_type="$(stat -f -c %T "$candidate" 2>/dev/null || echo '')"
+  case "$fs_type" in
+    drvfs|fuseblk|ntfs-3g|ntfs|9p|smb*)
+      if [[ "$candidate" != "$home_fallback" ]]; then
+        echo "Detected non-POSIX filesystem ($fs_type); using Linux-side data dir: $home_fallback" >&2
+        candidate="$home_fallback"
+        mkdir -p "$candidate"
+      fi
+      ;;
+  esac
+
+  chmod 700 "$candidate" || true
+  printf '%s' "$candidate"
+}
+
+PG_DATA_DIR="$(resolve_pg_data_dir "${AI_SERVER_PG_DATA_DIR:-$ROOT_DIR/data/postgres}")"
 PG_USER="${AI_SERVER_DB_USER:-stash_ai_server}"
 PG_PASSWORD="${AI_SERVER_DB_PASSWORD:-stash_ai_server}"
 PG_DB="${AI_SERVER_DB_NAME:-stash_ai_server}"
@@ -121,6 +152,8 @@ pg_service() {
 }
 
 start_postgres() {
+  mkdir -p "$PG_DATA_DIR"
+  chmod 700 "$PG_DATA_DIR" || true
   pg_service init --data-dir "$PG_DATA_DIR" --user "$PG_USER" --password "$PG_PASSWORD" --port "$PG_PORT" --log-file "$PG_LOG_FILE"
   pg_service start --data-dir "$PG_DATA_DIR" --port "$PG_PORT" --log-file "$PG_LOG_FILE"
   pg_service ensure-db --data-dir "$PG_DATA_DIR" --user "$PG_USER" --password "$PG_PASSWORD" --database "$PG_DB" --port "$PG_PORT"
@@ -131,6 +164,8 @@ stop_postgres() {
     pg_service stop --data-dir "$PG_DATA_DIR" --port "$PG_PORT" --log-file "$PG_LOG_FILE" || true
   fi
 }
+
+ensure_env_exists
 
 trap stop_postgres EXIT INT TERM
 start_postgres

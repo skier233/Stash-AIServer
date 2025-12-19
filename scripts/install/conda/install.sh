@@ -82,7 +82,7 @@ if ! command -v conda >/dev/null 2>&1; then
   exit 1
 fi
 
-CONDA_CMD=(conda --no-plugins)
+CONDA_CMD=(conda)
 
 if "${CONDA_CMD[@]}" env list | awk '{print $1}' | grep -Fxq "$ENV_NAME"; then
   echo "Updating existing environment '$ENV_NAME' with $ENV_FILE"
@@ -95,9 +95,6 @@ else
   echo "Creating environment '$ENV_NAME' from $ENV_FILE"
   "${CONDA_CMD[@]}" env create --name "$ENV_NAME" --file "$ENV_FILE"
 fi
-
-echo "Installing latest stash-ai-server package from PyPI"
-"${CONDA_CMD[@]}" run -n "$ENV_NAME" python -m pip install --upgrade --no-cache-dir stash-ai-server
 
 echo
 echo "Environment '$ENV_NAME' is ready."

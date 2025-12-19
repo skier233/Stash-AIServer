@@ -7,6 +7,8 @@ services:
       POSTGRES_DB: ${AI_SERVER_DB_NAME:-stash_ai_server}
       POSTGRES_USER: ${AI_SERVER_DB_USER:-stash_ai_server}
       POSTGRES_PASSWORD: ${AI_SERVER_DB_PASSWORD:-stash_ai_server}
+    ports:
+      - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
