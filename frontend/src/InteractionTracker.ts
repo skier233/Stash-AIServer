@@ -158,23 +158,6 @@ function withSharedKeyHeaders(init?: RequestInit): RequestInit {
   return next;
 }
 
-function appendSharedApiKey(url: string): string {
-  const helper = (window as any).AISharedApiKeyHelper;
-  if (helper && typeof helper.appendQuery === 'function') {
-    return helper.appendQuery(url);
-  }
-  const key = getSharedApiKey();
-  if (!key) return url;
-  try {
-    const resolved = new URL(url, window.location?.origin || undefined);
-    resolved.searchParams.set('api_key', key);
-    return resolved.toString();
-  } catch {
-    const sep = url.includes('?') ? '&' : '?';
-    return `${url}${sep}api_key=${encodeURIComponent(key)}`;
-  }
-}
-
 // ------------------------------ Tracker Class ------------------------------
 export class InteractionTracker {
   private static _instance: InteractionTracker | null = null;
@@ -1579,26 +1562,14 @@ export class InteractionTracker {
     try {
     const payload = this.queue.map(r => r.event);
     const url = this.cfg.endpoint + this.cfg.batchPath;
-    const urlWithKey = appendSharedApiKey(url);
     // Always send as array (single element list if only one)
     const body = JSON.stringify(payload.length > 1 ? payload : [payload[0]]);
-    const blob = new Blob([body], { type: 'application/json' });
-      let ok = false;
       try {
-        ok = (navigator as any).sendBeacon ? (navigator as any).sendBeacon(urlWithKey, blob) : false;
-      } catch (e) { ok = false; }
-      if (!ok) {
-        // Fallback: try fetch with keepalive (best-effort)
-        try {
-          const f = fetch(urlWithKey, withSharedKeyHeaders({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true }));
-          f.then(res => { if (res && res.ok) { this.queue = []; this.persistQueue(); } }).catch(()=>{});
-          // Note: can't reliably await in unload, but attempt to clear queue anyway
-        } catch (e) {
-          // ignore
-        }
-      } else {
-        this.queue = [];
-        this.persistQueue();
+        // Prefer fetch with keepalive + header (sendBeacon cannot set custom headers)
+        const f = fetch(url, withSharedKeyHeaders({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true }));
+        f.then(res => { if (res && res.ok) { this.queue = []; this.persistQueue(); } }).catch(()=>{});
+      } catch (e) {
+        // ignore
       }
     } catch (e) {
       // swallow

@@ -7,7 +7,7 @@ from stash_ai_server.db.session import Base
 class InteractionEvent(Base):
     __tablename__ = 'interaction_events'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    client_event_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    client_event_id: Mapped[str | None] = mapped_column(String(191), nullable=True, index=True)
     session_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
     event_type: Mapped[str] = mapped_column(String(50), index=True, nullable=False)
     entity_type: Mapped[str] = mapped_column(String(30), nullable=False)

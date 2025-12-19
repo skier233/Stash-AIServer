@@ -38,14 +38,11 @@ def migrate_sqlite_to_postgres(target_engine: Engine) -> bool:
     pg_meta.reflect(bind=target_engine)
 
     def _normalize_row(table_name: str, row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        # interaction_events stored client_event_id as strings in SQLite; coerce or drop for Postgres integer column
         if table_name == "interaction_events":
+            # client_event_id is stored as text now; leave strings intact
             value = row.get("client_event_id")
-            if value is not None:
-                try:
-                    row["client_event_id"] = int(value)
-                except (TypeError, ValueError):
-                    row["client_event_id"] = None
+            if value is None:
+                row["client_event_id"] = None
             entity = row.get("entity_id")
             # SQLite may contain large unsigned entity ids; clamp to None if they exceed PG integer range
             if isinstance(entity, int) and entity > 2147483647:
