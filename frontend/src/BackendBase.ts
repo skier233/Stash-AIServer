@@ -5,6 +5,7 @@
 const PLUGIN_NAME = 'AIOverhaul';
 // Local default to keep the UI functional before plugin config loads.
 const DEFAULT_BACKEND_BASE = 'http://localhost:4153';
+const STORAGE_KEY = 'ai_backend_base_url';
 const CONFIG_QUERY = `query AIOverhaulPluginConfig($ids: [ID!]) {
   configuration {
     plugins(include: $ids)
@@ -122,6 +123,13 @@ function applyPluginConfig(base: string | null | undefined, captureEvents: boole
       const value = normalized || '';
       try {
         (window as any).AI_BACKEND_URL = value;
+        try {
+          if (value) {
+            sessionStorage.setItem(STORAGE_KEY, value);
+          } else {
+            sessionStorage.removeItem(STORAGE_KEY);
+          }
+        } catch {}
         window.dispatchEvent(new CustomEvent('AIBackendBaseUpdated', { detail: value }));
       } catch {}
     }
@@ -174,6 +182,16 @@ async function loadPluginConfig(): Promise<void> {
 export default function defaultBackendBase(): string {
   try {
     if (!configLoaded) loadPluginConfig();
+  } catch {}
+
+  try {
+    const stored = sessionStorage.getItem(STORAGE_KEY);
+    if (stored && typeof stored === 'string') {
+      const normalized = normalizeBase(stored);
+      if (normalized !== null && normalized !== undefined) {
+        return normalized;
+      }
+    }
   } catch {}
 
   if (typeof (window as any).AI_BACKEND_URL === 'string') {
