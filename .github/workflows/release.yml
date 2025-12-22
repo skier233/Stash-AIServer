@@ -19,7 +19,7 @@ jobs:
       version: ${{ steps.set.outputs.version }}
       is_final: ${{ steps.set.outputs.is_final }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - id: set
@@ -56,7 +56,7 @@ jobs:
     needs: determine
     if: needs.determine.outputs.is_release == 'true'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - name: Set up Python 3.12
@@ -102,7 +102,7 @@ jobs:
       - name: Show dist contents
         run: ls -l backend/dist
       - name: Upload wheel artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: wheel
           path: backend/dist/*.whl
@@ -114,7 +114,7 @@ jobs:
     if: needs.determine.outputs.is_release == 'true'
     steps:
       - name: Download wheel artifact
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           name: wheel
           path: dist_dl
@@ -157,7 +157,7 @@ jobs:
     needs: determine
     if: needs.determine.outputs.is_release == 'true'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - name: Build backend and docker bundles
@@ -227,7 +227,7 @@ jobs:
 
           ls -l release
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '20'
       - name: Install frontend dependencies
@@ -271,12 +271,12 @@ jobs:
           (cd frontend/dist && zip -r "$ROOT/release/stash-ai-server-frontend-${VERSION}.zip" .)
           ls -l release
       - name: Upload frontend dist artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: frontend-dist
           path: frontend/dist
       - name: Upload release bundles
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: release-bundles
           path: |
@@ -307,18 +307,18 @@ jobs:
           fi
       - name: Checkout Stash AI Server
         if: steps.guard_pat.outputs.has_pat == 'true'
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - name: Download frontend dist artifact
         if: steps.guard_pat.outputs.has_pat == 'true'
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           name: frontend-dist
           path: frontend/dist
       - name: Checkout CommunityScripts repo
         if: steps.guard_pat.outputs.has_pat == 'true'
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           repository: ${{ env.COMMUNITY_FORK_REPO }}
           token: ${{ secrets.COMMUNITY_SCRIPTS_PAT }}
@@ -390,7 +390,7 @@ jobs:
     needs: [determine, publish]
     if: needs.determine.outputs.is_release == 'true'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
       - name: Set up Buildx
@@ -451,7 +451,7 @@ jobs:
     needs: [determine, publish, image, package-assets]
     if: needs.determine.outputs.is_release == 'true'
     steps:
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v7
         with:
           name: release-bundles
           path: release_assets
@@ -488,7 +488,7 @@ jobs:
 
       - name: Publish GitHub release
         if: steps.find_release.outputs.exists != 'true'
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.determine.outputs.tag }}
           name: Stash AI Server ${{ needs.determine.outputs.version }}
