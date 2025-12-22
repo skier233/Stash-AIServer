@@ -488,7 +488,7 @@ jobs:
 
       - name: Publish GitHub release
         if: steps.find_release.outputs.exists != 'true'
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.determine.outputs.tag }}
           name: Stash AI Server ${{ needs.determine.outputs.version }}
