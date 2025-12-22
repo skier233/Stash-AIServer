@@ -417,7 +417,8 @@ def _construct_stash_interface(url: str, api_key: str = None) -> StashInterface:
     scheme = parsed.scheme or 'http'
     # Extract hostname and port separately so stashapi doesn't append default port again
     hostname = parsed.hostname or 'localhost'
-    port = parsed.port if parsed.port else 3000
+    default_ports = {'https': 443, 'http': 80}
+    port = parsed.port or default_ports.get(scheme, 3000)
     conn: Dict[str, Any] = {
         'Scheme': scheme,
         'Host': hostname,
