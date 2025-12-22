@@ -437,6 +437,7 @@ jobs:
           target: runtime
           build-args: |
             VERSION=${{ needs.determine.outputs.version }}
+            STASH_AI_VERSION=${{ needs.determine.outputs.version }}
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
