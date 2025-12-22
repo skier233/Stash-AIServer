@@ -75,6 +75,37 @@ def pg_ctl(action: str, data_dir: Path, port: int, log_file: Path) -> None:
     run(args)
 
 
+def _maybe_clear_stale_pid(data_dir: Path) -> None:
+    """Remove postmaster.pid if it points to a non-running process.
+
+    Stale PID files cause pg_ctl start to no-op and pg_isready to hang until
+    timeout. We only remove the PID file when the recorded PID is not alive.
+    """
+
+    pid_file = data_dir / "postmaster.pid"
+    if not pid_file.exists():
+        return
+
+    try:
+        pid_text = pid_file.read_text().splitlines()
+        recorded_pid = int(pid_text[0]) if pid_text else None
+    except (OSError, ValueError):
+        recorded_pid = None
+
+    if recorded_pid is None:
+        pid_file.unlink(missing_ok=True)
+        return
+
+    try:
+        # os.kill(pid, 0) checks liveness without terminating the process.
+        os.kill(recorded_pid, 0)
+        # Process exists; keep the PID file.
+        return
+    except OSError:
+        # No such process; safe to clear the stale PID file.
+        pid_file.unlink(missing_ok=True)
+
+
 def wait_for_ready(port: int, timeout: float = 30.0) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -139,6 +170,7 @@ def main(argv: list[str]) -> int:
         if args.command == "init":
             ensure_cluster(data_dir, args.user, args.password, args.port, log_file)
         elif args.command == "start":
+            _maybe_clear_stale_pid(data_dir)
             if not (data_dir / "postmaster.pid").exists():
                 pg_ctl("start", data_dir, args.port, log_file)
             wait_for_ready(args.port)

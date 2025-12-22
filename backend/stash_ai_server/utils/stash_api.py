@@ -413,11 +413,23 @@ def _have_valid_api_key(api_key) -> bool:
 
 def _construct_stash_interface(url: str, api_key: str = None) -> StashInterface:
     """Construct a StashInterface from environment variables."""
+
     parsed = urlparse(url)
+    # If the URL has no scheme/netloc (e.g., "localhost:9999"), prepend http for parsing.
+    if not parsed.scheme and not parsed.netloc and parsed.path:
+        parsed = urlparse(f"http://{url}")
+
     scheme = parsed.scheme or 'http'
-    # Extract hostname and port separately so stashapi doesn't append default port again
     hostname = parsed.hostname or 'localhost'
-    port = parsed.port if parsed.port else 3000
+
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None  # Bad port in URL; fall back below.
+
+    if port is None:
+        # Choose sensible defaults that align with the scheme.
+        port = 443 if scheme == 'https' else 80
     conn: Dict[str, Any] = {
         'Scheme': scheme,
         'Host': hostname,
