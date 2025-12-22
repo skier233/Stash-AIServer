@@ -82,3 +82,4 @@ yarn-error.log*
 
 # IDEs
 .idea/
+backend/config.docker.env
