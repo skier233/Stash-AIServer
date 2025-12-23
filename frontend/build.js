@@ -21,6 +21,7 @@ let files = [
   'src/BackendBase.ts',
   'src/BackendHealth.ts',
   'src/plugin_setup.py',
+  'src/README.md',
   'src/css/recommendedscenes.css',
   'src/css/SimilarScenes.css',
   'src/css/AIOverhaul.css',
