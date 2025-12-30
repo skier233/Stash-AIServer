@@ -376,6 +376,9 @@ async def get_available_tags(db: Session = Depends(get_db)):
     # Fetch tags and model data directly from the model server
     server_tags, server_models_data = await _get_tags_from_server(ai_server_url)
     
+    # server_models_data includes both active and inactive models
+    # Active models have tags, inactive models have active: false and empty tags
+    
     if not server_models_data:
         logger.warning("No model data returned from AI server, falling back to model info")
         # Fallback: try to get model info and use hardcoded tags
@@ -450,6 +453,7 @@ async def get_available_tags(db: Session = Depends(get_db)):
         
         model_tags = model_data.get('tags', [])
         model_categories = model_data.get('categories', [])
+        is_active = model_data.get('active', True)  # Default to True for backward compatibility
         
         # Get display info for the model
         model_display_info = _MODEL_INFO.get(model_name)
@@ -463,23 +467,29 @@ async def get_available_tags(db: Session = Depends(get_db)):
                     'category_display': cat.replace('actions', 'Sexual Actions').replace('bdsm', 'BDSM').replace('bodyparts', 'Body Parts').replace('positions', 'Positions').title()
                 }
             else:
-                # Skip if we can't determine category
-                continue
+                # Use displayName from server if available, otherwise generate one
+                display_name = model_data.get('displayName') or model_name.replace('_', ' ').title()
+                model_display_info = {
+                    'display': display_name,
+                    'category': 'unknown',
+                    'category_display': 'Unknown'
+                }
         
         model_display_name = model_display_info['display']
         category = model_display_info.get('category', model_categories[0] if model_categories else 'unknown')
         category_display = model_display_info['category_display']
         
-        # Add model to models list
+        # Add model to models list (including inactive ones)
         models_list.append({
             'name': model_name,
             'displayName': model_display_name,
             'category': category,
             'categoryDisplay': category_display,
-            'tagCount': len(model_tags)
+            'tagCount': len(model_tags),
+            'active': is_active  # Pass through active status
         })
         
-        # Add tags for this specific model
+        # Only add tags for active models (inactive models have empty tags array)
         for tag in model_tags:
             tag_key = f"{tag}::{model_name}"
             if tag_key not in seen_tags:

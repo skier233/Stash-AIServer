@@ -39,14 +39,13 @@ async def call_images_api(service: RemoteServiceBase, image_paths: list[str]) ->
             "threshold": 0.5,
             "return_confidence": False
         }
-        if excluded_tags:
-            payload["excluded_tags"] = excluded_tags
-            _log.info(
-                "call_images_api: Added excluded_tags to payload: %s",
-                excluded_tags
-            )
-        else:
-            _log.info("call_images_api: No excluded_tags to add to payload")
+        # Always include excluded_tags in payload, even if empty, for consistency
+        payload["excluded_tags"] = excluded_tags
+        _log.info(
+            "call_images_api: Added excluded_tags to payload: %s (count=%d)",
+            excluded_tags,
+            len(excluded_tags) if isinstance(excluded_tags, list) else 0
+        )
         
         return await service.http.post(
             IMAGES_ENDPOINT,
@@ -98,14 +97,13 @@ async def call_scene_api(
         }
         if skip_categories:
             payload["categories_to_skip"] = list(skip_categories)
-        if excluded_tags:
-            payload["excluded_tags"] = excluded_tags
-            _log.info(
-                "call_scene_api: Added excluded_tags to payload: %s",
-                excluded_tags
-            )
-        else:
-            _log.info("call_scene_api: No excluded_tags to add to payload")
+        # Always include excluded_tags in payload, even if empty, for consistency
+        payload["excluded_tags"] = excluded_tags
+        _log.info(
+            "call_scene_api: Added excluded_tags to payload: %s (count=%d)",
+            excluded_tags,
+            len(excluded_tags) if isinstance(excluded_tags, list) else 0
+        )
         
         _log.debug(
             "call_scene_api: Sending request to %s with payload keys: %s",

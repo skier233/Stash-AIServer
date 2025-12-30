@@ -480,6 +480,7 @@ const PluginSettings = () => {
   const [sharedKeyReveal, setSharedKeyReveal] = React.useState(false);
   const [tagModalOpen, setTagModalOpen] = React.useState(false);
   const [availableTags, setAvailableTags] = React.useState([] as any[]);
+  const [availableModels, setAvailableModels] = React.useState([] as any[]);
   const [excludedTags, setExcludedTags] = React.useState([] as string[]);
   const [tagModalLoading, setTagModalLoading] = React.useState(false);
   const [tagModalSaving, setTagModalSaving] = React.useState(false);
@@ -646,13 +647,16 @@ const PluginSettings = () => {
         jfetch(`${backendBase}/api/v1/plugins/system/tags/excluded`)
       ]);
       const tags = Array.isArray(tagsData?.tags) ? tagsData.tags : [];
+      const models = Array.isArray(tagsData?.models) ? tagsData.models : [];
       setAvailableTags(tags);
+      setAvailableModels(models); // Store models list for active/disabled status
       setExcludedTags(Array.isArray(excludedData?.excluded_tags) ? excludedData.excluded_tags : []);
       // Start with all models collapsed
       setExpandedModels(new Set());
     } catch (e: any) {
       setError(e.message || 'Failed to load tag data');
       setAvailableTags([]);
+      setAvailableModels([]);
       setExcludedTags([]);
       setExpandedModels(new Set());
     } finally {
@@ -2660,6 +2664,18 @@ const PluginSettings = () => {
                 }
                 tagsByModel[modelName].push(tagInfo);
               });
+              
+              // Also include all models from availableModels (including inactive ones)
+              const allModelsMap: Record<string, any> = {};
+              availableModels.forEach((model: any) => {
+                const modelName = model.displayName || model.name || 'Unknown';
+                allModelsMap[modelName] = model;
+                // Initialize empty array for models without tags
+                if (!tagsByModel[modelName]) {
+                  tagsByModel[modelName] = [];
+                }
+              });
+              
               const sortedModels = Object.keys(tagsByModel).sort();
 
               const toggleModel = (modelName: string) => {
@@ -2705,6 +2721,10 @@ const PluginSettings = () => {
                       const excludedCount = modelTags.filter((tag: any) => excludedTags.includes(tag.tag)).length;
                       const totalCount = modelTags.length;
                       
+                      // Check if this model is active
+                      const modelInfo = allModelsMap[modelName] || availableModels.find((m: any) => (m.displayName || m.name) === modelName);
+                      const isActive = modelInfo ? (modelInfo.active !== false && modelTags.length > 0) : (modelTags.length > 0);
+                      
                       return (
                         <div key={modelName} style={{marginBottom: 4}}>
                           <div
@@ -2714,66 +2734,102 @@ const PluginSettings = () => {
                               padding: '8px 12px',
                               background: '#1a1a1a',
                               borderRadius: 4,
-                              cursor: 'pointer',
+                              cursor: isActive ? 'pointer' : 'default',
                               userSelect: 'none',
                               border: '1px solid #2a2a2a',
-                              marginBottom: isExpanded ? 4 : 0
+                              marginBottom: isExpanded ? 4 : 0,
+                              opacity: isActive ? 1 : 0.6
                             }}
-                            onClick={() => toggleModel(modelName)}
+                            onClick={() => isActive && toggleModel(modelName)}
                           >
-                            <span style={{
-                              display: 'inline-block',
-                              width: 12,
-                              height: 12,
-                              marginRight: 8,
-                              transition: 'transform 0.2s',
-                              transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
-                              fontSize: 10,
-                              lineHeight: '12px',
-                              textAlign: 'center'
-                            }}>▶</span>
-                            <span style={{fontWeight: 600, fontSize: 12, flex: 1}}>{modelName}</span>
-                            <button
-                              style={{
-                                fontSize: 10,
-                                padding: '2px 6px',
-                                marginRight: 4,
-                                background: '#2a2a2a',
-                                border: '1px solid #444',
-                                borderRadius: 3,
-                                color: '#ccc',
-                                cursor: 'pointer',
-                                opacity: tagModalSaving ? 0.5 : 1
-                              }}
-                              onClick={(e) => uncheckAllForModel(modelName, e)}
-                              disabled={tagModalSaving}
-                              title="Uncheck all tags for this model"
-                            >
-                              Uncheck All
-                            </button>
-                            <button
-                              style={{
-                                fontSize: 10,
-                                padding: '2px 6px',
+                            {isActive ? (
+                              <span style={{
+                                display: 'inline-block',
+                                width: 12,
+                                height: 12,
                                 marginRight: 8,
-                                background: '#2a2a2a',
-                                border: '1px solid #444',
-                                borderRadius: 3,
-                                color: '#ccc',
-                                cursor: 'pointer',
-                                opacity: tagModalSaving ? 0.5 : 1
-                              }}
-                              onClick={(e) => checkAllForModel(modelName, e)}
-                              disabled={tagModalSaving}
-                              title="Check all tags for this model"
-                            >
-                              Check All
-                            </button>
-                            <span style={{fontSize: 10, opacity: 0.7, marginLeft: 8}}>
-                              {totalCount - excludedCount}/{totalCount}
+                                transition: 'transform 0.2s',
+                                transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                                fontSize: 10,
+                                lineHeight: '12px',
+                                textAlign: 'center'
+                              }}>▶</span>
+                            ) : (
+                              <span style={{
+                                display: 'inline-block',
+                                width: 12,
+                                height: 12,
+                                marginRight: 8,
+                                fontSize: 10,
+                                lineHeight: '12px',
+                                textAlign: 'center',
+                                opacity: 0.3
+                              }}>▶</span>
+                            )}
+                            <span style={{fontWeight: 600, fontSize: 12, flex: 1}}>{modelName}</span>
+                            <span style={{
+                              fontSize: 9,
+                              padding: '2px 6px',
+                              marginRight: 8,
+                              borderRadius: 3,
+                              fontWeight: 600,
+                              textTransform: 'uppercase',
+                              background: isActive ? '#1a4d1a' : '#3a3a3a',
+                              color: isActive ? '#4ade80' : '#999',
+                              border: `1px solid ${isActive ? '#2d6d2d' : '#555'}`
+                            }}>
+                              {isActive ? 'Active' : 'Disabled'}
                             </span>
+                            {isActive && (
+                              <>
+                                <button
+                                  style={{
+                                    fontSize: 10,
+                                    padding: '2px 6px',
+                                    marginRight: 4,
+                                    background: '#2a2a2a',
+                                    border: '1px solid #444',
+                                    borderRadius: 3,
+                                    color: '#ccc',
+                                    cursor: 'pointer',
+                                    opacity: tagModalSaving ? 0.5 : 1
+                                  }}
+                                  onClick={(e) => uncheckAllForModel(modelName, e)}
+                                  disabled={tagModalSaving}
+                                  title="Uncheck all tags for this model"
+                                >
+                                  Uncheck All
+                                </button>
+                                <button
+                                  style={{
+                                    fontSize: 10,
+                                    padding: '2px 6px',
+                                    marginRight: 8,
+                                    background: '#2a2a2a',
+                                    border: '1px solid #444',
+                                    borderRadius: 3,
+                                    color: '#ccc',
+                                    cursor: 'pointer',
+                                    opacity: tagModalSaving ? 0.5 : 1
+                                  }}
+                                  onClick={(e) => checkAllForModel(modelName, e)}
+                                  disabled={tagModalSaving}
+                                  title="Check all tags for this model"
+                                >
+                                  Check All
+                                </button>
+                                <span style={{fontSize: 10, opacity: 0.7, marginLeft: 8}}>
+                                  {totalCount - excludedCount}/{totalCount}
+                                </span>
+                              </>
+                            )}
+                            {!isActive && (
+                              <span style={{fontSize: 10, opacity: 0.5, marginLeft: 8, fontStyle: 'italic'}}>
+                                Not loaded
+                              </span>
+                            )}
                           </div>
-                          {isExpanded && (
+                          {isActive && isExpanded && (
                             <div style={{display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 12px', fontSize: 11, padding: '8px 0 8px 20px', background: '#0f0f0f', borderRadius: 4}}>
                               {modelTags.map((tagInfo: any, idx: number) => {
                                 const isExcluded = excludedTags.includes(tagInfo.tag);
