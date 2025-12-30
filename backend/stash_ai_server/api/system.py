@@ -6,11 +6,12 @@ from pathlib import Path
 from typing import Tuple
 
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from stash_ai_server.api.version import get_version_payload
 from stash_ai_server.core.api_key import require_shared_api_key
 from stash_ai_server.core.system_settings import get_value as sys_get
+from stash_ai_server.db.ai_results_store import delete_scene_ai_results_async
 from stash_ai_server.schemas.health import HealthComponent, HealthStatus, SystemHealthSnapshot
 from stash_ai_server.utils import stash_db
 from stash_ai_server.utils.path_mutation import mutate_path_for_backend
@@ -171,3 +172,37 @@ async def get_system_health() -> SystemHealthSnapshot:
         db_alembic_head=version_payload.get('db_alembic_head'),
         version_payload=version_payload,
     )
+
+
+@router.delete("/ai-results/scene/{scene_id}")
+async def clear_scene_ai_results(
+    scene_id: int,
+    service: str | None = Query(default=None, description="Optional service name to filter by"),
+):
+    """Delete all stored AI results for a scene (for development/testing).
+    
+    This will delete all AI model runs, aggregates, and timespans for the specified scene.
+    Optionally filter by service name.
+    
+    Args:
+        scene_id: The scene ID to clear results for
+        service: Optional service name to filter by. If not provided, deletes for all services.
+    
+    Returns:
+        Dictionary with counts of deleted records
+    """
+    try:
+        result = await delete_scene_ai_results_async(
+            scene_id=scene_id,
+            service=service,
+        )
+        return {
+            "status": "success",
+            "scene_id": scene_id,
+            "service": service,
+            "deleted": result,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear AI results: {str(e)}")

@@ -1,11 +1,12 @@
 from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Body
 from pydantic import BaseModel
-from typing import List, Optional, Any, Dict
+from typing import List, Optional, Any, Dict, Tuple
 import datetime
+import json
 from sqlalchemy.orm import Session
 from sqlalchemy import select, delete
-import httpx, traceback  # json unused
+import httpx, traceback
 from stash_ai_server.utils.string_utils import normalize_null_strings
 from stash_ai_server.db.session import SessionLocal
 from stash_ai_server.models.plugin import PluginMeta, PluginSource, PluginCatalog, PluginSetting
@@ -16,8 +17,10 @@ from stash_ai_server.core.config import settings
 from stash_ai_server.core.compat import version_satisfies
 from stash_ai_server.utils.path_mutation import invalidate_path_mapping_cache
 from stash_ai_server.core.api_key import require_shared_api_key
+import logging
 
 router = APIRouter(prefix='/plugins', tags=['plugins'], dependencies=[Depends(require_shared_api_key)])
+logger = logging.getLogger(__name__)
 
 # Dependency
 
@@ -231,6 +234,284 @@ async def upsert_setting(plugin_name: str, key: str, payload: SettingUpsert, db:
         invalidate_path_mapping_cache(plugin_name)
     return {'status': 'ok'}
 
+# ---------------- Tag selection endpoints -----------------
+# Note: These endpoints must be defined before /system/settings/{key} to avoid route conflicts
+
+# Model name to display name and category mapping
+_MODEL_INFO = {
+    'gentler_river': {'display': 'Gentler River', 'category': 'actions', 'category_display': 'Sexual Actions'},
+    'stilted_glade': {'display': 'Stilted Glade', 'category': 'bdsm', 'category_display': 'BDSM'},
+    'fearless_terrain': {'display': 'Fearless Terrain', 'category': 'bodyparts', 'category_display': 'Body Parts'},
+    'blooming_star': {'display': 'Blooming Star', 'category': 'positions', 'category_display': 'Positions'},
+    'vivid_galaxy': {'display': 'Vivid Galaxy (Free)', 'category': 'actions', 'category_display': 'Sexual Actions'},
+    'distinctive_haze': {'display': 'Distinctive Haze (VIP)', 'category': 'actions', 'category_display': 'Sexual Actions'},
+    'happy_terrain': {'display': 'Happy Terrain (VIP)', 'category': 'bdsm', 'category_display': 'BDSM'},
+    'electric_smoke': {'display': 'Electric Smoke (VIP)', 'category': 'bodyparts', 'category_display': 'Body Parts'},
+}
+
+# Tag lists by category (from CSV)
+_TAGS_BY_CATEGORY = {
+    'actions': [
+        '69', 'Anal Fucking', 'Ass Licking', 'Ass Penetration', 'Ball Licking/Sucking', 'Blowjob',
+        'Cum on Person', 'Cum Swapping', 'Cumshot', 'Deepthroat', 'Double Penetration', 'Fingering',
+        'Fisting', 'Footjob', 'Gangbang', 'Gloryhole', 'Grabbing Ass', 'Grabbing Boobs',
+        'Grabbing Hair/Head', 'Handjob', 'Kissing', 'Licking Penis', 'Masturbation', 'Pissing',
+        'Pussy Licking (Clearly Visible)', 'Pussy Licking', 'Pussy Rubbing', 'Sucking Fingers',
+        'Sucking Toy/Dildo', 'Wet (Genitals)', 'Titjob', 'Tribbing/Scissoring', 'Undressing',
+        'Vaginal Penetration', 'Vaginal Fucking', 'Vibrating'
+    ],
+    'bdsm': [
+        'Chastity', 'Female Bondage', 'Male Bondage', 'Bondage', 'Choking', 'Pegging',
+        'Nipple Clamps', 'Gag', 'Pain', 'Anal Hook', 'Chastity (Male)', 'Chastity (Female)',
+        'Metal Chastity', 'Plastic Chastity', 'Cum in Chastity', 'Crotch Roped', 'Bondaged Boobs',
+        'Tied Penis', 'Tied Balls', 'Clover Clamps', 'Clothes Pin', 'Weights', 'Alligator Clamp',
+        'Ball Gag', 'Ring Gag', 'Harness Gag', 'Bit Gag', 'Muzzle Gag', 'Dildo Gag',
+        'Inflatable Gag', 'Tape Gag', 'Rope Bondage', 'Metal Bondage', 'Leather Bondage',
+        'Collared', 'Blindfolded', 'Chair Tied', 'Straight Jacket', 'Yoke', 'Whip', 'Flogger',
+        'Electric Torture', 'Crush Torture', 'Arm Binder', 'Rope Collar', 'Leather Collar',
+        'Metal Collar', 'Leash', 'Catheter', 'Handcuffed'
+    ],
+    'bodyparts': [
+        'Ass', 'Asshole', 'Anal Gape', 'Balls', 'Boobs', 'Cum', 'Dick', 'Face', 'Feet',
+        'Fingers', 'Belly Button', 'Nipples', 'Thighs', 'Lower Legs', 'Tongue', 'Pussy',
+        'Pussy Gape', 'Spit', 'Oiled', 'Wet (Water)', 'Pussy Fully Visible', 'Pussy Closeup',
+        'Pussy Very Closeup', 'Wet Pussy', 'Very Wet Pussy', 'Cum on Pussy', 'Small Labia',
+        'Big Labia', 'Pierced Pussy', 'Pussy Hair', 'Very Hairy Pussy', 'Innie', 'Medium Labia',
+        'Spread Labia', 'Pink Pussy', 'Brown Pussy', 'Shaved Pussy'
+    ],
+    'positions': [
+        '69_Position', 'Doggystyle', 'Facesitting', 'Cowgirl', 'Rev Cowgirl', 'Missionary',
+        'G Missionary', 'Stand Cradle', 'Kneeling', 'Laying Down', 'Bent Over', 'Sitting',
+        'Squatting', 'Flexible', 'Upskirt', 'FPOV', 'MPOV', 'CloseUp', '1F', '1F1M', '2F',
+        '2F1M', '3F', '1F2M', '1M', '2M', '3M', 'Orgy'
+    ],
+}
+
+# Free model has reduced tag list (only 10 tags)
+_FREE_MODEL_TAGS = [
+    '69', 'Anal Fucking', 'Blowjob', 'Cumshot', 'Fingering', 'Handjob', 'Kissing',
+    'Pussy Licking', 'Pussy Rubbing', 'Vaginal Fucking'
+]
+
+
+async def _get_ai_server_url(db: Session) -> str | None:
+    """Get AI server URL from skier_aitagging plugin settings."""
+    row = db.execute(
+        select(PluginSetting).where(
+            PluginSetting.plugin_name == 'skier_aitagging',
+            PluginSetting.key == 'server_url'
+        )
+    ).scalar_one_or_none()
+    if row:
+        return row.value if row.value is not None else row.default_value
+    return None
+
+
+async def _get_active_models(ai_server_url: str) -> List[Dict[str, Any]]:
+    """Query AI server for active models."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{ai_server_url.rstrip('/')}/v3/current_ai_models/")
+            response.raise_for_status()
+            return response.json()
+    except Exception:
+        return []
+
+
+async def _get_tags_from_server(ai_server_url: str) -> Tuple[List[str], List[Dict[str, Any]]]:
+    """Query AI server for available tags and model information.
+    
+    Returns:
+        Tuple of (all_tags_list, models_data_list)
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    url = f"{ai_server_url.rstrip('/')}/tags/available"
+    logger.info(f"Fetching tags from AI server: {url}")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url)
+            logger.info(f"AI server response status: {response.status_code}")
+            response.raise_for_status()
+            data = response.json()
+            tag_count = len(data.get('tags', []))
+            model_count = len(data.get('models', []))
+            logger.info(f"AI server returned {tag_count} tags and {model_count} models")
+            all_tags = data.get('tags', [])
+            models_data = data.get('models', [])
+            return all_tags, models_data
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP error fetching tags from AI server {url}: {e.response.status_code} - {e.response.text}")
+        return [], []
+    except Exception as e:
+        logger.error(f"Failed to fetch tags from AI server {url}: {e}", exc_info=True)
+        return [], []
+
+
+class AvailableTagsResponse(BaseModel):
+    tags: List[Dict[str, Any]]
+    models: List[Dict[str, Any]]
+    error: Optional[str] = None
+
+class ExcludedTagsResponse(BaseModel):
+    excluded_tags: List[str]
+
+
+@router.get('/system/tags/test', name='test_tags_endpoint')
+async def test_tags_endpoint():
+    """Test endpoint to verify router is working."""
+    return {"status": "ok", "message": "Tags router is working!"}
+
+@router.get('/system/tags/available', response_model=AvailableTagsResponse, name='get_available_tags')
+async def get_available_tags(db: Session = Depends(get_db)):
+    """Get list of available tags from active AI models."""
+    import logging
+    logger = logging.getLogger(__name__)
+    ai_server_url = await _get_ai_server_url(db)
+    logger.info(f"AI server URL from config: {ai_server_url}")
+    if not ai_server_url:
+        logger.warning("AI server URL not configured in database")
+        return AvailableTagsResponse(tags=[], models=[], error='AI server URL not configured')
+    
+    # Fetch tags and model data directly from the model server
+    server_tags, server_models_data = await _get_tags_from_server(ai_server_url)
+    
+    if not server_models_data:
+        logger.warning("No model data returned from AI server, falling back to model info")
+        # Fallback: try to get model info and use hardcoded tags
+        active_models = await _get_active_models(ai_server_url)
+        if not active_models:
+            return AvailableTagsResponse(tags=[], models=[], error='Could not fetch tags or models from AI server')
+        
+        # Use fallback logic with hardcoded tags
+        tags_list = []
+        models_list = []
+        seen_tags = set()
+        
+        for model_info in active_models:
+            model_name = model_info.get('name', model_info.get('model_file_name', '')).replace('.yaml', '').replace('.pt', '').replace('.pt.enc', '')
+            if not model_name:
+                continue
+            
+            model_display_info = _MODEL_INFO.get(model_name)
+            if not model_display_info:
+                category = model_info.get('categories', model_info.get('model_category', []))
+                if category and isinstance(category, list) and len(category) > 0:
+                    cat = category[0]
+                    model_display_info = {
+                        'display': model_name.replace('_', ' ').title(),
+                        'category': cat,
+                        'category_display': cat.replace('actions', 'Sexual Actions').replace('bdsm', 'BDSM').replace('bodyparts', 'Body Parts').title()
+                    }
+                else:
+                    continue
+            
+            model_display_name = model_display_info['display']
+            category = model_display_info['category']
+            category_display = model_display_info['category_display']
+            
+            # Fallback to hardcoded tags
+            category_tags = _TAGS_BY_CATEGORY.get(category, [])
+            if model_name == 'vivid_galaxy':
+                category_tags = _FREE_MODEL_TAGS
+            
+            models_list.append({
+                'name': model_name,
+                'displayName': model_display_name,
+                'category': category,
+                'categoryDisplay': category_display,
+                'tagCount': len(category_tags)
+            })
+            
+            # Add tags for this model
+            for tag in category_tags:
+                tag_key = f"{tag}::{model_name}"
+                if tag_key not in seen_tags:
+                    seen_tags.add(tag_key)
+                    tags_list.append({
+                        'tag': tag,
+                        'model': model_name,
+                        'modelDisplayName': model_display_name,
+                        'category': category,
+                        'categoryDisplay': category_display
+                    })
+        
+        return AvailableTagsResponse(tags=tags_list, models=models_list)
+    
+    # Use model-specific tag data from server
+    tags_list = []
+    models_list = []
+    seen_tags = set()
+    
+    for model_data in server_models_data:
+        model_name = model_data.get('name', '').replace('.yaml', '').replace('.pt', '').replace('.pt.enc', '')
+        if not model_name:
+            continue
+        
+        model_tags = model_data.get('tags', [])
+        model_categories = model_data.get('categories', [])
+        
+        # Get display info for the model
+        model_display_info = _MODEL_INFO.get(model_name)
+        if not model_display_info:
+            # Try to infer from model categories
+            if model_categories and isinstance(model_categories, list) and len(model_categories) > 0:
+                cat = model_categories[0]
+                model_display_info = {
+                    'display': model_name.replace('_', ' ').title(),
+                    'category': cat,
+                    'category_display': cat.replace('actions', 'Sexual Actions').replace('bdsm', 'BDSM').replace('bodyparts', 'Body Parts').replace('positions', 'Positions').title()
+                }
+            else:
+                # Skip if we can't determine category
+                continue
+        
+        model_display_name = model_display_info['display']
+        category = model_display_info.get('category', model_categories[0] if model_categories else 'unknown')
+        category_display = model_display_info['category_display']
+        
+        # Add model to models list
+        models_list.append({
+            'name': model_name,
+            'displayName': model_display_name,
+            'category': category,
+            'categoryDisplay': category_display,
+            'tagCount': len(model_tags)
+        })
+        
+        # Add tags for this specific model
+        for tag in model_tags:
+            tag_key = f"{tag}::{model_name}"
+            if tag_key not in seen_tags:
+                seen_tags.add(tag_key)
+                tags_list.append({
+                    'tag': tag,
+                    'model': model_name,
+                    'modelDisplayName': model_display_name,
+                    'category': category,
+                    'categoryDisplay': category_display
+                })
+    
+    return AvailableTagsResponse(tags=tags_list, models=models_list)
+
+
+@router.get('/system/tags/excluded', response_model=ExcludedTagsResponse, name='get_excluded_tags')
+async def get_excluded_tags(db: Session = Depends(get_db)):
+    """Get current list of excluded tags."""
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info("get_excluded_tags endpoint called")
+    excluded = sys_get_value('EXCLUDED_TAGS', [])
+    if excluded is None:
+        excluded = []
+    if isinstance(excluded, str):
+        try:
+            excluded = json.loads(excluded)
+        except:
+            excluded = []
+    return ExcludedTagsResponse(excluded_tags=excluded if isinstance(excluded, list) else [])
+
+
 # ---------------- System (global) settings endpoints -----------------
 
 @router.get('/system/settings', response_model=List[PluginSettingModel])
@@ -249,11 +530,21 @@ async def list_system_settings(db: Session = Depends(get_db)):
 
 @router.put('/system/settings/{key}')
 async def upsert_system_setting(key: str, payload: SettingUpsert, db: Session = Depends(get_db)):
+    logger.info("upsert_system_setting: Received request to update setting key=%s", key)
     row = db.execute(select(PluginSetting).where(PluginSetting.plugin_name == SYSTEM_PLUGIN_NAME, PluginSetting.key == key)).scalar_one_or_none()
     if not row:
+        logger.warning("upsert_system_setting: Setting not found - key=%s", key)
         raise HTTPException(status_code=404, detail='NOT_FOUND')
     v = normalize_null_strings(payload.value)
     previous_effective = row.value if row.value is not None else row.default_value
+    
+    # Special logging for EXCLUDED_TAGS
+    if key == 'EXCLUDED_TAGS':
+        logger.info(
+            "upsert_system_setting: Updating EXCLUDED_TAGS - previous value: %s, new value: %s",
+            previous_effective,
+            v
+        )
     if v is not None:
         if row.type == 'number':
             try: v = float(v)
@@ -267,17 +558,113 @@ async def upsert_system_setting(key: str, payload: SettingUpsert, db: Session = 
             opts = row.options if isinstance(row.options, list) else []
             if v not in opts:
                 raise HTTPException(status_code=400, detail='INVALID_OPTION')
+        elif row.type == 'json':
+            if not isinstance(v, (list, dict, str, int, float, bool, type(None))):
+                raise HTTPException(status_code=400, detail='INVALID_JSON')
+            if isinstance(v, str):
+                try:
+                    v = json.loads(v)
+                except json.JSONDecodeError:
+                    raise HTTPException(status_code=400, detail='INVALID_JSON')
     row.value = v
     db.commit()
     sys_invalidate_cache()
     if key == 'PATH_MAPPINGS':
         invalidate_path_mapping_cache(system=True)
     current_effective = row.value if row.value is not None else row.default_value
+    
+    # Special logging for EXCLUDED_TAGS after save
+    if key == 'EXCLUDED_TAGS':
+        logger.info(
+            "upsert_system_setting: Successfully saved EXCLUDED_TAGS - saved value: %s (type: %s)",
+            current_effective,
+            type(current_effective).__name__
+        )
+        # Verify it can be retrieved
+        from stash_ai_server.core.system_settings import get_value as sys_get_value
+        retrieved = sys_get_value('EXCLUDED_TAGS', [])
+        logger.info(
+            "upsert_system_setting: Verified EXCLUDED_TAGS retrieval after save - retrieved: %s (type: %s)",
+            retrieved,
+            type(retrieved).__name__
+        )
+    
     if key in {'STASH_URL', 'STASH_API_KEY'} and current_effective != previous_effective:
         schedule_backend_restart()
+    logger.info("upsert_system_setting: Successfully updated setting key=%s", key)
     return {'status': 'ok'}
+_TAGS_BY_CATEGORY = {
+    'actions': [
+        '69', 'Anal Fucking', 'Ass Licking', 'Ass Penetration', 'Ball Licking/Sucking', 'Blowjob',
+        'Cum on Person', 'Cum Swapping', 'Cumshot', 'Deepthroat', 'Double Penetration', 'Fingering',
+        'Fisting', 'Footjob', 'Gangbang', 'Gloryhole', 'Grabbing Ass', 'Grabbing Boobs',
+        'Grabbing Hair/Head', 'Handjob', 'Kissing', 'Licking Penis', 'Masturbation', 'Pissing',
+        'Pussy Licking (Clearly Visible)', 'Pussy Licking', 'Pussy Rubbing', 'Sucking Fingers',
+        'Sucking Toy/Dildo', 'Wet (Genitals)', 'Titjob', 'Tribbing/Scissoring', 'Undressing',
+        'Vaginal Penetration', 'Vaginal Fucking', 'Vibrating'
+    ],
+    'bdsm': [
+        'Chastity', 'Female Bondage', 'Male Bondage', 'Bondage', 'Choking', 'Pegging',
+        'Nipple Clamps', 'Gag', 'Pain', 'Anal Hook', 'Chastity (Male)', 'Chastity (Female)',
+        'Metal Chastity', 'Plastic Chastity', 'Cum in Chastity', 'Crotch Roped', 'Bondaged Boobs',
+        'Tied Penis', 'Tied Balls', 'Clover Clamps', 'Clothes Pin', 'Weights', 'Alligator Clamp',
+        'Ball Gag', 'Ring Gag', 'Harness Gag', 'Bit Gag', 'Muzzle Gag', 'Dildo Gag',
+        'Inflatable Gag', 'Tape Gag', 'Rope Bondage', 'Metal Bondage', 'Leather Bondage',
+        'Collared', 'Blindfolded', 'Chair Tied', 'Straight Jacket', 'Yoke', 'Whip', 'Flogger',
+        'Electric Torture', 'Crush Torture', 'Arm Binder', 'Rope Collar', 'Leather Collar',
+        'Metal Collar', 'Leash', 'Catheter', 'Handcuffed'
+    ],
+    'bodyparts': [
+        'Ass', 'Asshole', 'Anal Gape', 'Balls', 'Boobs', 'Cum', 'Dick', 'Face', 'Feet',
+        'Fingers', 'Belly Button', 'Nipples', 'Thighs', 'Lower Legs', 'Tongue', 'Pussy',
+        'Pussy Gape', 'Spit', 'Oiled', 'Wet (Water)', 'Pussy Fully Visible', 'Pussy Closeup',
+        'Pussy Very Closeup', 'Wet Pussy', 'Very Wet Pussy', 'Cum on Pussy', 'Small Labia',
+        'Big Labia', 'Pierced Pussy', 'Pussy Hair', 'Very Hairy Pussy', 'Innie', 'Medium Labia',
+        'Spread Labia', 'Pink Pussy', 'Brown Pussy', 'Shaved Pussy'
+    ],
+    'positions': [
+        '69_Position', 'Doggystyle', 'Facesitting', 'Cowgirl', 'Rev Cowgirl', 'Missionary',
+        'G Missionary', 'Stand Cradle', 'Kneeling', 'Laying Down', 'Bent Over', 'Sitting',
+        'Squatting', 'Flexible', 'Upskirt', 'FPOV', 'MPOV', 'CloseUp', '1F', '1F1M', '2F',
+        '2F1M', '3F', '1F2M', '1M', '2M', '3M', 'Orgy'
+    ],
+}
+
+# Free model has reduced tag list (only 10 tags)
+_FREE_MODEL_TAGS = [
+    '69', 'Anal Fucking', 'Blowjob', 'Cumshot', 'Fingering', 'Handjob', 'Kissing',
+    'Pussy Licking', 'Pussy Rubbing', 'Vaginal Fucking'
+]
 
 
+async def _get_ai_server_url(db: Session) -> str | None:
+    """Get AI server URL from skier_aitagging plugin settings."""
+    row = db.execute(
+        select(PluginSetting).where(
+            PluginSetting.plugin_name == 'skier_aitagging',
+            PluginSetting.key == 'server_url'
+        )
+    ).scalar_one_or_none()
+    if row:
+        return row.value if row.value is not None else row.default_value
+    return None
+
+
+async def _get_active_models(ai_server_url: str) -> List[Dict[str, Any]]:
+    """Query AI server for active models."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{ai_server_url.rstrip('/')}/v3/current_ai_models/")
+            response.raise_for_status()
+            return response.json()
+    except Exception:
+        return []
+
+
+class AvailableTagsResponse(BaseModel):
+    tags: List[Dict[str, Any]]
+    models: List[Dict[str, Any]]
+    error: Optional[str] = None
 
 INDEX_EXPECTED_SCHEMA = 1
 

@@ -478,6 +478,12 @@ const PluginSettings = () => {
   const [sharedKeyDraft, setSharedKeyDraft] = React.useState('');
   const [sharedKeySaving, setSharedKeySaving] = React.useState(false);
   const [sharedKeyReveal, setSharedKeyReveal] = React.useState(false);
+  const [tagModalOpen, setTagModalOpen] = React.useState(false);
+  const [availableTags, setAvailableTags] = React.useState([] as any[]);
+  const [excludedTags, setExcludedTags] = React.useState([] as string[]);
+  const [tagModalLoading, setTagModalLoading] = React.useState(false);
+  const [tagModalSaving, setTagModalSaving] = React.useState(false);
+  const [expandedModels, setExpandedModels] = React.useState(new Set() as any as Set<string>);
   const selfConfigRef = React.useRef({} as any);
 
   const showPluginActionMessage = React.useCallback((message: string, level: 'error' | 'info' | 'success' = 'error') => {
@@ -631,6 +637,44 @@ const PluginSettings = () => {
       setSystemLoading(false);
     }
   }, [backendBase]);
+
+  const loadTagModalData = React.useCallback(async () => {
+    setTagModalLoading(true);
+    try {
+      const [tagsData, excludedData] = await Promise.all([
+        jfetch(`${backendBase}/api/v1/plugins/system/tags/available`),
+        jfetch(`${backendBase}/api/v1/plugins/system/tags/excluded`)
+      ]);
+      const tags = Array.isArray(tagsData?.tags) ? tagsData.tags : [];
+      setAvailableTags(tags);
+      setExcludedTags(Array.isArray(excludedData?.excluded_tags) ? excludedData.excluded_tags : []);
+      // Start with all models collapsed
+      setExpandedModels(new Set());
+    } catch (e: any) {
+      setError(e.message || 'Failed to load tag data');
+      setAvailableTags([]);
+      setExcludedTags([]);
+      setExpandedModels(new Set());
+    } finally {
+      setTagModalLoading(false);
+    }
+  }, [backendBase]);
+
+  const saveExcludedTags = React.useCallback(async (excluded: string[]) => {
+    setTagModalSaving(true);
+    try {
+      await jfetch(`${backendBase}/api/v1/plugins/system/settings/EXCLUDED_TAGS`, {
+        method: 'PUT',
+        body: JSON.stringify({ value: excluded })
+      });
+      await loadSystemSettings();
+      setTagModalOpen(false);
+    } catch (e: any) {
+      setError(e.message || 'Failed to save excluded tags');
+    } finally {
+      setTagModalSaving(false);
+    }
+  }, [backendBase, loadSystemSettings]);
 
   const refreshSource = React.useCallback(async (name: string) => {
     try { await jfetch(`${backendBase}/api/v1/plugins/sources/${name}/refresh`, { method:'POST' }); await loadCatalogFor(name); await loadInstalled(); await loadSources(); } catch(e:any){ setError(e.message); }
@@ -2530,6 +2574,9 @@ const PluginSettings = () => {
             {systemSettings.map((f:any)=><div key={f.key} style={{minWidth:220}}><SystemFieldRenderer f={f} /></div>)}
           </div>
         )}
+        <div style={{marginTop:12}}>
+          <button style={smallBtn} onClick={() => { setTagModalOpen(true); loadTagModalData(); }}>Edit Tag List</button>
+        </div>
       </div>
       <div style={sectionStyle}>
         <h3 style={headingStyle}>Installed Plugins {loading.installed && <span style={{fontSize:11, opacity:0.7}}>loading…</span>}</h3>
@@ -2564,6 +2611,216 @@ const PluginSettings = () => {
         )}
         {renderCatalog()}
       </div>
+      {tagModalOpen && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0,0,0,0.7)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 10000
+        }} onClick={() => !tagModalSaving && setTagModalOpen(false)}>
+          <div style={{
+            background: '#1e1e1e',
+            border: '1px solid #444',
+            borderRadius: 8,
+            padding: 20,
+            maxWidth: '90vw',
+            maxHeight: '90vh',
+            width: 800,
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden'
+          }} onClick={(e) => e.stopPropagation()}>
+            <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8}}>
+              <h3 style={{margin: 0, fontSize: 18}}>Edit Tag List</h3>
+              <button style={smallBtn} onClick={() => setTagModalOpen(false)} disabled={tagModalSaving}>×</button>
+            </div>
+            <div style={{fontSize: 11, color: '#aaa', marginBottom: 16, lineHeight: 1.4, padding: '0 4px'}}>
+              To disable a model entirely (not just its tags), you need to run the model selection script in the backend server (port 8000). 
+              Navigate to the nsfw_ai_model_server directory and run: <code style={{background: '#2a2a2a', padding: '2px 4px', borderRadius: 3}}>python ./lib/configurator/configure_active_ai.py</code> 
+              or use <code style={{background: '#2a2a2a', padding: '2px 4px', borderRadius: 3}}>select_models.ps1</code> / <code style={{background: '#2a2a2a', padding: '2px 4px', borderRadius: 3}}>select_models.sh</code>. 
+              Unchecking all tags here will only hide them from the tag list, but the model will still run and consume resources.
+            </div>
+            {tagModalLoading ? (
+              <div style={{padding: 40, textAlign: 'center', fontSize: 12, opacity: 0.7}}>Loading tags...</div>
+            ) : availableTags.length === 0 ? (
+              <div style={{padding: 40, textAlign: 'center', fontSize: 12, opacity: 0.7}}>No tags available. Make sure AI server is configured and models are active.</div>
+            ) : (() => {
+              // Group tags by model
+              const tagsByModel: Record<string, any[]> = {};
+              availableTags.forEach((tagInfo: any) => {
+                const modelName = tagInfo.modelDisplayName || tagInfo.model || 'Unknown';
+                if (!tagsByModel[modelName]) {
+                  tagsByModel[modelName] = [];
+                }
+                tagsByModel[modelName].push(tagInfo);
+              });
+              const sortedModels = Object.keys(tagsByModel).sort();
+
+              const toggleModel = (modelName: string) => {
+                setExpandedModels(prev => {
+                  const next = new Set(prev);
+                  if (next.has(modelName)) {
+                    next.delete(modelName);
+                  } else {
+                    next.add(modelName);
+                  }
+                  return next;
+                });
+              };
+
+              const uncheckAllForModel = (modelName: string, e: any) => {
+                e.stopPropagation(); // Prevent toggling the model section
+                const modelTags = tagsByModel[modelName];
+                const modelTagNames = modelTags.map((tag: any) => tag.tag);
+                // Add all model tags to excluded list (removing any that are already there)
+                setExcludedTags(prev => {
+                  const newExcluded = [...prev.filter(t => !modelTagNames.includes(t)), ...modelTagNames];
+                  return newExcluded;
+                });
+              };
+
+              const checkAllForModel = (modelName: string, e: any) => {
+                e.stopPropagation(); // Prevent toggling the model section
+                const modelTags = tagsByModel[modelName];
+                const modelTagNames = modelTags.map((tag: any) => tag.tag);
+                // Remove all model tags from excluded list
+                setExcludedTags(prev => {
+                  const newExcluded = prev.filter(t => !modelTagNames.includes(t));
+                  return newExcluded;
+                });
+              };
+
+              return (
+                <>
+                  <div style={{flex: 1, overflow: 'auto', border: '1px solid #333', borderRadius: 4, padding: 8, background: '#111', marginBottom: 16}}>
+                    {sortedModels.map((modelName) => {
+                      const isExpanded = expandedModels.has(modelName);
+                      const modelTags = tagsByModel[modelName];
+                      const excludedCount = modelTags.filter((tag: any) => excludedTags.includes(tag.tag)).length;
+                      const totalCount = modelTags.length;
+                      
+                      return (
+                        <div key={modelName} style={{marginBottom: 4}}>
+                          <div
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              padding: '8px 12px',
+                              background: '#1a1a1a',
+                              borderRadius: 4,
+                              cursor: 'pointer',
+                              userSelect: 'none',
+                              border: '1px solid #2a2a2a',
+                              marginBottom: isExpanded ? 4 : 0
+                            }}
+                            onClick={() => toggleModel(modelName)}
+                          >
+                            <span style={{
+                              display: 'inline-block',
+                              width: 12,
+                              height: 12,
+                              marginRight: 8,
+                              transition: 'transform 0.2s',
+                              transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                              fontSize: 10,
+                              lineHeight: '12px',
+                              textAlign: 'center'
+                            }}>▶</span>
+                            <span style={{fontWeight: 600, fontSize: 12, flex: 1}}>{modelName}</span>
+                            <button
+                              style={{
+                                fontSize: 10,
+                                padding: '2px 6px',
+                                marginRight: 4,
+                                background: '#2a2a2a',
+                                border: '1px solid #444',
+                                borderRadius: 3,
+                                color: '#ccc',
+                                cursor: 'pointer',
+                                opacity: tagModalSaving ? 0.5 : 1
+                              }}
+                              onClick={(e) => uncheckAllForModel(modelName, e)}
+                              disabled={tagModalSaving}
+                              title="Uncheck all tags for this model"
+                            >
+                              Uncheck All
+                            </button>
+                            <button
+                              style={{
+                                fontSize: 10,
+                                padding: '2px 6px',
+                                marginRight: 8,
+                                background: '#2a2a2a',
+                                border: '1px solid #444',
+                                borderRadius: 3,
+                                color: '#ccc',
+                                cursor: 'pointer',
+                                opacity: tagModalSaving ? 0.5 : 1
+                              }}
+                              onClick={(e) => checkAllForModel(modelName, e)}
+                              disabled={tagModalSaving}
+                              title="Check all tags for this model"
+                            >
+                              Check All
+                            </button>
+                            <span style={{fontSize: 10, opacity: 0.7, marginLeft: 8}}>
+                              {totalCount - excludedCount}/{totalCount}
+                            </span>
+                          </div>
+                          {isExpanded && (
+                            <div style={{display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 12px', fontSize: 11, padding: '8px 0 8px 20px', background: '#0f0f0f', borderRadius: 4}}>
+                              {modelTags.map((tagInfo: any, idx: number) => {
+                                const isExcluded = excludedTags.includes(tagInfo.tag);
+                                return (
+                                  <React.Fragment key={`${tagInfo.tag}-${tagInfo.model}-${idx}`}>
+                                    <input
+                                      type="checkbox"
+                                      checked={!isExcluded}
+                                      onChange={(e) => {
+                                        const newExcluded = e.target.checked
+                                          ? excludedTags.filter(t => t !== tagInfo.tag)
+                                          : [...excludedTags.filter(t => t !== tagInfo.tag), tagInfo.tag];
+                                        setExcludedTags(newExcluded);
+                                      }}
+                                      style={{cursor: 'pointer'}}
+                                      disabled={tagModalSaving}
+                                    />
+                                    <label style={{cursor: 'pointer', display: 'flex', alignItems: 'center'}}>
+                                      <span style={{fontWeight: isExcluded ? 'normal' : '500'}}>{tagInfo.tag}</span>
+                                    </label>
+                                  </React.Fragment>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                <div style={{display: 'flex', justifyContent: 'flex-end', gap: 8}}>
+                  <button
+                    style={smallBtn}
+                    onClick={() => setTagModalOpen(false)}
+                    disabled={tagModalSaving}
+                  >Cancel</button>
+                  <button
+                    style={smallBtn}
+                    onClick={() => { void saveExcludedTags(excludedTags); }}
+                    disabled={tagModalSaving}
+                  >{tagModalSaving ? 'Saving...' : 'OK'}</button>
+                </div>
+                </>
+              );
+            })()}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

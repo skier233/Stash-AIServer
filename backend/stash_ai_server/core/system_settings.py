@@ -27,6 +27,7 @@ _DEFS: List[Dict[str, Any]] = [
     { 'key': 'INTERACTION_SEGMENT_TIME_MARGIN_SECONDS', 'type': 'number', 'label': 'Interaction Segment Time Margin (s)', 'default': 2 },
     { 'key': 'TASK_LOOP_INTERVAL', 'type': 'number', 'label': 'Task Loop Interval (s)', 'default': 0.5, 'description': 'Scheduler main loop sleep interval.' },
     { 'key': 'TASK_DEBUG', 'type': 'boolean', 'label': 'Task Debug Logging', 'default': False, 'description': 'Verbose task scheduler logging.' },
+    { 'key': 'EXCLUDED_TAGS', 'type': 'json', 'label': 'Excluded Tags', 'default': [], 'description': 'List of tag names to exclude from AI tagging operations.' },
 ]
 
 _CACHE: Dict[str, Any] = {}
@@ -114,10 +115,21 @@ def _ensure_cache(db: Session):
     _CACHE_LOADED = True
 
 def get_value(key: str, default: Any | None = None) -> Any:
+    import logging
+    _log = logging.getLogger(__name__)
     db = SessionLocal()
     try:
         _ensure_cache(db)
-        return _CACHE.get(key, default)
+        value = _CACHE.get(key, default)
+        # Special logging for EXCLUDED_TAGS to help debug
+        if key == 'EXCLUDED_TAGS':
+            _log.debug(
+                "get_value: Retrieved EXCLUDED_TAGS - value: %s (type: %s), default: %s",
+                value,
+                type(value).__name__,
+                default
+            )
+        return value
     finally:
         db.close()
 

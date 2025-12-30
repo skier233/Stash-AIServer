@@ -6,6 +6,9 @@ const fs = require('fs');
 const { execSync } = require('child_process');
 const path = require('path');
 
+// Load environment variables from .env file
+require('dotenv').config();
+
 let files = [
   'src/VersionInfo.ts',
   'src/PageContext.ts',
@@ -135,4 +138,32 @@ try {
     for (const item of copied) console.log(' •', path.relative(process.cwd(), item.dest));
   }
 } catch (err) { if (verbose) console.error('Error copying non-TS assets', err); }
+
+// Copy contents of dist to BUILD_OUTPUT_DIR if specified in .env
+if (process.env.BUILD_OUTPUT_DIR && process.env.BUILD_OUTPUT_DIR.trim()) {
+  try {
+    const outputDir = path.resolve(process.env.BUILD_OUTPUT_DIR.trim());
+    const distDir = path.join(process.cwd(), 'dist');
+    console.log(`📋 Copying dist contents to ${outputDir}...`);
+    fs.mkdirSync(outputDir, { recursive: true });
+    const walk = (src, dest) => {
+      for (const name of fs.readdirSync(src)) {
+        const srcPath = path.join(src, name);
+        const destPath = path.join(dest, name);
+        const stat = fs.statSync(srcPath);
+        if (stat.isDirectory()) {
+          fs.mkdirSync(destPath, { recursive: true });
+          walk(srcPath, destPath);
+        } else {
+          fs.copyFileSync(srcPath, destPath);
+        }
+      }
+    };
+    walk(distDir, outputDir);
+    console.log(`✅ Successfully copied build output contents to ${outputDir}`);
+  } catch (err) {
+    console.error(`❌ Error copying to BUILD_OUTPUT_DIR:`, err.message);
+  }
+}
+
 process.exitCode = failed ? 1 : 0;
