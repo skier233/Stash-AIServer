@@ -964,3 +964,75 @@ async def get_image_model_history_async(
     image_id: int,
 ) -> Sequence[StoredModelSummary]:
     return await asyncio.to_thread(get_image_model_history, service=service, image_id=image_id)
+
+
+def delete_scene_ai_results(
+    *,
+    scene_id: int,
+    service: str | None = None,
+) -> dict[str, int]:
+    """Delete all AI results (runs, aggregates, timespans) for a scene.
+    
+    Args:
+        scene_id: The scene ID to clear results for
+        service: Optional service name to filter by. If None, deletes for all services.
+    
+    Returns:
+        Dictionary with counts of deleted records: {'runs': int, 'aggregates': int, 'timespans': int}
+    """
+    scene_id_int = _ensure_int(scene_id)
+    if scene_id_int is None:
+        raise ValueError("scene_id must be an integer")
+
+    with SessionLocal() as session:
+        # Build query for run IDs
+        run_ids_subq = select(AIModelRun.id).where(
+            AIModelRun.entity_type == "scene",
+            AIModelRun.entity_id == scene_id_int,
+        )
+        if service is not None:
+            run_ids_subq = run_ids_subq.where(AIModelRun.service == service)
+
+        # Delete aggregates
+        agg_del = delete(AIResultAggregate).where(
+            AIResultAggregate.run_id.in_(run_ids_subq),
+        )
+        agg_result = session.execute(agg_del)
+        aggregates_deleted = agg_result.rowcount
+
+        # Delete timespans
+        ts_del = delete(AIResultTimespan).where(
+            AIResultTimespan.run_id.in_(run_ids_subq),
+        )
+        ts_result = session.execute(ts_del)
+        timespans_deleted = ts_result.rowcount
+
+        # Delete runs (this will cascade delete run_models due to foreign key)
+        run_del = delete(AIModelRun).where(
+            AIModelRun.entity_type == "scene",
+            AIModelRun.entity_id == scene_id_int,
+        )
+        if service is not None:
+            run_del = run_del.where(AIModelRun.service == service)
+        run_result = session.execute(run_del)
+        runs_deleted = run_result.rowcount
+
+        session.commit()
+
+        return {
+            "runs": runs_deleted,
+            "aggregates": aggregates_deleted,
+            "timespans": timespans_deleted,
+        }
+
+
+async def delete_scene_ai_results_async(
+    *,
+    scene_id: int,
+    service: str | None = None,
+) -> dict[str, int]:
+    return await asyncio.to_thread(
+        delete_scene_ai_results,
+        scene_id=scene_id,
+        service=service,
+    )
