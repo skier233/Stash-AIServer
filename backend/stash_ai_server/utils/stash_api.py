@@ -344,6 +344,17 @@ class StashAPI:
     def add_tags_to_scene(self, scene_id: int, tag_ids: list[int]) -> None:
         if not tag_ids:
             return
+        
+        # Log which tags are being applied
+        tag_names = [self.get_stash_tag_name(tid) for tid in tag_ids]
+        _log.info(
+            "add_tags_to_scene: Applying %d tags to scene_id=%d: tag_ids=%s, tag_names=%s",
+            len(tag_ids),
+            scene_id,
+            tag_ids,
+            tag_names
+        )
+        
         payload = {
             "ids": [scene_id],
             "tag_ids": {
@@ -352,6 +363,7 @@ class StashAPI:
             },
         }
         self.stash_interface.update_scenes(payload)
+        _log.info("add_tags_to_scene: Successfully applied tags to scene_id=%d", scene_id)
 
     async def remove_tags_from_scene_async(self, scene_id: int, tag_ids: list[int]) -> None:
         await asyncio.to_thread(self.remove_tags_from_scene, scene_id, tag_ids)

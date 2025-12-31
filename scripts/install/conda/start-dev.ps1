@@ -36,6 +36,7 @@ function Get-StashRootDir {
 }
 
 $rootDir = Get-StashRootDir -StartPath ((Resolve-Path -LiteralPath $PSScriptRoot).Path)
+$backendDir = Join-Path $rootDir 'backend'
 
 function Invoke-CondaEntry {
     & conda --no-plugins @args
@@ -108,6 +109,14 @@ $configPath = if ($Config) {
 }
 Import-EnvFile $configPath
 
+# Set AI_SERVER_PLUGINS_DIR if not already set
+if (-not $env:AI_SERVER_PLUGINS_DIR) {
+    $pluginsDir = Join-Path $rootDir 'plugins'
+    if (Test-Path -LiteralPath $pluginsDir -PathType Container) {
+        $env:AI_SERVER_PLUGINS_DIR = (Resolve-Path -LiteralPath $pluginsDir).Path
+    }
+}
+
 $pgDataDir = if ($env:AI_SERVER_PG_DATA_DIR) { (Resolve-Path -LiteralPath $env:AI_SERVER_PG_DATA_DIR).Path } else { Join-Path $rootDir 'data\postgres' }
 $pgUser = if ($env:AI_SERVER_DB_USER) { $env:AI_SERVER_DB_USER } else { 'stash_ai_server' }
 $pgPassword = if ($env:AI_SERVER_DB_PASSWORD) { $env:AI_SERVER_DB_PASSWORD } else { 'stash_ai_server' }
@@ -146,20 +155,33 @@ function Stop-Postgres {
     }
 }
 
-$cmd = @('run','--no-capture-output','--cwd',$rootDir,'-n',$Name,'python','-m','stash_ai_server.entrypoint')
-if ($PassThruArgs) {
-    $cmd += $PassThruArgs
-}
-
 if (-not (Test-CondaEnvExists -EnvName $Name)) {
     $hint = "Run scripts/install/conda/install.ps1 -Name $Name -EnvironmentFile backend/environment.yml"
     throw "Conda environment '$Name' is missing or invalid. $hint"
 }
 
+# DEV MODE: Use local code with PYTHONPATH and uvicorn reload
+$serverHost = if ($env:AI_SERVER_HOST) { $env:AI_SERVER_HOST } else { '0.0.0.0' }
+$serverPort = if ($env:AI_SERVER_PORT) { [int]$env:AI_SERVER_PORT } else { 4153 }
+
+Write-Host "!!!!!!!!!!!!!! DEV MODE: Using local code from $backendDir !!!!!!!!!!!!!!!!!!!!!" -ForegroundColor Green
+Write-Host "!!!!!!!!!!!!!! Changes will auto-reload !!!!!!!!!!!!!!!!!!!!!" -ForegroundColor Green
+Write-Host "!!!!!!!!!!!!!! Server will run on http://${serverHost}:${serverPort} !!!!!!!!!!!!!!!!!!!!!" -ForegroundColor Green
+
+# Set PYTHONPATH to backend directory so it uses local code
+$env:PYTHONPATH = $backendDir
+
 $pgStarted = $false
 try {
     Start-Postgres
     $pgStarted = $true
+    
+    # Run uvicorn directly with reload enabled
+    $cmd = @('run','--no-capture-output','--cwd',$backendDir,'-n',$Name,'uvicorn','stash_ai_server.main:app','--host',$serverHost,'--port',$serverPort,'--reload')
+    if ($PassThruArgs) {
+        $cmd += $PassThruArgs
+    }
+    
     Invoke-CondaEntry @cmd
 }
 finally {
@@ -174,3 +196,4 @@ finally {
         }
     }
 }
+
