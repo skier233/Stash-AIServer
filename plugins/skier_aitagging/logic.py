@@ -350,7 +350,7 @@ async def tag_images_task(ctx: ContextInput, params: dict) -> dict:
 @task_handler(id="skier.ai_tag.scene.task")
 async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecord) -> dict:
     scene_id_raw = ctx.entity_id
-    _log.info("tag_scene_task: Starting scene tagging task for scene_id=%s", scene_id_raw)
+    _log.debug("ASYNC debug scene id: %s", scene_id_raw)
     if scene_id_raw is None:
         raise ValueError("Context missing scene entity_id. ctx: %s" % ctx)
     try:
@@ -359,7 +359,6 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
         raise ValueError(f"Invalid scene_id: {scene_id_raw}") from exc
 
     service = params["service"]
-    _log.info("tag_scene_task: Service name=%s for scene_id=%s", service.name, scene_id)
     try:
         scene_path, scene_tags, scene_duration = await stash_api.get_scene_path_and_tags_and_duration_async(scene_id)
     except Exception as exc:
@@ -447,14 +446,10 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
             }
 
         vr_scene = is_vr_scene(scene_tags)
-        _log.info(
-            "tag_scene_task: Running scene tagging for scene_id=%s; skipping categories=%s",
+        _log.debug(
+            "Running scene tagging for scene_id=%s; skipping categories=%s",
             scene_id,
             skip_categories,
-        )
-        _log.info(
-            "tag_scene_task: About to call AI model server for scene_id=%s (excluded_tags will be retrieved from system settings)",
-            scene_id
         )
         response = await call_scene_api(
             service,
@@ -465,11 +460,7 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
             skip_categories=skip_categories,
         )
         if response is not None:
-            _log.debug("tag_scene_task: Scene API metrics: %s", response.metrics)
-            _log.info(
-                "tag_scene_task: Received response from AI model server for scene_id=%s",
-                scene_id
-            )
+            _log.debug("Scene API metrics: %s", response.metrics)
 
         if response is None or response.result is None:
             _log.warning("Remote scene tagging returned no data for scene_id=%s", scene_id)
@@ -565,13 +556,6 @@ async def tag_scene_task(ctx: ContextInput, params: dict, task_record: TaskRecor
             scene_duration=scene_duration,
             existing_scene_tag_ids=scene_tags,
             apply_ai_tagged_tag=service.apply_ai_tagged_tag,
-        )
-        _log.info(
-            "tag_scene_task: Applied tags count for scene_id=%s: applied=%d, removed=%d, markers=%d",
-            scene_id,
-            applied_tags,
-            removed_tags,
-            marker_count
         )
         message = _format_scene_message(scene_id, applied_tags, removed_tags, marker_count)
         summary_parts = [f"Processed scene with {marker_count} marker span(s)"]

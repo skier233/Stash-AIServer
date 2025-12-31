@@ -98,41 +98,13 @@ def resolve_ai_tag_reference(label: str) -> int | None:
     """Resolve (and ensure) the Stash tag id for a label used in AI results."""
     if not label:
         return None
-    
-    # Check if this tag is excluded before creating/resolving it
-    from stash_ai_server.core.system_settings import get_value as sys_get_value
-    excluded_tags_raw = sys_get_value('EXCLUDED_TAGS', [])
-    excluded_tag_names = []
-    if excluded_tags_raw is not None:
-        if isinstance(excluded_tags_raw, str):
-            import json
-            try:
-                excluded_tags_raw = json.loads(excluded_tags_raw)
-            except:
-                excluded_tags_raw = []
-        if isinstance(excluded_tags_raw, list):
-            excluded_tag_names = [str(tag).strip() for tag in excluded_tags_raw if tag]
-    
-    # Check if the label (without _AI suffix) or the full label is excluded
-    label_without_suffix = label.replace("_AI", "").strip()
-    if label in excluded_tag_names or label_without_suffix in excluded_tag_names:
-        _log.info(
-            "resolve_ai_tag_reference: Skipping excluded tag - label='%s' (in excluded list: %s)",
-            label,
-            excluded_tag_names
-        )
-        return None
-    
     try:
-        tag_id = stash_api.fetch_tag_id(
+        return stash_api.fetch_tag_id(
             label,
             parent_id=AI_Base_Tag_Id,
             create_if_missing=True,
             add_to_cache=AI_tags_cache,
         )
-        if tag_id:
-            _log.debug("resolve_ai_tag_reference: Resolved tag label='%s' to tag_id=%d", label, tag_id)
-        return tag_id
     except Exception:
         _log.exception("Failed to resolve AI tag reference for label=%s", label)
         return None

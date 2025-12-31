@@ -1656,6 +1656,53 @@ const PluginSettings = () => {
       );
     }
 
+    // Check for custom field renderers registered by plugins
+    // Supports both plugin-specific (pluginName_type_Renderer) and generic (type_Renderer) naming
+    if (t && typeof t === 'string' && t !== 'string' && t !== 'boolean' && t !== 'number' && t !== 'select' && t !== 'path_map') {
+      const pluginSpecificName = `${pluginName}_${t}_Renderer`;
+      const genericName = `${t}_Renderer`;
+      const customRenderer = (window as any)[pluginSpecificName] || (window as any)[genericName];
+      
+      // Also check for legacy naming convention (e.g., SkierAITaggingTagListEditor for tag_list_editor)
+      const legacyName = t === 'tag_list_editor' ? (window as any).SkierAITaggingTagListEditor : null;
+      const renderer = customRenderer || legacyName;
+      
+      // Debug logging
+      if ((window as any).AIDebug || t === 'tag_list_editor') {
+        console.log('[PluginSettings.FieldRenderer] Custom field type detected:', {
+          type: t,
+          pluginName: pluginName,
+          pluginSpecificName: pluginSpecificName,
+          genericName: genericName,
+          legacyName: legacyName,
+          hasPluginSpecific: !!(window as any)[pluginSpecificName],
+          hasGeneric: !!(window as any)[genericName],
+          hasLegacy: !!legacyName,
+          renderer: renderer ? typeof renderer : 'null'
+        });
+      }
+      
+      if (renderer && typeof renderer === 'function') {
+        if ((window as any).AIDebug || t === 'tag_list_editor') {
+          console.log('[PluginSettings.FieldRenderer] Using custom renderer for', t);
+        }
+        return React.createElement(renderer, {
+          field: f,
+          pluginName: pluginName,
+          backendBase: backendBase,
+          savePluginSetting: savePluginSetting,
+          loadPluginSettings: loadPluginSettings,
+          setError: setError
+        });
+      } else if (t === 'tag_list_editor') {
+        console.warn('[PluginSettings.FieldRenderer] tag_list_editor type detected but no renderer found. Available window properties:', {
+          SkierAITaggingTagListEditor: typeof (window as any).SkierAITaggingTagListEditor,
+          tag_list_editor_Renderer: typeof (window as any).tag_list_editor_Renderer,
+          skier_aitagging_tag_list_editor_Renderer: typeof (window as any).skier_aitagging_tag_list_editor_Renderer
+        });
+      }
+    }
+
   const changed = savedValue !== undefined && savedValue !== null && f.default !== undefined && savedValue !== f.default;
   const inputStyle: React.CSSProperties = { padding: 6, background: '#111', color: '#eee', border: '1px solid #333', minWidth: 120 };
   const wrap: React.CSSProperties = { position: 'relative', padding: '4px 4px 6px', border: '1px solid #2a2a2a', borderRadius: 4, background: '#101010' };

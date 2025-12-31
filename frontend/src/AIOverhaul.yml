@@ -12,6 +12,7 @@ ui:
     - AIButton.js
     - TaskDashboard.js
     - PluginSettings.js      # ensure settings component registers before integration
+    - plugins/skier_aitagging/tag_list_editor.js  # custom field renderer for tag_list_editor type
     - RecommendedScenes.js
     - SimilarScenes.js
     - SimilarTabIntegration.js

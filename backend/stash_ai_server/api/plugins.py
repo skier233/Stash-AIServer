@@ -1,5 +1,5 @@
 from __future__ import annotations
-from fastapi import APIRouter, Depends, HTTPException, Body
+from fastapi import APIRouter, Depends, HTTPException, Body, Query
 from pydantic import BaseModel
 from typing import List, Optional, Any, Dict, Tuple
 import datetime
@@ -17,6 +17,8 @@ from stash_ai_server.core.config import settings
 from stash_ai_server.core.compat import version_satisfies
 from stash_ai_server.utils.path_mutation import invalidate_path_mapping_cache
 from stash_ai_server.core.api_key import require_shared_api_key
+from stash_ai_server.db.ai_results_store import delete_scene_ai_results_async
+from stash_ai_server.services import registry as services_registry
 import logging
 
 router = APIRouter(prefix='/plugins', tags=['plugins'], dependencies=[Depends(require_shared_api_key)])
@@ -670,12 +672,6 @@ async def _get_active_models(ai_server_url: str) -> List[Dict[str, Any]]:
     except Exception:
         return []
 
-
-class AvailableTagsResponse(BaseModel):
-    tags: List[Dict[str, Any]]
-    models: List[Dict[str, Any]]
-    error: Optional[str] = None
-
 INDEX_EXPECTED_SCHEMA = 1
 
 @router.post('/sources/{source_name}/refresh', response_model=RefreshResult)
@@ -896,4 +892,285 @@ async def remove_plugin_api(body: dict = Body(...), db: Session = Depends(get_db
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.delete('/scenes/{scene_id}/cache', name='clear_scene_cache')
+async def clear_scene_cache(
+    scene_id: int,
+    service: Optional[str] = Query(default=None, description="Optional service name to filter by")
+):
+    """Clear cached AI results for a scene, forcing it to be reprocessed through the GPU.
+    
+    This endpoint deletes all stored AI model runs, aggregates, and timespans for the specified scene.
+    After clearing the cache, the next time the scene is tagged, it will be fully reprocessed
+    through the GPU instead of using cached results.
+    
+    Args:
+        scene_id: The scene ID to clear cache for
+        service: Optional service name to filter by. If not provided, clears cache for all services.
+    
+    Returns:
+        Dictionary with status and counts of deleted records
+    """
+    try:
+        scene_id_int = int(scene_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail='Invalid scene_id: must be an integer')
+    
+    try:
+        result = await delete_scene_ai_results_async(
+            scene_id=scene_id_int,
+            service=service,
+        )
+        logger.info(
+            "Cleared AI cache for scene_id=%s (service=%s): deleted %d runs, %d aggregates, %d timespans",
+            scene_id_int,
+            service or "all",
+            result.get("runs", 0),
+            result.get("aggregates", 0),
+            result.get("timespans", 0),
+        )
+        return {
+            "status": "success",
+            "scene_id": scene_id_int,
+            "service": service,
+            "deleted": result,
+            "message": f"Cache cleared for scene {scene_id_int}. Next tagging will reprocess through GPU."
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Failed to clear scene cache for scene_id=%s", scene_id_int)
+        raise HTTPException(status_code=500, detail=f"Failed to clear cache: {str(e)}")
+
+
 ## Remote catalog 'available' endpoint removed for now; manifest fields supply human_name/server_link.
+
+
+@router.get('/settings/skier_aitagging/tags/csv')
+async def get_skier_aitagging_csv(db: Session = Depends(get_db)):
+    """Get the tag_settings.csv file content for skier_aitagging plugin."""
+    _require_plugin_active(db, 'skier_aitagging')
+    
+    try:
+        from pathlib import Path
+        import csv
+        from stash_ai_server.plugin_runtime.loader import PLUGIN_DIR
+        
+        # Get the plugin directory using the same method as the loader
+        plugin_root = PLUGIN_DIR / 'skier_aitagging'
+        csv_path = plugin_root / 'tag_settings.csv'
+        
+        if not csv_path.exists():
+            raise HTTPException(status_code=404, detail='CSV file not found')
+        
+        # Read CSV file
+        rows = []
+        with csv_path.open('r', encoding='utf-8', newline='') as f:
+            reader = csv.DictReader(f)
+            fieldnames = list(reader.fieldnames) if reader.fieldnames else []
+            for row in reader:
+                rows.append(row)
+        
+        return {
+            'fieldnames': fieldnames,
+            'rows': rows
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to read tag_settings.csv")
+        raise HTTPException(status_code=500, detail=f"Failed to read CSV: {str(e)}")
+
+
+@router.put('/settings/skier_aitagging/tags/csv')
+async def update_skier_aitagging_csv(
+    data: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db)
+):
+    """Update the tag_settings.csv file for skier_aitagging plugin."""
+    _require_plugin_active(db, 'skier_aitagging')
+    
+    try:
+        from pathlib import Path
+        import csv
+        import tempfile
+        import os
+        from stash_ai_server.plugin_runtime.loader import PLUGIN_DIR
+        
+        # Get the plugin directory using the same method as the loader
+        plugin_root = PLUGIN_DIR / 'skier_aitagging'
+        csv_path = plugin_root / 'tag_settings.csv'
+        
+        if not csv_path.exists():
+            raise HTTPException(status_code=404, detail='CSV file not found')
+        
+        fieldnames = data.get('fieldnames', [])
+        rows = data.get('rows', [])
+        
+        if not fieldnames:
+            raise HTTPException(status_code=400, detail='fieldnames is required')
+        
+        # Write to temporary file first (atomic write)
+        temp_fd, temp_path = tempfile.mkstemp(
+            prefix='tag_settings_',
+            suffix='.csv',
+            dir=csv_path.parent,
+            text=True
+        )
+        try:
+            with os.fdopen(temp_fd, 'w', encoding='utf-8', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(rows)
+            
+            # Atomic rename
+            os.replace(temp_path, csv_path)
+            logger.info("Updated tag_settings.csv for skier_aitagging")
+            
+            # Invalidate tag config cache
+            try:
+                from stash_ai_server.plugins.skier_aitagging.tag_config import _CONFIG_CACHE, _CONFIG_LOCK
+                with _CONFIG_LOCK:
+                    _CONFIG_CACHE = None
+            except Exception:
+                pass  # Cache invalidation is best effort
+            
+            return {'status': 'ok', 'message': 'CSV file updated successfully'}
+        except Exception as e:
+            # Clean up temp file on error
+            try:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+            except:
+                pass
+            raise
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to update tag_settings.csv")
+        raise HTTPException(status_code=500, detail=f"Failed to update CSV: {str(e)}")
+
+
+# Tag list editor endpoints for plugins that support tag editing
+class TagStatusUpdate(BaseModel):
+    tag_statuses: Optional[Dict[str, bool]] = None
+    enabled_tags: Optional[List[str]] = None
+    disabled_tags: Optional[List[str]] = None
+
+
+@router.get('/settings/{plugin_name}/tags/available')
+async def get_plugin_available_tags(plugin_name: str, db: Session = Depends(get_db)):
+    """Get available tags for a plugin that supports tag editing.
+    
+    For skier_aitagging: Returns CSV-based flat list of tags.
+    For other plugins: Returns model-grouped tags from AI server.
+    """
+    _require_plugin_active(db, plugin_name)
+    
+    # Special handling for skier_aitagging - return CSV-based flat list
+    if plugin_name == 'skier_aitagging':
+        try:
+            from pathlib import Path
+            import csv
+            from stash_ai_server.plugin_runtime.loader import PLUGIN_DIR
+            
+            plugin_root = PLUGIN_DIR / 'skier_aitagging'
+            csv_path = plugin_root / 'tag_settings.csv'
+            
+            if not csv_path.exists():
+                return {'tags': [], 'models': []}
+            
+            # Read CSV and extract tags
+            tags_list = []
+            with csv_path.open('r', encoding='utf-8', newline='') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    tag_name = (row.get('tag_name', '') or '').strip()
+                    if tag_name and tag_name != '__default__':
+                        tags_list.append({
+                            'tag': tag_name,
+                            'name': tag_name
+                        })
+            
+            # Return flat list format (no model grouping for CSV mode)
+            return {
+                'tags': tags_list,
+                'models': []  # No models in CSV mode
+            }
+        except Exception as exc:
+            logger.exception("Failed to read CSV for skier_aitagging")
+            raise HTTPException(status_code=500, detail=f"Failed to read CSV: {str(exc)}")
+    
+    # For other plugins, use the service method (model-grouped)
+    service = None
+    for svc in services_registry.services.list():
+        if getattr(svc, 'plugin_name', None) == plugin_name:
+            service = svc
+            break
+    
+    if not service:
+        raise HTTPException(status_code=404, detail='PLUGIN_SERVICE_NOT_FOUND')
+    
+    # Check if service has the method
+    if not hasattr(service, 'get_available_tags_data'):
+        raise HTTPException(status_code=400, detail='PLUGIN_DOES_NOT_SUPPORT_TAG_EDITING')
+    
+    try:
+        # Get ALL tags (including disabled ones) for the editor
+        result = await service.get_available_tags_data(include_disabled=True)
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get('/settings/{plugin_name}/tags/statuses')
+async def get_plugin_tag_statuses(plugin_name: str, db: Session = Depends(get_db)):
+    """Get all tag enabled statuses for a plugin."""
+    _require_plugin_active(db, plugin_name)
+    
+    service = None
+    for svc in services_registry.services.list():
+        if getattr(svc, 'plugin_name', None) == plugin_name:
+            service = svc
+            break
+    
+    if not service:
+        raise HTTPException(status_code=404, detail='PLUGIN_SERVICE_NOT_FOUND')
+    
+    if not hasattr(service, 'get_all_tag_statuses'):
+        raise HTTPException(status_code=400, detail='PLUGIN_DOES_NOT_SUPPORT_TAG_EDITING')
+    
+    try:
+        # get_all_tag_statuses is now async
+        result = await service.get_all_tag_statuses()
+        return {'statuses': result}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.put('/settings/{plugin_name}/tags/statuses')
+async def update_plugin_tag_statuses(plugin_name: str, payload: TagStatusUpdate, db: Session = Depends(get_db)):
+    """Update tag enabled statuses for a plugin."""
+    _require_plugin_active(db, plugin_name)
+    
+    service = None
+    for svc in services_registry.services.list():
+        if getattr(svc, 'plugin_name', None) == plugin_name:
+            service = svc
+            break
+    
+    if not service:
+        raise HTTPException(status_code=404, detail='PLUGIN_SERVICE_NOT_FOUND')
+    
+    if not hasattr(service, 'update_tag_enabled_status'):
+        raise HTTPException(status_code=400, detail='PLUGIN_DOES_NOT_SUPPORT_TAG_EDITING')
+    
+    try:
+        result = service.update_tag_enabled_status(
+            tag_statuses=payload.tag_statuses,
+            enabled_tags=payload.enabled_tags,
+            disabled_tags=payload.disabled_tags
+        )
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
