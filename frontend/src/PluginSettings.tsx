@@ -1640,25 +1640,42 @@ const PluginSettings = () => {
         }
         
         const path = possiblePaths[attemptIndex];
-        const script = document.createElement('script');
-        script.src = path;
-        script.onload = () => {
-          console.log('[PluginSettings.CustomFieldLoader] Loaded script:', path);
-          // Wait a bit for the script to register, then check again
-          setTimeout(() => {
-            if (checkRenderer()) {
-              return;
+        // Use fetch + eval instead of script tag to work around CSP script-src-elem restrictions
+        // This uses script-src (which has unsafe-eval) instead of script-src-elem
+        fetch(path)
+          .then(response => {
+            if (!response.ok) {
+              throw new Error(`HTTP ${response.status}`);
             }
-            // Script loaded but renderer not found, try next path
+            return response.text();
+          })
+          .then(scriptText => {
+            console.log('[PluginSettings.CustomFieldLoader] Fetched script:', path);
+            try {
+              // Eval the script - this uses script-src (with unsafe-eval) instead of script-src-elem
+              // Create a new function context to avoid polluting global scope
+              const scriptFunction = new Function(scriptText);
+              scriptFunction();
+              // Wait a bit for the script to register, then check again
+              setTimeout(() => {
+                if (checkRenderer()) {
+                  return;
+                }
+                // Script loaded but renderer not found, try next path
+                attemptIndex++;
+                tryLoad();
+              }, 200);
+            } catch (evalError) {
+              console.error('[PluginSettings.CustomFieldLoader] Error evaluating script:', path, evalError);
+              attemptIndex++;
+              tryLoad();
+            }
+          })
+          .catch(error => {
+            console.warn('[PluginSettings.CustomFieldLoader] Failed to fetch script:', path, error);
             attemptIndex++;
             tryLoad();
-          }, 200);
-        };
-        script.onerror = () => {
-          attemptIndex++;
-          tryLoad();
-        };
-        document.head.appendChild(script);
+          });
       };
       
       tryLoad();
