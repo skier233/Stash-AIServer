@@ -1576,10 +1576,155 @@ const PluginSettings = () => {
     );
   }
 
+  // Component to handle dynamic loading of custom field renderer scripts
+  function CustomFieldLoader({ fieldType, pluginName, field, backendBase, savePluginSetting, loadPluginSettings, setError, renderDefaultInput }: {
+    fieldType: string;
+    pluginName: string;
+    field: any;
+    backendBase: string;
+    savePluginSetting: any;
+    loadPluginSettings: any;
+    setError: any;
+    renderDefaultInput?: () => any;
+  }) {
+    const React: any = (window as any).PluginApi?.React || (window as any).React;
+    const [renderer, setRenderer] = React.useState(null as any);
+    const [loading, setLoading] = React.useState(true);
+    const [failed, setFailed] = React.useState(false);
+    
+    React.useEffect(() => {
+      const pluginSpecificName = `${pluginName}_${fieldType}_Renderer`;
+      const genericName = `${fieldType}_Renderer`;
+      const legacyName = fieldType === 'tag_list_editor' ? 'SkierAITaggingTagListEditor' : null;
+      
+      // Check if renderer is already available
+      const checkRenderer = () => {
+        const found = (window as any)[pluginSpecificName] || 
+                     (window as any)[genericName] || 
+                     (legacyName ? (window as any)[legacyName] : null);
+        if (found && typeof found === 'function') {
+          setRenderer(() => found);
+          setLoading(false);
+          return true;
+        }
+        return false;
+      };
+      
+      if (checkRenderer()) return;
+      
+      // Try to load the script from the backend server
+      // Normalize backendBase to ensure it doesn't end with a slash
+      const normalizedBackendBase = backendBase.replace(/\/+$/, '');
+      const possiblePaths = [
+        `${normalizedBackendBase}/plugins/${pluginName}/${fieldType}.js`,
+        `${normalizedBackendBase}/dist/plugins/${pluginName}/${fieldType}.js`,
+      ];
+      
+      // Also try camelCase version
+      const typeParts = fieldType.split('_');
+      if (typeParts.length > 1) {
+        const camelCase = typeParts[0] + typeParts.slice(1).map(p => p.charAt(0).toUpperCase() + p.slice(1)).join('');
+        possiblePaths.push(`${normalizedBackendBase}/plugins/${pluginName}/${camelCase}.js`);
+        possiblePaths.push(`${normalizedBackendBase}/dist/plugins/${pluginName}/${camelCase}.js`);
+      }
+      
+      let attemptIndex = 0;
+      const tryLoad = () => {
+        if (attemptIndex >= possiblePaths.length) {
+          setLoading(false);
+          setFailed(true);
+          if ((window as any).AIDebug) {
+            console.warn('[PluginSettings.CustomFieldLoader] Failed to load renderer for', fieldType, 'tried:', possiblePaths);
+          }
+          return;
+        }
+        
+        const path = possiblePaths[attemptIndex];
+        const script = document.createElement('script');
+        script.src = path;
+        script.onload = () => {
+          console.log('[PluginSettings.CustomFieldLoader] Loaded script:', path);
+          // Wait a bit for the script to register, then check again
+          setTimeout(() => {
+            if (checkRenderer()) {
+              return;
+            }
+            // Script loaded but renderer not found, try next path
+            attemptIndex++;
+            tryLoad();
+          }, 200);
+        };
+        script.onerror = () => {
+          attemptIndex++;
+          tryLoad();
+        };
+        document.head.appendChild(script);
+      };
+      
+      tryLoad();
+      
+      // Also poll for renderer in case it loads asynchronously (max 10 seconds)
+      let pollCount = 0;
+      const pollInterval = setInterval(() => {
+        pollCount++;
+        if (checkRenderer() || pollCount > 20) {
+          clearInterval(pollInterval);
+          if (pollCount > 20 && !renderer) {
+            setLoading(false);
+            setFailed(true);
+          }
+        }
+      }, 500);
+      
+      return () => clearInterval(pollInterval);
+    }, [fieldType, pluginName]);
+    
+    if (renderer) {
+      return React.createElement(renderer, {
+        field: field,
+        pluginName: pluginName,
+        backendBase: backendBase,
+        savePluginSetting: savePluginSetting,
+        loadPluginSettings: loadPluginSettings,
+        setError: setError
+      });
+    }
+    
+    if (loading) {
+      return React.createElement('div', { style: { padding: 8, fontSize: 11, color: '#888', fontStyle: 'italic' } }, 
+        `Loading ${fieldType} editor...`);
+    }
+    
+    // Failed to load - use default input if provided, otherwise show error message
+    if (failed && renderDefaultInput) {
+      return renderDefaultInput();
+    }
+    
+    if (failed) {
+      return React.createElement('div', { style: { padding: 8, fontSize: 11, color: '#f85149' } }, 
+        `Failed to load ${fieldType} editor. Using default input.`);
+    }
+    
+    return null;
+  }
+
   function FieldRenderer({ f, pluginName }: { f: any; pluginName: string }) {
     const t = f.type || 'string';
     const label = f.label || f.key;
     const savedValue = f.value === undefined ? f.default : f.value;
+    
+    // Define styles and computed values early so they're available to callbacks
+    const changed = savedValue !== undefined && savedValue !== null && f.default !== undefined && savedValue !== f.default;
+    const inputStyle: React.CSSProperties = { padding: 6, background: '#111', color: '#eee', border: '1px solid #333', minWidth: 120 };
+    const wrap: React.CSSProperties = { position: 'relative', padding: '4px 4px 6px', border: '1px solid #2a2a2a', borderRadius: 4, background: '#101010' };
+    const resetStyle: React.CSSProperties = { position: 'absolute', top: 2, right: 4, fontSize: 9, padding: '1px 4px', cursor: 'pointer' };
+    const labelTitle = f && f.description ? String(f.description) : undefined;
+    const labelEl = React.createElement('span', { title: labelTitle }, 
+      React.createElement(React.Fragment, null,
+        label,
+        changed ? React.createElement('span', { style: { color: '#ffa657', fontSize: 10 } }, ' •') : null
+      )
+    );
 
     if (t === 'path_map') {
       const containerStyle: React.CSSProperties = {
@@ -1608,12 +1753,94 @@ const PluginSettings = () => {
       );
     }
 
-  const changed = savedValue !== undefined && savedValue !== null && f.default !== undefined && savedValue !== f.default;
-  const inputStyle: React.CSSProperties = { padding: 6, background: '#111', color: '#eee', border: '1px solid #333', minWidth: 120 };
-  const wrap: React.CSSProperties = { position: 'relative', padding: '4px 4px 6px', border: '1px solid #2a2a2a', borderRadius: 4, background: '#101010' };
-  const resetStyle: React.CSSProperties = { position: 'absolute', top: 2, right: 4, fontSize: 9, padding: '1px 4px', cursor: 'pointer' };
-  const labelTitle = f && f.description ? String(f.description) : undefined;
-  const labelEl = <span title={labelTitle}>{label} {changed && <span style={{ color: '#ffa657', fontSize: 10 }}>•</span>}</span>;
+    // Check for custom field renderers registered by plugins
+    // Supports both plugin-specific (pluginName_type_Renderer) and generic (type_Renderer) naming
+    if (t && typeof t === 'string' && t !== 'string' && t !== 'boolean' && t !== 'number' && t !== 'select' && t !== 'path_map') {
+      const pluginSpecificName = `${pluginName}_${t}_Renderer`;
+      const genericName = `${t}_Renderer`;
+      const customRenderer = (window as any)[pluginSpecificName] || (window as any)[genericName];
+      
+      // Also check for legacy naming convention (e.g., SkierAITaggingTagListEditor for tag_list_editor)
+      const legacyName = t === 'tag_list_editor' ? (window as any).SkierAITaggingTagListEditor : null;
+      const renderer = customRenderer || legacyName;
+      
+      // Debug logging
+      if ((window as any).AIDebug || t === 'tag_list_editor') {
+        console.log('[PluginSettings.FieldRenderer] Custom field type detected:', {
+          type: t,
+          pluginName: pluginName,
+          pluginSpecificName: pluginSpecificName,
+          genericName: genericName,
+          legacyName: legacyName,
+          hasPluginSpecific: !!(window as any)[pluginSpecificName],
+          hasGeneric: !!(window as any)[genericName],
+          hasLegacy: !!legacyName,
+          renderer: renderer ? typeof renderer : 'null'
+        });
+      }
+      
+      if (renderer && typeof renderer === 'function') {
+        if ((window as any).AIDebug || t === 'tag_list_editor') {
+          console.log('[PluginSettings.FieldRenderer] Using custom renderer for', t);
+        }
+        return React.createElement(renderer, {
+          field: f,
+          pluginName: pluginName,
+          backendBase: backendBase,
+          savePluginSetting: savePluginSetting,
+          loadPluginSettings: loadPluginSettings,
+          setError: setError
+        });
+      } else {
+        // Renderer not found - use CustomFieldLoader to dynamically load it
+        // CustomFieldLoader will handle fallback to default input if renderer not found
+        return React.createElement(CustomFieldLoader, {
+          fieldType: t,
+          pluginName: pluginName,
+          field: f,
+          backendBase: backendBase,
+          savePluginSetting: savePluginSetting,
+          loadPluginSettings: loadPluginSettings,
+          setError: setError,
+          // Pass the default input rendering logic as fallback
+          renderDefaultInput: () => {
+            // This will be called if renderer not found - render default text input
+            const display = savedValue === undefined || savedValue === null ? '' : String(savedValue);
+            const inputKey = `${pluginName}:${f.key}:${display}`;
+            const handleBlur = async (event: any) => {
+              const next = (event.target as any).value ?? '';
+              if (next === display) return;
+              await savePluginSetting(pluginName, f.key, next);
+            };
+            const handleKeyDown = (event: any) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                (event.target as HTMLInputElement).blur();
+              }
+            };
+            const handleReset = async () => {
+              await savePluginSetting(pluginName, f.key, null);
+            };
+            return React.createElement('div', { style: wrap },
+              React.createElement('label', { style: { fontSize: 12 } }, 
+                React.createElement(React.Fragment, null,
+                  labelEl,
+                  React.createElement('br'),
+                  React.createElement('input', {
+                    key: inputKey,
+                    style: inputStyle,
+                    defaultValue: display,
+                    onBlur: handleBlur,
+                    onKeyDown: handleKeyDown
+                  })
+                )
+              ),
+              changed ? React.createElement('button', { style: resetStyle, onClick: handleReset }, 'Reset') : null
+            );
+          }
+        });
+      }
+    }
 
     if (t === 'boolean') {
       return (
