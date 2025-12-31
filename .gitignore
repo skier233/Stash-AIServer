@@ -72,6 +72,8 @@ cython_debug/
 poetry.toml
 .ruff_cache/
 pyrightconfig.json
+plugins/
+
 
 # Node.js
 node_modules/
