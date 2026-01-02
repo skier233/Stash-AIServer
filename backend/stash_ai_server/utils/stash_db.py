@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -28,6 +29,30 @@ _TABLE_CACHE: Dict[str, sa.Table] = {}
 _CACHED_DB_PATH: Path | None = None
 
 
+def _prefer_configured_path(path: Path) -> Path:
+    """Return a path that keeps Windows mapped drives intact when possible.
+
+    Path.resolve() on Windows can turn a mapped drive (e.g., ``E:\``) into a
+    UNC path (``\\server\share``). That can break credentialed mappings. Keep
+    the drive-letter form when it exists; otherwise fall back to a best-effort
+    resolution.
+    """
+
+    if os.name == "nt":
+        try:
+            if path.drive and len(path.drive) == 2 and path.drive[1] == ":":
+                return path.absolute()
+        except Exception:
+            return path
+    try:
+        return path.resolve(strict=False)
+    except Exception:
+        try:
+            return path.absolute()
+        except Exception:
+            return path
+
+
 def _resolve_db_path() -> Path | None:
     """Return the configured path (or URL) to the Stash database."""
     global _CACHED_DB_PATH
@@ -43,15 +68,16 @@ def _resolve_db_path() -> Path | None:
             raw = str(configured)
             if raw.strip() and not raw.strip().upper().startswith("REPLACE_WITH"):
                 mutated = mutate_path_for_backend(raw)
-                resolved = Path(mutated).expanduser()
-                try:
-                    resolved = resolved.resolve(strict=False)
-                except Exception:
-                    pass
-                if resolved.exists():
-                    _CACHED_DB_PATH = resolved
-                    return resolved
-                _log.warning("Configured STASH_DB_PATH (after mutation) does not exist: %s", resolved)
+                expanded = Path(mutated).expanduser()
+                candidates = [expanded]
+                preferred = _prefer_configured_path(expanded)
+                if preferred != expanded:
+                    candidates.append(preferred)
+                for candidate in candidates:
+                    if candidate.exists():
+                        _CACHED_DB_PATH = candidate
+                        return candidate
+                _log.warning("Configured STASH_DB_PATH (after mutation) does not exist: %s", ", ".join(str(c) for c in candidates))
         except Exception:
             _log.exception("Failed to interpret STASH_DB_PATH system setting: %r", configured)
 
@@ -85,7 +111,7 @@ def _dispose_locked() -> None:
     _TABLE_CACHE = {}
 
 
-def _build_engine_for_path(resolved_path: Path) -> Engine:
+def _build_engine_for_path(resolved_path: Path) -> Engine | None:
     """Construct a SQLAlchemy engine for the provided SQLite path."""
 
     # Prefer opening the DB in read-only mode so we never block or write to the
@@ -93,7 +119,6 @@ def _build_engine_for_path(resolved_path: Path) -> Engine:
     # instruct SQLAlchemy to treat the database string as a URI.
     # If this fails (older sqlite builds or unusual environments), fall back to
     # the previous behaviour (read/write) but log a warning.
-    pathstr = str(resolved_path)
     readonly_uri = f"file:{resolved_path.as_posix()}?mode=ro&cache=shared"
     try:
         def connect_readonly() -> sqlite3.Connection:
