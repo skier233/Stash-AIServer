@@ -792,7 +792,18 @@ export class InteractionTracker {
 
   private handlePageContext(ctx: any) {
     if (!ctx) return;
-    if (!ctx.isDetailView || !ctx.entityId) return;
+    // When leaving detail views, allow future entries (even same entity) to re-fire
+    if (!ctx.isDetailView || !ctx.entityId) {
+      this.lastDetailKey = null;
+      // Clear scene context so subsequent scene visits don't reuse stale ids
+      this.lastScenePageEntered = null;
+      if (this.currentScene) {
+        this.cleanupVideoElement(this.currentScene.video);
+        this.detachVideoJsWatcher(this.currentScene);
+        this.currentScene = undefined;
+      }
+      return;
+    }
     const key = ctx.page + ':' + ctx.entityId;
     if (key === this.lastDetailKey) return;
     this.lastDetailKey = key;
@@ -1151,11 +1162,13 @@ export class InteractionTracker {
     const delay = attempt === 0 ? 0 : Math.min(600, 80 + attempt * 80);
     const handle = window.setTimeout(() => {
       this.playerReinstrumentTimers.delete(player);
-      const success = this.instrumentSceneWithVideoJs(sceneId, { player, attempt });
+      const targetSceneId = this.resolveSceneIdFromContext() || sceneId;
+      // If navigation switched scenes, avoid applying the old scene id
+      const success = this.instrumentSceneWithVideoJs(targetSceneId, { player, attempt });
       if (success) {
         this.pendingVideoJsPlayers.delete(player);
       } else if (attempt < 6) {
-        this.queuePlayerReinstrument(sceneId, player, attempt + 1);
+        this.queuePlayerReinstrument(targetSceneId, player, attempt + 1);
       }
     }, delay);
     this.playerReinstrumentTimers.set(player, handle);
@@ -1261,15 +1274,22 @@ export class InteractionTracker {
 
     this.cleanupVideoElement(video);
 
-    const onPlay = () => {
+    const beginPlayback = () => {
+      if (state.lastPlayTs != null) return; // already marked playing
       const snapshot = this.getPlaybackSnapshot(state);
-      state.lastPlayTs = Date.now();
+      // If we attached mid-autoplay with no segments yet, backfill start time from current position
+      const now = Date.now();
+      const backfill = snapshot.position !== undefined && snapshot.position > 0.5 && state.segments.length === 0;
+      state.lastPlayTs = backfill ? now - snapshot.position * 1000 : now;
       if (snapshot.position !== undefined) state.lastPosition = snapshot.position;
       this.trackInternal('scene_watch_start','scene',sceneId,{
         position: snapshot.position ?? state.lastPosition ?? (isFinite(video.currentTime) ? video.currentTime : undefined),
         duration: snapshot.duration ?? state.duration ?? (isFinite(video.duration) ? video.duration : undefined)
       });
     };
+
+    const onPlay = () => { beginPlayback(); };
+    const onPlaying = () => { beginPlayback(); };
 
     const onPause = () => {
       const added = this.captureSegment();
@@ -1318,6 +1338,7 @@ export class InteractionTracker {
     };
 
     video.addEventListener('play', onPlay);
+    video.addEventListener('playing', onPlaying);
     video.addEventListener('pause', onPause);
     video.addEventListener('ended', onEnded);
     video.addEventListener('timeupdate', onTimeUpdate);
@@ -1325,6 +1346,7 @@ export class InteractionTracker {
 
     (video as any)._aiInteractionCleanup = () => {
       video.removeEventListener('play', onPlay);
+      video.removeEventListener('playing', onPlaying);
       video.removeEventListener('pause', onPause);
       video.removeEventListener('ended', onEnded);
       video.removeEventListener('timeupdate', onTimeUpdate);
@@ -1333,10 +1355,13 @@ export class InteractionTracker {
 
     if (state.player) this.attachVideoJsWatcher(state, sceneId, state.player);
 
+    const triggerIfAlreadyPlaying = () => {
+      if (!video.isConnected) return;
+      if (!video.paused || (isFinite(video.currentTime) && video.currentTime > 0)) beginPlayback();
+    };
+    triggerIfAlreadyPlaying();
     if (!video.paused) {
-      setTimeout(() => {
-        if (video.isConnected && !video.paused) onPlay();
-      }, 0);
+      setTimeout(() => { triggerIfAlreadyPlaying(); }, 0);
     }
   }
 
