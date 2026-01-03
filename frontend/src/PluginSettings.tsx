@@ -27,7 +27,7 @@ const LEGACY_BACKEND_URL = 'AI_BACKEND_URL_OVERRIDE';
 const LEGACY_INTERACTIONS = 'AI_INTERACTIONS_ENABLED';
 const THIS_PLUGIN_NAME = 'AIOverhaul';
 // Fallback base used when no override has been persisted yet.
-const DEFAULT_BACKEND_BASE_URL = 'http://localhost:4153';
+const DEFAULT_BACKEND_BASE_URL = 'http://localhost:4162';
 
 const DEFAULT_MIN_BACKEND_VERSION = '>=0.8.0';
 const DEV_VERSION_PATTERN = /(dev|local|snapshot|dirty)/i;
@@ -1776,28 +1776,23 @@ const PluginSettings = () => {
       const pluginSpecificName = `${pluginName}_${t}_Renderer`;
       const genericName = `${t}_Renderer`;
       const customRenderer = (window as any)[pluginSpecificName] || (window as any)[genericName];
-      
-      // Also check for legacy naming convention (e.g., SkierAITaggingTagListEditor for tag_list_editor)
-      const legacyName = t === 'tag_list_editor' ? (window as any).SkierAITaggingTagListEditor : null;
-      const renderer = customRenderer || legacyName;
+      const renderer = customRenderer;
       
       // Debug logging
-      if ((window as any).AIDebug || t === 'tag_list_editor') {
+      if ((window as any).AIDebug) {
         console.log('[PluginSettings.FieldRenderer] Custom field type detected:', {
           type: t,
           pluginName: pluginName,
           pluginSpecificName: pluginSpecificName,
           genericName: genericName,
-          legacyName: legacyName,
           hasPluginSpecific: !!(window as any)[pluginSpecificName],
           hasGeneric: !!(window as any)[genericName],
-          hasLegacy: !!legacyName,
           renderer: renderer ? typeof renderer : 'null'
         });
       }
       
       if (renderer && typeof renderer === 'function') {
-        if ((window as any).AIDebug || t === 'tag_list_editor') {
+        if ((window as any).AIDebug) {
           console.log('[PluginSettings.FieldRenderer] Using custom renderer for', t);
         }
         return React.createElement(renderer, {

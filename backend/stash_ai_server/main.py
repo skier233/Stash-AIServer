@@ -13,8 +13,7 @@ from stash_ai_server.api import system as system_router
 from stash_ai_server.recommendations.registry import recommender_registry
 from stash_ai_server.recommendations.models import RecContext
 from stash_ai_server.tasks.manager import manager
-from stash_ai_server.db.session import engine, Base
-import pathlib, hashlib, os, mimetypes
+import pathlib, hashlib, mimetypes
 from contextlib import asynccontextmanager
 from stash_ai_server.plugin_runtime import loader as plugin_loader
 from stash_ai_server.core.system_settings import seed_system_settings, get_value as sys_get
@@ -54,6 +53,18 @@ async def lifespan(app: FastAPI):
         plugin_loader.initialize_plugins()
     except Exception as e:  # plugin loading errors are logged internally; keep startup going
         print(f"[plugin] unexpected loader exception: {e}", flush=True)
+
+    # Register plugin routers
+    try:
+        from stash_ai_server.plugin_runtime.loader import get_plugin_routers
+        plugin_routers = get_plugin_routers()
+        for plugin_name, router in plugin_routers.items():
+            # Mount at /api/v1/plugins so plugin routes can define their own sub-paths
+            # e.g., router with prefix /settings/{plugin}/tags becomes /api/v1/plugins/settings/{plugin}/tags
+            app.include_router(router, prefix=f"{settings.api_v1_prefix}/plugins")
+            print(f"[plugin] registered router for {plugin_name} at {settings.api_v1_prefix}/plugins", flush=True)
+    except Exception as e:
+        print(f"[plugin] router registration error: {e}", flush=True)
 
     # Start background task manager with configured loop interval / debug flags
     try:

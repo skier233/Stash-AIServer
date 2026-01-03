@@ -24,8 +24,12 @@ from stash_ai_server.recommendations.registry import recommender_registry
 from stash_ai_server.core.runtime import register_backend_refresh_handler
 import httpx
 from io import BytesIO
+from fastapi import APIRouter
 
 _log = logging.getLogger("stash_ai_server.plugins.loader")
+
+# Plugin router registry: maps plugin_name -> APIRouter
+_plugin_routers: Dict[str, APIRouter] = {}
 
 
 def _sanitize_dependency_list(raw: Any) -> List[str]:
@@ -875,6 +879,25 @@ def reload_all_plugins() -> None:
             db.close()
         except Exception:
             pass
+
+
+def register_plugin_router(plugin_name: str, router: APIRouter) -> None:
+    """Register a FastAPI router for a plugin.
+    
+    Plugins can call this during their register() function to register
+    custom API routes that will be mounted at /api/v1/plugins/{plugin_name}/...
+    """
+    _plugin_routers[plugin_name] = router
+    _log.info("Registered router for plugin %s", plugin_name)
+
+
+def get_plugin_routers() -> Dict[str, APIRouter]:
+    """Get all registered plugin routers.
+    
+    Returns:
+        Dictionary mapping plugin names to their APIRouter instances.
+    """
+    return _plugin_routers.copy()
 
 
 def _refresh_plugins() -> None:
