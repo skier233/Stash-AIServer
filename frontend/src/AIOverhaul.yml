@@ -36,14 +36,6 @@ ui:
       - 'unsafe-inline'
       - 'unsafe-eval'
       # Allow plugin JavaScript files to be loaded from the backend server
-    script-src-elem:
-      - 'self'
-      - http://localhost:4153
-      - https://localhost:4153
-      - http://www.gstatic.com
-      - https://www.gstatic.com
-      - 'unsafe-inline'
-      - 'unsafe-eval'
 interface: raw
 exec:
   - python
