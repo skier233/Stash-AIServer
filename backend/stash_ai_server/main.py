@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from stash_ai_server.core.config import settings
+import os
+
 from stash_ai_server.api import interactions as interactions_router
 from stash_ai_server.api import actions as actions_router
 from stash_ai_server.api import tasks as tasks_router
