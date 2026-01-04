@@ -85,3 +85,6 @@ yarn-error.log*
 # IDEs
 .idea/
 backend/config.docker.env
+
+# Development workflow:
+scripts/install/conda/start-dev.ps1

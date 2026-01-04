@@ -27,7 +27,7 @@ const LEGACY_BACKEND_URL = 'AI_BACKEND_URL_OVERRIDE';
 const LEGACY_INTERACTIONS = 'AI_INTERACTIONS_ENABLED';
 const THIS_PLUGIN_NAME = 'AIOverhaul';
 // Fallback base used when no override has been persisted yet.
-const DEFAULT_BACKEND_BASE_URL = 'http://localhost:4162';
+const DEFAULT_BACKEND_BASE_URL = 'http://localhost:4153';
 
 const DEFAULT_MIN_BACKEND_VERSION = '>=0.8.0';
 const DEV_VERSION_PATTERN = /(dev|local|snapshot|dirty)/i;
