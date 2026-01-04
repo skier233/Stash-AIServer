@@ -249,6 +249,9 @@ class StashAPI:
         return await asyncio.to_thread(self.get_scene_path_and_tags_and_duration, scene_id)
 
     def get_scene_path_and_tags_and_duration(self, scene_id: int):
+        if not self.stash_interface:
+            _log.warning("Stash interface not configured; returning empty scene metadata")
+            return None, [], None
         scene_result = self.stash_interface.find_scene(id=scene_id, fragment="files {path duration} tags {id}")
         if not scene_result or 'files' not in scene_result or not scene_result['files']:
             return None, [], None
