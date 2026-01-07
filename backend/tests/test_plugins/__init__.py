@@ -1,0 +1,1 @@
+"""Test plugins directory for isolated plugin testing."""

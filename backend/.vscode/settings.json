@@ -1,0 +1,26 @@
+{
+    "python.testing.pytestEnabled": true,
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestArgs": [
+        "tests",
+        "-v",
+        "--tb=short"
+    ],
+    "python.testing.cwd": "${workspaceFolder}/backend",
+    "python.testing.autoTestDiscoverOnSaveEnabled": true,
+    "python.defaultInterpreterPath": "python",
+    "python.terminal.activateEnvironment": true,
+    "python.testing.pytestPath": "python",
+    "python.testing.pytestConfigFilePath": "${workspaceFolder}/backend/pytest.ini",
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/*.pyc": true,
+        "**/archived_test_*.py": true
+    },
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/backend"
+    ],
+    "python.envFile": "${workspaceFolder}/backend/.env",
+    "python.testing.unittestArgs": [],
+    "python.testing.nosetestsEnabled": false
+}
