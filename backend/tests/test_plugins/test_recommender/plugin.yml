@@ -1,0 +1,16 @@
+name: test_recommender
+version: 1.0.0
+required_backend: '>=0.0.0'
+description: Test plugin for recommender registration and execution testing
+human_name: Test Recommender Plugin
+files: [plugin]
+depends_on: []
+settings:
+  test_recommender_setting:
+    type: string
+    default: "test_recommender_value"
+    description: "Test setting for recommender plugin testing"
+  enable_test_mode:
+    type: boolean
+    default: true
+    description: "Enable test mode for recommender"

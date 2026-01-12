@@ -65,7 +65,7 @@ markers = [
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
     "plugin: marks tests as plugin tests",
-    "database: marks tests as database tests",
+    "database: marks tests as database tests (requires PostgreSQL)",
     "api: marks tests as API tests",
     "websocket: marks tests as WebSocket tests",
     "task: marks tests as task management tests",

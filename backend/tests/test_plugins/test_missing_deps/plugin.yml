@@ -1,0 +1,12 @@
+name: test_missing_deps
+version: 1.0.0
+required_backend: '>=0.0.0'
+description: Test plugin for missing dependency testing
+human_name: Test Missing Dependencies Plugin
+files: [plugin]
+depends_on: [nonexistent_plugin, another_missing_plugin]
+settings:
+  test_missing_deps_setting:
+    type: string
+    default: "test_missing_deps_value"
+    description: "Test setting for missing dependency plugin testing"

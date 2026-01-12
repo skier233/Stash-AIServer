@@ -42,28 +42,35 @@ class DatabaseTestManager:
         if not self.admin_engine:
             self.create_admin_engine()
         
-        with self.admin_engine.connect() as conn:
-            # Drop database if it exists
-            conn.execute(text(f"DROP DATABASE IF EXISTS {self.config.database_name}"))
-            # Create fresh test database
-            conn.execute(text(f"CREATE DATABASE {self.config.database_name}"))
-            logger.info(f"Created test database: {self.config.database_name}")
+        try:
+            with self.admin_engine.connect() as conn:
+                # Drop database if it exists
+                conn.execute(text(f"DROP DATABASE IF EXISTS {self.config.database_name}"))
+                # Create fresh test database
+                conn.execute(text(f"CREATE DATABASE {self.config.database_name}"))
+                logger.info(f"Created test database: {self.config.database_name}")
+        except Exception as e:
+            logger.error(f"Failed to create test database: {e}")
+            raise RuntimeError(f"Could not create test database '{self.config.database_name}': {e}")
     
     def drop_test_database(self):
         """Drop test database."""
         if not self.admin_engine:
-            self.create_admin_engine()
-        
-        with self.admin_engine.connect() as conn:
-            # Terminate active connections to the test database
-            conn.execute(text(f"""
-                SELECT pg_terminate_backend(pid)
-                FROM pg_stat_activity
-                WHERE datname = '{self.config.database_name}' AND pid <> pg_backend_pid()
-            """))
-            # Drop test database
-            conn.execute(text(f"DROP DATABASE IF EXISTS {self.config.database_name}"))
-            logger.info(f"Dropped test database: {self.config.database_name}")
+            return
+            
+        try:
+            with self.admin_engine.connect() as conn:
+                # Terminate active connections to the test database
+                conn.execute(text(f"""
+                    SELECT pg_terminate_backend(pid)
+                    FROM pg_stat_activity
+                    WHERE datname = '{self.config.database_name}' AND pid <> pg_backend_pid()
+                """))
+                # Drop test database
+                conn.execute(text(f"DROP DATABASE IF EXISTS {self.config.database_name}"))
+                logger.info(f"Dropped test database: {self.config.database_name}")
+        except Exception as e:
+            logger.warning(f"Failed to drop test database: {e}")
     
     def create_test_engine(self):
         """Create test database engine."""
@@ -258,6 +265,10 @@ async def test_database():
     """Session-scoped test database setup and teardown."""
     # Apply test configuration
     test_config.apply_environment_overrides()
+    
+    # Ensure database is available before proceeding
+    if not test_config.ensure_database_available():
+        pytest.skip("PostgreSQL database is not available for testing")
     
     # Create test database
     db_manager.create_test_database()
