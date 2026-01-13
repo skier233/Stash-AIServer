@@ -80,6 +80,10 @@ class TestDatabaseConnectionResilience:
         session = test_database.get_sync_test_session()
         
         try:
+            # Clean up any existing test data first
+            session.query(InteractionEvent).filter_by(entity_id=123).delete()
+            session.commit()
+            
             # Start transaction
             transaction = session.begin()
             
@@ -101,11 +105,20 @@ class TestDatabaseConnectionResilience:
             # Simulate error and rollback
             transaction.rollback()
             
-            # Verify rollback worked
+            # After rollback, we need to expunge the object and refresh the session
+            session.expunge_all()
+            
+            # Verify rollback worked - check database directly
             count = session.query(InteractionEvent).filter_by(entity_id=123).count()
             assert count == 0
             
         finally:
+            # Clean up any remaining test data
+            try:
+                session.query(InteractionEvent).filter_by(entity_id=123).delete()
+                session.commit()
+            except:
+                session.rollback()
             session.close()
     
     @pytest.mark.asyncio

@@ -427,9 +427,10 @@ class TaskManager:
         if self._main_loop_task and not self._main_loop_task.done():
             try:
                 await asyncio.wait_for(self._main_loop_task, timeout=0.5)
-            except asyncio.TimeoutError:
-                # Force cancel if it doesn't stop gracefully
-                self._main_loop_task.cancel()
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                # Force cancel if it doesn't stop gracefully or was already cancelled
+                if not self._main_loop_task.done():
+                    self._main_loop_task.cancel()
                 try:
                     await self._main_loop_task
                 except asyncio.CancelledError:
