@@ -1,9 +1,8 @@
-"""Test async utilities without database dependencies."""
+"""Test async utilities with real database integration."""
 
 import pytest
 import pytest_asyncio
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
 
 from tests.async_utils import (
     AsyncTestClient, 
@@ -12,22 +11,25 @@ from tests.async_utils import (
     MockWebSocketManager,
     temporary_task_service
 )
+from tests.database import test_database
 
 
 class TestAsyncUtils:
     """Test async utilities functionality."""
     
-    def test_async_test_client_creation(self):
+    def test_async_test_client_creation(self, test_database):
         """Test AsyncTestClient can be created."""
         # Create a mock FastAPI app
+        from unittest.mock import MagicMock
         mock_app = MagicMock()
         
         client = AsyncTestClient(mock_app)
         assert client.app == mock_app
         assert client.client is not None
     
-    def test_async_websocket_session_creation(self):
+    def test_async_websocket_session_creation(self, test_database):
         """Test AsyncWebSocketTestSession can be created."""
+        from unittest.mock import MagicMock
         mock_client = MagicMock()
         url = "/ws/test"
         timeout = 5.0
@@ -39,7 +41,7 @@ class TestAsyncUtils:
         assert session.messages == []
         assert session.closed is False
     
-    def test_task_manager_test_utils(self):
+    def test_task_manager_test_utils(self, test_database):
         """Test TaskManagerTestUtils methods exist."""
         utils = TaskManagerTestUtils()
         
@@ -57,7 +59,7 @@ class TestAsyncUtils:
         assert callable(TaskManagerTestUtils.get_task_history)
         assert callable(TaskManagerTestUtils.clear_task_history)
     
-    def test_mock_websocket_manager(self):
+    def test_mock_websocket_manager(self, test_database):
         """Test MockWebSocketManager functionality."""
         manager = MockWebSocketManager()
         
@@ -66,6 +68,7 @@ class TestAsyncUtils:
         assert manager.get_sent_messages() == []
         
         # Test adding connections
+        from unittest.mock import AsyncMock
         mock_ws1 = AsyncMock()
         mock_ws2 = AsyncMock()
         
@@ -99,7 +102,7 @@ class TestAsyncUtils:
         return handler
     
     @pytest.mark.asyncio
-    async def test_temporary_task_service(self, mock_service_handler):
+    async def test_temporary_task_service(self, test_database, mock_service_handler):
         """Test temporary task service context manager."""
         service_name = "test_service"
         
@@ -110,18 +113,22 @@ class TestAsyncUtils:
             async with temporary_task_service(service_name, mock_service_handler, 2) as registered_name:
                 assert registered_name == service_name
                 
-                # Verify service was registered
-                mock_services.register_service.assert_called_once_with(
-                    service_name=service_name,
-                    handler=mock_service_handler,
-                    concurrency_limit=2
-                )
+                # Verify service was registered (using the correct method name)
+                mock_services.register.assert_called_once()
+                
+                # Get the service that was registered
+                call_args = mock_services.register.call_args[0]
+                registered_service = call_args[0]
+                
+                assert registered_service.name == service_name
+                assert registered_service.max_concurrency == 2
             
             # Verify service was unregistered
-            mock_services.unregister_service.assert_called_once_with(service_name)
+            mock_services.unregister.assert_called_once_with(service_name)
     
-    def test_async_test_client_context_manager(self):
+    def test_async_test_client_context_manager(self, test_database):
         """Test AsyncTestClient context manager functionality."""
+        from unittest.mock import MagicMock
         mock_app = MagicMock()
         
         with AsyncTestClient(mock_app) as client:
@@ -130,8 +137,9 @@ class TestAsyncUtils:
         
         # Context manager should exit cleanly
     
-    def test_websocket_session_message_tracking(self):
+    def test_websocket_session_message_tracking(self, test_database):
         """Test WebSocket session message tracking."""
+        from unittest.mock import MagicMock
         mock_client = MagicMock()
         session = AsyncWebSocketTestSession(mock_client, "/ws/test", 5.0)
         

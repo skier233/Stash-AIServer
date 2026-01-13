@@ -56,6 +56,38 @@ class AsyncTestClient:
     
     def delete(self, *args, **kwargs):
         return self.client.delete(*args, **kwargs)
+    
+    async def submit_task(self, action_id: str, context: dict, params: dict = None, priority: str = None) -> str:
+        """Submit a task via API and return task ID."""
+        payload = {
+            'action_id': action_id,
+            'context': context,
+            'params': params or {},
+        }
+        if priority:
+            payload['priority'] = priority
+        
+        response = self.post('/api/v1/tasks/submit', json=payload)
+        if response.status_code != 200:
+            raise RuntimeError(f"Failed to submit task: {response.status_code} {response.text}")
+        
+        return response.json()['task_id']
+    
+    async def get_task_status(self, task_id: str) -> dict:
+        """Get task status via API."""
+        response = self.get(f'/api/v1/tasks/{task_id}')
+        if response.status_code != 200:
+            raise RuntimeError(f"Failed to get task status: {response.status_code} {response.text}")
+        
+        return response.json()
+    
+    async def cancel_task(self, task_id: str) -> bool:
+        """Cancel a task via API."""
+        response = self.post(f'/api/v1/tasks/{task_id}/cancel')
+        if response.status_code != 200:
+            return False
+        
+        return response.json().get('success', False)
 
 
 class AsyncWebSocketTestSession:
@@ -127,62 +159,92 @@ class TaskManagerTestUtils:
     """Utilities for testing task manager functionality."""
     
     @staticmethod
+    def _get_manager():
+        """Lazy import of task manager to avoid initialization issues."""
+        try:
+            # Use dependency injection to get the singleton instance
+            from stash_ai_server.core.dependencies import get_task_manager
+            return get_task_manager()
+        except Exception:
+            return None
+    
+    @staticmethod
     async def wait_for_task_completion(
         task_id: str, 
         timeout: float = 10.0,
         expected_status: Optional[str] = None
     ) -> Dict[str, Any]:
         """Wait for task completion with timeout."""
-        # Lazy import to avoid initialization issues
-        from stash_ai_server.tasks.manager import manager
-        from stash_ai_server.tasks.models import TaskStatus
+        manager = TaskManagerTestUtils._get_manager()
+        if not manager:
+            raise RuntimeError("Task manager not available")
+        
+        try:
+            # Check if TaskStatus is already imported to avoid initialization issues
+            import sys
+            if 'stash_ai_server.tasks.models' not in sys.modules:
+                raise RuntimeError("Task models not available")
+            
+            # Lazy import to avoid initialization issues
+            from stash_ai_server.tasks.models import TaskStatus
+        except Exception:
+            raise RuntimeError("Task manager models not available")
         
         start_time = time.time()
         
         while time.time() - start_time < timeout:
-            # Get task status from manager
-            task_info = manager.get_task_info(task_id)
+            # Get task from manager
+            task = manager.get(task_id)
             
-            if not task_info:
+            if not task:
                 await asyncio.sleep(0.1)
                 continue
             
-            status = task_info.get('status')
+            status = task.status
             
             # Check if task is in a terminal state
-            if status in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]:
-                if expected_status and status != expected_status:
-                    raise AssertionError(f"Task {task_id} ended with status {status}, expected {expected_status}")
-                return task_info
+            if status in [TaskStatus.completed, TaskStatus.failed, TaskStatus.cancelled]:
+                if expected_status and status.value != expected_status:
+                    raise AssertionError(f"Task {task_id} ended with status {status.value}, expected {expected_status}")
+                return task.summary()
             
             await asyncio.sleep(0.1)
         
         # Timeout reached
-        final_info = manager.get_task_info(task_id)
+        final_task = manager.get(task_id)
         raise TimeoutError(
             f"Task {task_id} did not complete within {timeout} seconds. "
-            f"Final status: {final_info.get('status') if final_info else 'unknown'}"
+            f"Final status: {final_task.status.value if final_task else 'unknown'}"
         )
     
     @staticmethod
     async def assert_task_status(task_id: str, expected_status: str, timeout: float = 5.0):
         """Assert task reaches expected status within timeout."""
-        # Lazy import to avoid initialization issues
-        from stash_ai_server.tasks.manager import manager
+        manager = TaskManagerTestUtils._get_manager()
+        if not manager:
+            raise RuntimeError("Task manager not available")
+        
+        try:
+            # Check if TaskStatus is already imported to avoid initialization issues
+            import sys
+            if 'stash_ai_server.tasks.models' not in sys.modules:
+                raise RuntimeError("Task models not available")
+        except Exception:
+            raise RuntimeError("Task manager models not available")
         
         start_time = time.time()
         
         while time.time() - start_time < timeout:
-            task_info = manager.get_task_info(task_id)
+            task = manager.get(task_id)
             
-            if task_info and task_info.get('status') == expected_status:
-                return task_info
+            if task and task.status.value == expected_status:
+                return task.summary()
             
             await asyncio.sleep(0.1)
         
         # Timeout reached
-        final_info = manager.get_task_info(task_id)
-        final_status = final_info.get('status') if final_info else 'unknown'
+        final_task = manager.get(task_id)
+        final_status = final_task.status.value if final_task else 'unknown'
         raise AssertionError(
             f"Task {task_id} did not reach status {expected_status} within {timeout} seconds. "
             f"Final status: {final_status}"
@@ -191,19 +253,32 @@ class TaskManagerTestUtils:
     @staticmethod
     async def wait_for_task_count(expected_count: int, timeout: float = 5.0):
         """Wait for specific number of active tasks."""
-        # Lazy import to avoid initialization issues
-        from stash_ai_server.tasks.manager import manager
+        manager = TaskManagerTestUtils._get_manager()
+        if not manager:
+            raise RuntimeError("Task manager not available")
+        
+        try:
+            # Check if TaskStatus is already imported to avoid initialization issues
+            import sys
+            if 'stash_ai_server.tasks.models' not in sys.modules:
+                raise RuntimeError("Task models not available")
+            
+            # Lazy import to avoid initialization issues
+            from stash_ai_server.tasks.models import TaskStatus
+        except Exception:
+            raise RuntimeError("Task manager models not available")
         
         start_time = time.time()
         
         while time.time() - start_time < timeout:
-            active_tasks = manager.get_active_tasks()
+            # Get active tasks (queued or running)
+            active_tasks = manager.list(status=TaskStatus.running) + manager.list(status=TaskStatus.queued)
             if len(active_tasks) == expected_count:
                 return active_tasks
             
             await asyncio.sleep(0.1)
         
-        active_tasks = manager.get_active_tasks()
+        active_tasks = manager.list(status=TaskStatus.running) + manager.list(status=TaskStatus.queued)
         raise TimeoutError(
             f"Expected {expected_count} active tasks, but found {len(active_tasks)} "
             f"after {timeout} seconds"
@@ -212,39 +287,208 @@ class TaskManagerTestUtils:
     @staticmethod
     def get_task_history(limit: int = 100) -> List[Dict[str, Any]]:
         """Get task execution history."""
-        # Lazy import to avoid initialization issues
-        from stash_ai_server.tasks.manager import manager
-        
-        return manager.get_task_history(limit=limit)
+        try:
+            # Check if database modules are already imported to avoid initialization issues
+            import sys
+            if ('stash_ai_server.db.session' not in sys.modules or 
+                'stash_ai_server.tasks.history' not in sys.modules):
+                return []
+            
+            # Lazy import to avoid initialization issues
+            from stash_ai_server.tasks.history import TaskHistory
+            from stash_ai_server.db.session import SessionLocal
+            import threading
+            import queue
+            
+            # Use threading to implement timeout for database operations
+            result_queue = queue.Queue()
+            exception_queue = queue.Queue()
+            
+            def db_operation():
+                try:
+                    db = SessionLocal()
+                    history_records = (
+                        db.query(TaskHistory)
+                        .order_by(TaskHistory.created_at.desc())
+                        .limit(limit)
+                        .all()
+                    )
+                    result = [record.as_dict() for record in history_records]
+                    result_queue.put(result)
+                    db.close()
+                except Exception as e:
+                    exception_queue.put(e)
+                    try:
+                        if 'db' in locals():
+                            db.close()
+                    except:
+                        pass
+            
+            # Start the database operation in a separate thread
+            thread = threading.Thread(target=db_operation)
+            thread.daemon = True
+            thread.start()
+            
+            # Wait for completion with timeout
+            thread.join(timeout=2.0)
+            
+            if thread.is_alive():
+                # Thread is still running, database operation timed out
+                return []
+            
+            # Check if we got a result or exception
+            if not exception_queue.empty():
+                return []
+            
+            if not result_queue.empty():
+                return result_queue.get()
+            
+            return []
+                
+        except Exception:
+            return []
     
     @staticmethod
     def clear_task_history():
         """Clear task execution history."""
-        # Lazy import to avoid initialization issues
-        from stash_ai_server.tasks.manager import manager
+        try:
+            # Check if database modules are already imported to avoid initialization issues
+            import sys
+            if ('stash_ai_server.db.session' not in sys.modules or 
+                'stash_ai_server.tasks.history' not in sys.modules):
+                return
+            
+            # Lazy import to avoid initialization issues
+            from stash_ai_server.tasks.history import TaskHistory
+            from stash_ai_server.db.session import SessionLocal
+            import threading
+            import queue
+            
+            # Use threading to implement timeout for database operations
+            exception_queue = queue.Queue()
+            
+            def db_operation():
+                try:
+                    db = SessionLocal()
+                    db.query(TaskHistory).delete()
+                    db.commit()
+                    db.close()
+                except Exception as e:
+                    exception_queue.put(e)
+                    try:
+                        if 'db' in locals():
+                            db.rollback()
+                            db.close()
+                    except:
+                        pass
+            
+            # Start the database operation in a separate thread
+            thread = threading.Thread(target=db_operation)
+            thread.daemon = True
+            thread.start()
+            
+            # Wait for completion with timeout
+            thread.join(timeout=2.0)
+            
+            # If thread is still alive, the operation timed out
+            # We don't raise an error, just return silently
+                
+        except Exception:
+            pass
+    
+    @staticmethod
+    async def cancel_task_and_wait(task_id: str, timeout: float = 5.0) -> Dict[str, Any]:
+        """Cancel a task and wait for it to reach cancelled status."""
+        manager = TaskManagerTestUtils._get_manager()
+        if not manager:
+            raise RuntimeError("Task manager not available")
         
-        if hasattr(manager, 'clear_history'):
-            manager.clear_history()
+        # Cancel the task
+        success = manager.cancel(task_id)
+        if not success:
+            raise ValueError(f"Failed to cancel task {task_id}")
+        
+        # Wait for cancellation to complete
+        return await TaskManagerTestUtils.wait_for_task_completion(
+            task_id, timeout, expected_status='cancelled'
+        )
+    
+    @staticmethod
+    def get_running_task_count(service: Optional[str] = None) -> int:
+        """Get count of currently running tasks, optionally filtered by service."""
+        try:
+            manager = TaskManagerTestUtils._get_manager()
+            if not manager:
+                return 0
+            
+            # Check if TaskStatus is already imported to avoid initialization issues
+            import sys
+            if 'stash_ai_server.tasks.models' not in sys.modules:
+                return 0
+            
+            # Lazy import to avoid initialization issues
+            from stash_ai_server.tasks.models import TaskStatus
+            
+            running_tasks = manager.list(service=service, status=TaskStatus.running)
+            return len(running_tasks)
+        except Exception:
+            return 0
+    
+    @staticmethod
+    def get_queued_task_count(service: Optional[str] = None) -> int:
+        """Get count of currently queued tasks, optionally filtered by service."""
+        try:
+            manager = TaskManagerTestUtils._get_manager()
+            if not manager:
+                return 0
+            
+            # Check if TaskStatus is already imported to avoid initialization issues
+            import sys
+            if 'stash_ai_server.tasks.models' not in sys.modules:
+                return 0
+            
+            # Lazy import to avoid initialization issues
+            from stash_ai_server.tasks.models import TaskStatus
+            
+            queued_tasks = manager.list(service=service, status=TaskStatus.queued)
+            return len(queued_tasks)
+        except Exception:
+            return 0
+    
+    @staticmethod
+    async def wait_for_no_active_tasks(timeout: float = 10.0):
+        """Wait for all tasks to complete (no running or queued tasks)."""
+        return await TaskManagerTestUtils.wait_for_task_count(0, timeout)
 
 
 @asynccontextmanager
 async def temporary_task_service(service_name: str, handler_func, concurrency_limit: int = 1):
     """Temporarily register a task service for testing."""
     # Lazy import to avoid initialization issues
-    from stash_ai_server.services.registry import services
+    from stash_ai_server.services.registry import services, ServiceBase
+    from stash_ai_server.actions.registry import action
     
-    # Register temporary service
-    services.register_service(
-        service_name=service_name,
-        handler=handler_func,
-        concurrency_limit=concurrency_limit
-    )
+    # Create a temporary service class
+    class TemporaryTestService(ServiceBase):
+        def __init__(self):
+            self.name = service_name
+            self.description = f"Temporary test service: {service_name}"
+            self.max_concurrency = concurrency_limit
+            super().__init__()
+        
+        @action(id=f"test_action_{service_name}", label=f"Test Action for {service_name}")
+        async def test_handler(self, context, params):
+            return await handler_func(context, params)
+    
+    # Create and register the service
+    temp_service = TemporaryTestService()
+    services.register(temp_service)
     
     try:
         yield service_name
     finally:
         # Unregister service
-        services.unregister_service(service_name)
+        services.unregister(service_name)
 
 
 class MockWebSocketManager:

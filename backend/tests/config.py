@@ -108,30 +108,47 @@ def _create_shared_postgres_instance() -> Optional[SharedPostgreSQLInstance]:
             print("initdb binary not found")
             return None
         
-        # Start PostgreSQL server
-        process = subprocess.Popen([
+        # Start PostgreSQL server with Windows-compatible options
+        postgres_args = [
             str(postgres_bin),
             '-D', str(data_dir),
             '-p', str(port),
-            '-k', str(data_dir),  # Unix socket directory
             '-F'  # Don't fork to background
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        ]
         
-        # Wait for PostgreSQL to start
+        # Only add Unix socket directory on non-Windows systems
+        if os.name != 'nt':
+            postgres_args.extend(['-k', str(data_dir)])
+        
+        process = subprocess.Popen(
+            postgres_args,
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0
+        )
+        
+        # Wait for PostgreSQL to start with more conservative timing
         database_url_template = f"postgresql+psycopg://postgres:postgres@127.0.0.1:{port}/{{db_name}}"
         
-        for i in range(30):  # 30 second timeout
+        # Give PostgreSQL a moment to start up
+        time.sleep(2)
+        
+        for i in range(15):  # 15 second timeout with longer intervals
             if process.poll() is not None:
                 # Process exited
                 stdout, stderr = process.communicate()
                 print(f"PostgreSQL process exited: {stderr.decode()}")
                 return None
             
-            # Test connection
+            # Test connection with shorter timeout
             try:
                 from sqlalchemy import create_engine, text
                 test_url = f"postgresql+psycopg://postgres:postgres@127.0.0.1:{port}/postgres"
-                engine = create_engine(test_url, pool_pre_ping=True, connect_args={"connect_timeout": 2})
+                engine = create_engine(
+                    test_url, 
+                    pool_pre_ping=True, 
+                    connect_args={"connect_timeout": 1}
+                )
                 with engine.connect() as conn:
                     conn.execute(text("SELECT 1"))
                 engine.dispose()
@@ -143,11 +160,14 @@ def _create_shared_postgres_instance() -> Optional[SharedPostgreSQLInstance]:
                     process=process,
                     database_url_template=database_url_template
                 )
-            except Exception:
+            except Exception as e:
+                print(f"Connection attempt {i+1}/15 failed: {e}")
                 time.sleep(1)
                 continue
         
         print("Shared embedded PostgreSQL failed to start within timeout")
+        process.terminate()
+        return None
         process.terminate()
         return None
         
@@ -228,8 +248,18 @@ class TestConfig:
     def create_test_config(cls, test_db_suffix: Optional[str] = None) -> "TestConfig":
         """Create test configuration with isolated database and plugin directory."""
         
-        # Create unique test database name
-        db_suffix = test_db_suffix or f"test_{os.getpid()}"
+        # Create unique test database name with timestamp and random component
+        import random
+        import time
+        
+        if test_db_suffix:
+            db_suffix = test_db_suffix
+        else:
+            # Use process ID, timestamp, and random number for uniqueness
+            timestamp = int(time.time() * 1000) % 100000  # Last 5 digits of timestamp
+            random_num = random.randint(1000, 9999)
+            db_suffix = f"test_{os.getpid()}_{timestamp}_{random_num}"
+        
         test_db_name = f"stash_ai_server_{db_suffix}"
         
         # For tests, we'll use a different approach:
@@ -292,7 +322,11 @@ class TestConfig:
             
             # Try to connect to postgres database first (for admin operations)
             admin_url = self.database_url.replace(f"/{self.database_name}", "/postgres")
-            admin_engine = create_engine(admin_url, pool_pre_ping=True, connect_args={"connect_timeout": 5})
+            admin_engine = create_engine(
+                admin_url, 
+                pool_pre_ping=True, 
+                connect_args={"connect_timeout": 2}
+            )
             
             with admin_engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
@@ -321,16 +355,13 @@ class TestConfig:
             # Update our database URL to use the shared instance
             self.database_url = shared_instance.get_database_url(self.database_name)
             
-            # Wait a bit more for the database to be fully ready
-            time.sleep(2)
-            
-            # Verify the connection works
+            # Test connection immediately - no additional waiting
             if self.check_database_connection():
                 print(f"Using shared embedded PostgreSQL on port {shared_instance.port}")
                 return True
-            else:
-                print("Shared embedded PostgreSQL started but connection check failed")
-                return False
+            
+            print("Shared embedded PostgreSQL started but connection check failed")
+            return False
         
         # Provide helpful error message
         print("\n" + "="*60)

@@ -7,13 +7,30 @@ from dataclasses import dataclass
 from typing import Mapping, Sequence
 
 from sqlalchemy import select
+from typing import Callable
 
-from stash_ai_server.db.session import SessionLocal
 from stash_ai_server.models.plugin import PluginSetting
 
 SYSTEM_PLUGIN_NAME = "__system__"
 
 _log = logging.getLogger(__name__)
+
+# Configurable session factory for testing (similar to system_settings.py)
+_session_factory: Callable[[], object] | None = None
+
+def set_session_factory(factory: Callable[[], object]) -> None:
+    """Set a custom session factory for testing."""
+    global _session_factory
+    _session_factory = factory
+
+def _get_session():
+    """Get a database session using the configured factory."""
+    if _session_factory is not None:
+        return _session_factory()
+    
+    # Default to importing get_session_local only when needed
+    from stash_ai_server.db.session import get_session
+    return get_session()
 
 @dataclass(frozen=True, slots=True)
 class PathMapping:
@@ -79,7 +96,7 @@ def _coerce_mappings(raw: object) -> tuple[PathMapping, ...]:
 
 
 def _fetch_setting(plugin_name: str, key: str) -> object | None:
-    with SessionLocal() as session:
+    with _get_session() as session:
         row = (
             session.execute(
                 select(PluginSetting).where(

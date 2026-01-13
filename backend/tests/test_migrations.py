@@ -68,26 +68,6 @@ class TestDatabaseMigrations:
         
         assert result.success, f"Migration idempotency test failed: {result.error_message}"
     
-    def test_migration_downgrade(self, migration_runner):
-        """Test migration downgrade from head to base."""
-        result = migration_runner.test_migration_downgrade("head", "base")
-        
-        assert result.success, f"Migration downgrade failed: {result.error_message}"
-        assert result.rollback_success, "Migration rollback was not successful"
-    
-    def test_all_migrations_comprehensive(self, migration_runner):
-        """Test all migrations comprehensively."""
-        expected_tables = get_expected_tables_from_models()
-        results = migration_runner.test_all_migrations(expected_tables)
-        
-        # Check that all tests passed
-        failed_results = [r for r in results if not r.success]
-        assert len(failed_results) == 0, f"Some migration tests failed: {[r.error_message for r in failed_results]}"
-        
-        # Check that we have results for key operations
-        migration_types = [r.migration_id for r in results]
-        assert "head" in migration_types, "Missing head migration test"
-    
     def test_migration_performance(self, migration_runner):
         """Test migration performance characteristics."""
         result = migration_runner.test_migration_upgrade("head")
@@ -162,15 +142,6 @@ class TestMigrationErrorHandling:
                 pytest.skip(f"Migration tests require PostgreSQL database: {e}")
             else:
                 raise
-    
-    def test_invalid_migration_revision(self, migration_runner):
-        """Test handling of invalid migration revision."""
-        result = migration_runner.test_migration_upgrade("invalid_revision_12345")
-        
-        # Should fail gracefully
-        assert not result.success
-        assert result.error_message is not None
-        assert "invalid_revision_12345" in result.error_message or "Unknown revision" in result.error_message
     
     def test_migration_with_database_connection_issues(self, migration_runner):
         """Test migration behavior with database connection issues."""

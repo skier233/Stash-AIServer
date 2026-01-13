@@ -5,13 +5,11 @@ from typing import Any, Dict, List
 from stash_ai_server.actions.registry import registry as action_registry, collect_actions
 from stash_ai_server.core.runtime import register_backend_refresh_handler
 
-from stash_ai_server.db.session import SessionLocal
+from stash_ai_server.db.session import get_session
 from stash_ai_server.models.plugin import PluginSetting
 
-try:
-    from stash_ai_server.tasks.manager import manager as _initial_task_manager
-except Exception:
-    _initial_task_manager = None
+# Remove circular import - task manager will be set later
+_initial_task_manager = None
 
 
 _log = logging.getLogger(__name__)
@@ -50,7 +48,7 @@ class ServiceBase:
 
     def _load_settings(self) -> dict[str, Any]:
         try:
-            db = SessionLocal()
+            db = get_session()
         except Exception as exc:  # pragma: no cover - database unavailable
             _log.error("Unable to open session for settings: %s", exc)
             return {}
@@ -129,12 +127,12 @@ class ServiceRegistry:
     def _ensure_task_manager(self):
         if self._task_manager is not None:
             return
+        # Lazy import to avoid circular dependency
         try:
             from stash_ai_server.tasks.manager import manager as _task_manager
-        except Exception:
-            _task_manager = None
-        if _task_manager is not None:
             self.set_task_manager(_task_manager)
+        except Exception:
+            pass
 
     def _configure_service(self, service: ServiceBase) -> None:
         manager = self._task_manager

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Set, Optional, Tuple, Iterable, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import select
-from stash_ai_server.db.session import SessionLocal, engine
+from stash_ai_server.db.session import get_session, get_engine
 from stash_ai_server.core.config import settings
 from stash_ai_server.core.compat import version_satisfies
 from stash_ai_server.models.plugin import PluginMeta, PluginSetting, PluginSource, PluginCatalog
@@ -303,7 +303,7 @@ def _apply_migrations(manifest: PluginManifest, meta: PluginMeta):
             if 'upgrade' not in ns:
                 print(f"[plugin] migration missing upgrade(): {f}", flush=True)
                 continue
-            with engine.begin() as conn:
+            with get_engine().begin() as conn:
                 ns['upgrade'](conn)
             meta.migration_head = f.stem
             print(f"[plugin] name={manifest.name} applied_migration={f.name}", flush=True)
@@ -494,7 +494,7 @@ def plan_remove(db: Session, plugin_name: str) -> RemovePlanResult:
 def initialize_plugins():
     if not PLUGIN_DIR.exists():
         return
-    db = SessionLocal()
+    db = get_session()
     try:
         try:
             _ensure_builtin_source(db)
@@ -852,7 +852,7 @@ def reload_all_plugins() -> None:
     manifests = sorted(PLUGIN_DIR.glob('*/plugin.yml'))
     if not manifests:
         return
-    db = SessionLocal()
+    db = get_session()
     try:
         try:
             _ensure_builtin_source(db)

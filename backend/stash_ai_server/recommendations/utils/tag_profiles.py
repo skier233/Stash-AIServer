@@ -5,7 +5,7 @@ from typing import Any, Dict, Mapping, Sequence, Tuple
 
 import sqlalchemy as sa
 
-from stash_ai_server.db.session import SessionLocal
+from stash_ai_server.db.session import get_session_local
 from stash_ai_server.models.ai_results import AIModelRun, AIResultAggregate
 from stash_ai_server.db.ai_results_store import get_scene_tag_totals
 
@@ -52,7 +52,7 @@ def fetch_tag_durations_for_scenes(
     per_scene: TagDurationLookup = defaultdict(dict)
     tag_ids: set[int] = set()
 
-    with SessionLocal() as session:
+    with get_session_local()() as session:
         for row in session.execute(stmt):
             tag = row.tag_id
             if tag is None:
@@ -202,7 +202,7 @@ def fetch_tag_document_frequencies(
     )
 
     frequencies: Dict[int, int] = {}
-    with SessionLocal() as session:
+    with get_session_local()() as session:
         for row in session.execute(stmt):
             try:
                 tag_id = int(row.tag_id)
@@ -228,7 +228,7 @@ def fetch_total_tagged_scene_count(*, service: str) -> int:
         )
     )
 
-    with SessionLocal() as session:
+    with get_session_local()() as session:
         result = session.execute(stmt).scalar_one_or_none()
         try:
             return int(result or 0)

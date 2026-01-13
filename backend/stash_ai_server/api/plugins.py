@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, delete
 import httpx, traceback  # json unused
 from stash_ai_server.utils.string_utils import normalize_null_strings
-from stash_ai_server.db.session import SessionLocal
+from stash_ai_server.db.session import get_db
 from stash_ai_server.models.plugin import PluginMeta, PluginSource, PluginCatalog, PluginSetting
 from stash_ai_server.plugin_runtime import loader as plugin_loader
 from stash_ai_server.core.system_settings import SYSTEM_PLUGIN_NAME, get_value as sys_get_value, invalidate_cache as sys_invalidate_cache
@@ -19,14 +19,7 @@ from stash_ai_server.core.api_key import require_shared_api_key
 
 router = APIRouter(prefix='/plugins', tags=['plugins'], dependencies=[Depends(require_shared_api_key)])
 
-# Dependency
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+# Dependency removed - using standard get_db from db.session
 
 
 def _require_plugin_active(db: Session, plugin_name: str):
