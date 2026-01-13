@@ -62,16 +62,17 @@ jobs:
           sleep 2
         done
 
-    - name: Set up test environment
+    - name: Set up test environment and run migrations
       run: |
-        cd backend
+        cd backend/stash_ai_server
         # Set environment variables for testing
         export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/test_db"
         export STASH_URL="http://localhost:9999"
         export STASH_API_KEY="test-api-key"
         export PYTEST_CURRENT_TEST="true"
+        export PYTHONPATH="${PYTHONPATH}:$(pwd)"
         
-        # Run database migrations
+        # Run database migrations from the correct directory
         alembic upgrade head
 
     - name: Run complete test suite
