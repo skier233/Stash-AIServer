@@ -62,18 +62,6 @@ jobs:
           sleep 2
         done
 
-    - name: Set up test environment and run migrations
-      run: |
-        # Set environment variables for testing
-        export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/test_db"
-        export STASH_URL="http://localhost:9999"
-        export STASH_API_KEY="test-api-key"
-        export PYTEST_CURRENT_TEST="true"
-        
-        # Run database migrations using the application's migration system
-        cd backend
-        python -c "from stash_ai_server.core.migrations import run_migrations; run_migrations()"
-
     - name: Run complete test suite
       run: |
         cd backend
@@ -140,7 +128,7 @@ jobs:
     - name: Install dependencies
       run: |
         cd frontend
-        npm ci
+        npm install
         
     - name: Build frontend
       run: |
