@@ -3,7 +3,7 @@ import os
 from stash_ai_server.core.config import settings
 from stash_ai_server.core.logging_config import configure_logging
 from stash_ai_server.core.system_settings import seed_system_settings
-from stash_ai_server.db.session import engine
+from stash_ai_server.db.session import get_engine
 
 def _maybe_run_migrations():
     try:
@@ -17,7 +17,7 @@ def _maybe_run_migrations():
 def _maybe_migrate_sqlite():
     try:
         from stash_ai_server.db.sqlite_migrator import migrate_sqlite_to_postgres
-        if migrate_sqlite_to_postgres(engine):
+        if migrate_sqlite_to_postgres(get_engine()):
             print("[entrypoint] migrated legacy SQLite database", flush=True)
     except Exception as e:
         print(f"[entrypoint] sqlite migration failed: {e}", flush=True)
@@ -38,7 +38,7 @@ def main():
     _maybe_migrate_sqlite()
     try:
         from stash_ai_server.db.sqlite_fdw import setup_sqlite_fdw
-        setup_sqlite_fdw(engine)
+        setup_sqlite_fdw(get_engine())
     except Exception as e:
         print(f"[entrypoint] sqlite_fdw setup skipped: {e}", flush=True)
     print('[entrypoint] migrations complete', flush=True)

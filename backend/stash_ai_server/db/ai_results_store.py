@@ -8,7 +8,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, selectinload
 
-from stash_ai_server.db.session import SessionLocal
+from stash_ai_server.db.session import get_session_local
 from stash_ai_server.models.ai_results import (
     AIModel,
     AIModelRun,
@@ -110,7 +110,7 @@ def get_scene_timespans(
     if scene_id_int is None:
         raise ValueError("scene_id must be an integer")
     
-    with SessionLocal() as session:
+    with get_session_local()() as session:
         # Get all timespans for this scene, ordered for merge processing
         timespans_stmt = (
             select(AIResultTimespan)
@@ -174,7 +174,7 @@ def get_scene_tag_totals(
     if scene_id_int is None:
         raise ValueError("scene_id must be an integer")
 
-    with SessionLocal() as session:
+    with get_session_local()() as session:
         stmt = (
             select(
                 AIResultAggregate.value_id,
@@ -546,7 +546,7 @@ def store_scene_run(
     models_payload = result_payload.get("models") or []
     now = dt.datetime.utcnow()
     normalized_input_params = _prepare_input_params(input_params)
-    with SessionLocal() as session:
+    with get_session_local()() as session:
         model_records = _upsert_models(
             session,
             service=service,
@@ -667,7 +667,7 @@ def store_image_run(
 
     now = dt.datetime.now(dt.timezone.utc)
     normalized_input_params = _prepare_input_params(input_params)
-    with SessionLocal() as session:
+    with get_session_local()() as session:
         model_records = _upsert_models(
             session,
             service=service,
@@ -770,7 +770,7 @@ def get_scene_model_history(
     if scene_id_int is None:
         raise ValueError("scene_id must be an integer")
 
-    with SessionLocal() as session:
+    with get_session_local()() as session:
         model_summaries = _collect_model_history(
             session,
             service=service,
@@ -789,7 +789,7 @@ def get_image_model_history(
     if image_id_int is None:
         raise ValueError("image_id must be an integer")
 
-    with SessionLocal() as session:
+    with get_session_local()() as session:
         model_summaries = _collect_model_history(
             session,
             service=service,
@@ -807,7 +807,7 @@ def get_latest_scene_run(
     scene_id_int = _ensure_int(scene_id)
     if scene_id_int is None:
         raise ValueError("scene_id must be an integer")
-    with SessionLocal() as session:
+    with get_session_local()() as session:
         stmt = (
             select(AIModelRun)
             .options(
@@ -864,7 +864,7 @@ def get_image_tag_ids(
     if image_id_int is None:
         raise ValueError("image_id must be an integer")
 
-    with SessionLocal() as session:
+    with get_session_local()() as session:
         stmt = (
             select(AIResultAggregate.value_id)
             .join(AIModelRun, AIResultAggregate.run_id == AIModelRun.id)
@@ -915,7 +915,7 @@ def purge_scene_categories(
     if scene_id_int is None:
         raise ValueError("scene_id must be an integer")
 
-    with SessionLocal() as session:
+    with get_session_local()() as session:
         # build subquery of run ids for this scene/service
         run_ids_subq = select(AIModelRun.id).where(
             AIModelRun.service == service,

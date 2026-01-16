@@ -1,0 +1,16 @@
+name: test_async_tasks
+version: 1.0.0
+required_backend: '>=0.0.0'
+description: Test plugin for async task handler and concurrency testing
+human_name: Test Async Tasks Plugin
+files: [plugin]
+depends_on: []
+settings:
+  test_async_setting:
+    type: string
+    default: "test_async_value"
+    description: "Test setting for async task plugin testing"
+  task_timeout:
+    type: integer
+    default: 30
+    description: "Task timeout in seconds"

@@ -1,0 +1,12 @@
+name: base_test_plugin
+version: 1.0.0
+required_backend: '>=0.0.0'
+description: Base test plugin for testing plugin system functionality
+human_name: Base Test Plugin
+files: [plugin]
+depends_on: []
+settings:
+  test_setting:
+    type: string
+    default: "test_value"
+    description: "Test setting for plugin testing"

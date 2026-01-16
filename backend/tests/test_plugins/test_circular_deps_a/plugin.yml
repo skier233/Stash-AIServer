@@ -1,0 +1,12 @@
+name: test_circular_deps_a
+version: 1.0.0
+required_backend: '>=0.0.0'
+description: Test plugin A for circular dependency testing
+human_name: Test Circular Dependencies A Plugin
+files: [plugin]
+depends_on: [test_circular_deps_b]
+settings:
+  test_circular_a_setting:
+    type: string
+    default: "test_circular_a_value"
+    description: "Test setting for circular dependency A plugin testing"

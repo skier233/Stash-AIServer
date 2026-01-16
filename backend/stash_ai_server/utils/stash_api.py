@@ -439,7 +439,22 @@ def _construct_stash_interface(url: str, api_key: str = None) -> StashInterface:
         conn['ApiKey'] = api_key
     return StashInterface(conn)
 
-stash_api = StashAPI()
+def get_stash_api():
+    """Get the global StashAPI instance, creating it if needed."""
+    global _stash_api_instance
+    if _stash_api_instance is None:
+        _stash_api_instance = StashAPI()
+    return _stash_api_instance
+
+# Global instance - created lazily
+_stash_api_instance = None
+
+# For backward compatibility, create a property-like access
+class StashAPIProxy:
+    def __getattr__(self, name):
+        return getattr(get_stash_api(), name)
+
+stash_api = StashAPIProxy()
 
 
 def _refresh_stash_api() -> None:

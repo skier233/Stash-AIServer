@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Set
 
 import sqlalchemy as sa
 
-from stash_ai_server.db.session import SessionLocal
+from stash_ai_server.db.session import get_session_local
 from stash_ai_server.models.interaction import SceneWatch, SceneWatchSegment
 
 
@@ -54,7 +54,7 @@ def load_watch_history_summary(
         stmt = stmt.limit(limit)
 
     rows: List[Dict[str, Any]] = []
-    with SessionLocal() as session:
+    with get_session_local()() as session:
         for row in session.execute(stmt):
             watched_total = float(row.watched_s or 0.0)
             if watched_total <= 0:
