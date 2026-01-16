@@ -567,20 +567,11 @@ class TaskManager:
             
             # Execute handler with timeout to prevent hanging
             sig = inspect.signature(handler)
-            try:
-                if len(sig.parameters) >= 3:
-                    result = await asyncio.wait_for(handler(task.context, task.params, task), timeout=5.0)  # type: ignore
-                else:
-                    result = await asyncio.wait_for(handler(task.context, task.params), timeout=5.0)  # type: ignore
-            except asyncio.TimeoutError:
-                task.status = TaskStatus.failed
-                task.error = 'Task execution timeout (5s)'
-                task.finished_at = __import__('time').time()
-                self._emit('failed', task, None)
-                if self._debug:
-                    self._log.debug(f"TIMEOUT task={task.id}")
-                return
-            
+            if len(sig.parameters) >= 3:
+                result = await handler(task.context, task.params, task)  # type: ignore
+            else:
+                result = await handler(task.context, task.params)  # type: ignore
+
             # Check cancellation after execution
             if token and token.is_cancelled():
                 task.status = TaskStatus.cancelled
@@ -669,6 +660,27 @@ class TaskManager:
 
 # Dependency injection - no global instance
 # Use get_task_manager() from dependencies module instead
+
+# Backward compatibility: provide a module-level manager instance
+# This is lazily initialized on first access
+def _get_module_manager():
+    """Lazy getter for the module-level manager instance."""
+    try:
+        from stash_ai_server.core.dependencies import get_task_manager
+        return get_task_manager()
+    except Exception:
+        return None
+
+# Create a lazy reference that imports the manager on first use
+class _ManagerProxy:
+    """Proxy that lazily gets the actual manager from dependency injection."""
+    def __getattr__(self, name):
+        m = _get_module_manager()
+        if m is None:
+            raise RuntimeError("Task manager not initialized via dependency injection")
+        return getattr(m, name)
+
+manager = _ManagerProxy()  # For backward compatibility with code importing 'manager'
 
 
 def _refresh_task_manager() -> None:

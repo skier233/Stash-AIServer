@@ -46,6 +46,15 @@ def get_session():
     return SessionLocal()
 
 
+def get_session_local():
+    """Get the session factory (returns the factory itself, not a session).
+    
+    Used in contexts like: with get_session_local()() as session:
+    This is for backward compatibility with code expecting a callable factory.
+    """
+    return get_session_factory()
+
+
 # Legacy compatibility - these should be phased out
 engine = property(lambda self: get_engine())
 SessionLocal = get_session_factory
