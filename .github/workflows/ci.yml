@@ -78,14 +78,14 @@ jobs:
       continue-on-error: false
 
     - name: Upload test results
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       if: always()
       with:
         name: test-results-${{ matrix.python-version }}
         path: backend/test-results-${{ matrix.python-version }}.xml
 
     - name: Upload coverage reports
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       if: always()
       with:
         name: coverage-${{ matrix.python-version }}
