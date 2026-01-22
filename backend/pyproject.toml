@@ -16,7 +16,7 @@ license = { text = "MIT" }
 dependencies = [
   "fastapi==0.127.0",
   "uvicorn[standard]==0.40.0",
-  "SQLAlchemy==2.0.45",
+  "SQLAlchemy==2.0.46",
   "alembic==1.17.2",
   "psycopg[binary]==3.3.2",
   "pgvector==0.4.2",
