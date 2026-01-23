@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from typing import Any, Optional
 from sqlalchemy.orm import Session
 from stash_ai_server.db.session import get_db
-from stash_ai_server.tasks.manager import manager
+from stash_ai_server.core.dependencies import TaskManagerDep
 from stash_ai_server.tasks.models import TaskPriority, TaskStatus
 from stash_ai_server.tasks.history import TaskHistory
 from stash_ai_server.actions.models import ContextInput
@@ -48,7 +48,7 @@ def task_history(limit: int = 50, service: str | None = None, status: str | None
     return {'history': [r.as_dict() for r in rows]}
 
 @router.post('/submit', response_model=SubmitTaskResponse)
-async def submit_task(payload: SubmitTaskRequest):
+async def submit_task(payload: SubmitTaskRequest, task_manager: TaskManagerDep):
     """Resolve action and submit a task to the manager."""
     ctx = payload.context
     resolved = action_registry.resolve(payload.action_id, ctx)
@@ -60,7 +60,7 @@ async def submit_task(payload: SubmitTaskRequest):
         prio = TaskPriority.high
     elif payload.priority == 'low':
         prio = TaskPriority.low
-    task = manager.submit(definition, handler, ctx, payload.params, prio)
+    task = task_manager.submit(definition, handler, ctx, payload.params, prio)
     return SubmitTaskResponse(task_id=task.id, status=task.status.value)
 
 class TaskResponse(BaseModel):
@@ -76,9 +76,9 @@ class TaskResponse(BaseModel):
     finished_at: float | None = None
 
 @router.get('/{task_id}', response_model=TaskResponse)
-async def get_task(task_id: str):
+async def get_task(task_id: str, task_manager: TaskManagerDep):
     """Fetch current state (in-memory) of a task by id."""
-    task = manager.get(task_id)
+    task = task_manager.get(task_id)
     if not task:
         raise HTTPException(status_code=404, detail='Task not found')
     return TaskResponse(
@@ -95,9 +95,9 @@ async def get_task(task_id: str):
     )
 
 @router.post('/{task_id}/cancel')
-async def cancel_task(task_id: str):
+async def cancel_task(task_id: str, task_manager: TaskManagerDep):
     """Attempt to cancel a queued or running task; cascades to children."""
-    ok = manager.cancel(task_id)
+    ok = task_manager.cancel(task_id)
     if not ok:
         raise HTTPException(status_code=404, detail='Task not found or cannot cancel')
     return {'status': 'ok'}
@@ -106,7 +106,7 @@ class ListTasksResponse(BaseModel):
     tasks: list[TaskResponse]
 
 @router.get('', response_model=ListTasksResponse)
-async def list_tasks(service: str | None = None, status: str | None = None):
+async def list_tasks(task_manager: TaskManagerDep, service: str | None = None, status: str | None = None):
     """List current in-memory tasks (optionally filter by service/status)."""
     st = None
     if status:
@@ -114,7 +114,7 @@ async def list_tasks(service: str | None = None, status: str | None = None):
             st = TaskStatus(status)
         except ValueError:
             st = None
-    tasks = manager.list(service=service, status=st)
+    tasks = task_manager.list(service=service, status=st)
     return ListTasksResponse(tasks=[TaskResponse(
         id=t.id,
         action_id=t.action_id,

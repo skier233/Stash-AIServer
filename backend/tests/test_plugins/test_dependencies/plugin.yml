@@ -1,0 +1,12 @@
+name: test_dependencies
+version: 1.0.0
+required_backend: '>=0.0.0'
+description: Test plugin for dependency resolution and loading order testing
+human_name: Test Dependencies Plugin
+files: [plugin]
+depends_on: [base_test_plugin]
+settings:
+  test_dependency_setting:
+    type: string
+    default: "test_dependency_value"
+    description: "Test setting for dependency plugin testing"

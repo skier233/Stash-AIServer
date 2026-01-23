@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Body, Depends, HTTPException
 from stash_ai_server.actions.registry import registry as action_registry
 from stash_ai_server.actions.models import ContextInput, ActionDefinition
-from stash_ai_server.tasks.manager import manager as task_manager
+from stash_ai_server.core.dependencies import TaskManagerDep
 from stash_ai_server.tasks.models import TaskPriority
 from pydantic import BaseModel
 from typing import Any, Optional, Dict
@@ -36,7 +36,7 @@ class SubmitActionResponse(BaseModel):
     inferred_priority: str
 
 @router.post('/submit', response_model=SubmitActionResponse)
-async def submit_action(payload: SubmitActionRequest):
+async def submit_action(payload: SubmitActionRequest, task_manager: TaskManagerDep):
     ctx = payload.context
     resolved = action_registry.resolve(payload.action_id, ctx)
     if not resolved:

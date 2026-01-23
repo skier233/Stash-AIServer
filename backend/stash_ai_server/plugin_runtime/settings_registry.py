@@ -60,13 +60,13 @@ def load_plugin_settings(plugin_name: str) -> dict[str, Any]:
     module import or initialization.
     """
     try:
-        from stash_ai_server.db.session import SessionLocal
+        from stash_ai_server.db.session import get_session_local
     except Exception:
         return {}
 
     session = None
     try:
-        session = SessionLocal()
+        session = get_session_local()()
     except Exception:
         return {}
 

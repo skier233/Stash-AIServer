@@ -1,0 +1,16 @@
+name: test_service
+version: 1.0.0
+required_backend: '>=0.0.0'
+description: Test plugin for service registration and async task handler testing
+human_name: Test Service Plugin
+files: [plugin]
+depends_on: []
+settings:
+  test_service_setting:
+    type: string
+    default: "test_service_value"
+    description: "Test setting for service plugin testing"
+  max_concurrent_tasks:
+    type: integer
+    default: 2
+    description: "Maximum concurrent tasks for test service"

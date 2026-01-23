@@ -5,7 +5,7 @@ from typing import Dict, Iterable, List, Sequence, Tuple
 
 import sqlalchemy as sa
 
-from stash_ai_server.db.session import SessionLocal
+from stash_ai_server.db.session import get_session_local
 from stash_ai_server.models.ai_results import AIModelRun, AIResultAggregate
 from stash_ai_server.db.ai_results_store import get_scene_timespans
 from stash_ai_server.models.interaction import SceneWatchSegment
@@ -32,7 +32,7 @@ def collect_tag_durations(
 
     scene_set = {int(scene_id) for scene_id in scene_ids or [] if scene_id is not None}
 
-    with SessionLocal() as session:
+    with get_session_local()() as session:
         stmt = (
             sa.select(
                 AIModelRun.entity_id.label("scene_id"),
@@ -158,7 +158,7 @@ def _fetch_scene_watch_intervals(scene_id: int) -> List[Interval]:
         .order_by(SceneWatchSegment.start_s.asc())
     )
     intervals: List[Interval] = []
-    with SessionLocal() as session:
+    with get_session_local()() as session:
         for start, end, watched in session.execute(stmt):
             try:
                 start_f = float(start or 0.0)

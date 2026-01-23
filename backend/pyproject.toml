@@ -28,8 +28,54 @@ dependencies = [
   "packaging==25.0"
 ]
 
+[project.optional-dependencies]
+test = [
+  "pytest>=7.0.0",
+  "pytest-asyncio>=0.21.0",
+  "pytest-timeout>=2.1.0",
+  "pytest-mock>=3.10.0",
+  "pytest-cov>=4.0.0",
+  "hypothesis>=6.68.0",
+  "asyncpg>=0.28.0",  # For async database testing
+]
+
 [project.urls]
 Homepage = "https://github.com/skier233/Stash-AIServer"
 
 [project.scripts]
 stash-ai-server = "stash_ai_server.entrypoint:main"
+
+[tool.pytest.ini_options]
+# IDE-friendly pytest configuration
+minversion = "6.0"
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--disable-warnings",
+    "--tb=short"
+]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+    "plugin: marks tests as plugin tests",
+    "database: marks tests as database tests (requires PostgreSQL)",
+    "api: marks tests as API tests",
+    "websocket: marks tests as WebSocket tests",
+    "task: marks tests as task management tests",
+    "performance: marks tests as performance tests",
+    "property: marks tests as property-based tests"
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+    "ignore::UserWarning:stash_ai_server.*",
+    "ignore::pytest.PytestDeprecationWarning"
+]
+timeout = 30

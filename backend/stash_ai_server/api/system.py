@@ -7,10 +7,12 @@ from typing import Tuple
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
 
 from stash_ai_server.api.version import get_version_payload
 from stash_ai_server.core.api_key import require_shared_api_key
 from stash_ai_server.core.system_settings import get_value as sys_get
+from stash_ai_server.db.session import get_db
 from stash_ai_server.schemas.health import HealthComponent, HealthStatus, SystemHealthSnapshot
 from stash_ai_server.utils import stash_db
 from stash_ai_server.utils.path_mutation import mutate_path_for_backend
@@ -151,7 +153,7 @@ async def _probe_stash_database() -> HealthComponent:
 
 
 @router.get("/health", response_model=SystemHealthSnapshot)
-async def get_system_health() -> SystemHealthSnapshot:
+async def get_system_health(db: Session = Depends(get_db)) -> SystemHealthSnapshot:
     stash_component, db_component = await asyncio.gather(
         _probe_stash_api(), _probe_stash_database()
     )
@@ -161,7 +163,7 @@ async def get_system_health() -> SystemHealthSnapshot:
         if _STATUS_ORDER[status] > _STATUS_ORDER[overall]:
             overall = status
 
-    version_payload = get_version_payload()
+    version_payload = get_version_payload(db)
 
     return SystemHealthSnapshot(
         status=overall,

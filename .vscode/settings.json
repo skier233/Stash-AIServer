@@ -1,7 +1,44 @@
 {
-    "python.testing.pytestArgs": [
-        "tests"
-    ],
+    "python.testing.pytestEnabled": true,
     "python.testing.unittestEnabled": false,
-    "python.testing.pytestEnabled": true
+    "python.testing.pytestArgs": [
+        "backend/tests",
+        "-v",
+        "--tb=short"
+    ],
+    "python.testing.cwd": "${workspaceFolder}",
+    "python.testing.autoTestDiscoverOnSaveEnabled": true,
+    "python.defaultInterpreterPath": "python",
+    "python.terminal.activateEnvironment": true,
+    "python.testing.pytestPath": "python",
+    "python.testing.pytestConfigFilePath": "${workspaceFolder}/backend/pytest.ini",
+    "python.testing.debugPort": 3000,
+    "python.testing.promptToConfigure": false,
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/*.pyc": true,
+        "**/archived_test_*.py": true,
+        "data/": true,
+        "dist/": true,
+        "**/.pytest_cache": true
+    },
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/backend"
+    ],
+    "python.envFile": "${workspaceFolder}/backend/.env",
+    "python.linting.enabled": true,
+    "python.linting.pylintEnabled": false,
+    "python.linting.flake8Enabled": true,
+    "python.formatting.provider": "black",
+    "editor.formatOnSave": true,
+    "python.testing.debugPort": 3000,
+    "python.testing.unittestArgs": [],
+    "python.testing.nosetestsEnabled": false,
+    "files.associations": {
+        "*.yml": "yaml",
+        "*.yaml": "yaml"
+    },
+    "yaml.schemas": {
+        "backend/tests/test_plugins/*/plugin.yml": "Plugin Schema"
+    }
 }

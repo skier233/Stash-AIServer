@@ -1,0 +1,16 @@
+name: test_failure_plugin
+version: 1.0.0
+required_backend: '>=0.0.0'
+description: Test plugin for failure scenario testing
+human_name: Test Failure Plugin
+files: [plugin]
+depends_on: []
+settings:
+  test_failure_setting:
+    type: string
+    default: "test_failure_value"
+    description: "Test setting for failure plugin testing"
+  simulate_failure:
+    type: boolean
+    default: false
+    description: "Whether to simulate failure during registration"

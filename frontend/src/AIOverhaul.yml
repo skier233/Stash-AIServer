@@ -26,6 +26,9 @@ ui:
       - http://localhost:4153
       - ws://localhost:4153
       - https://localhost:4153
+      - http://127.0.0.1:4153
+      - ws://127.0.0.1:4153
+      - https://127.0.0.1:4153
       # Add additional urls here for the stash-ai-server if your browser is not on the same host
     script-src:
       - 'self'
