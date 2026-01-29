@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from stash_ai_server.core.config import settings
 from stash_ai_server.api import interactions as interactions_router
 from stash_ai_server.api import actions as actions_router
@@ -15,8 +15,9 @@ from stash_ai_server.recommendations.registry import recommender_registry
 from stash_ai_server.recommendations.models import RecContext
 from stash_ai_server.core.dependencies import get_task_manager, configure_task_manager
 from stash_ai_server.db.session import get_engine, Base
-import pathlib, hashlib, os, sys
+import pathlib, hashlib, mimetypes, os, sys
 from contextlib import asynccontextmanager
+from stash_ai_server.plugin_runtime import loader as plugin_loader
 from stash_ai_server.plugin_runtime.loader import initialize_plugins
 from stash_ai_server.core.system_settings import seed_system_settings, get_value as sys_get
 from stash_ai_server.services import registry as services_registry  # registry remains for core non-plugin definitions (if any)
@@ -65,6 +66,17 @@ async def lifespan(app: FastAPI):
             initialize_plugins()
         except Exception as e:  # plugin loading errors are logged internally; keep startup going
             print(f"[plugin] unexpected loader exception (database may not be available): {e}", flush=True)
+
+        # Register plugin routers
+        try:
+            from stash_ai_server.plugin_runtime.loader import get_plugin_routers
+            plugin_routers = get_plugin_routers()
+            for plugin_name, router in plugin_routers.items():
+                # Mount at /api/v1/plugins so plugin routes can define their own sub-paths
+                app.include_router(router, prefix=f"{settings.api_v1_prefix}/plugins")
+                print(f"[plugin] registered router for {plugin_name} at {settings.api_v1_prefix}/plugins", flush=True)
+        except Exception as e:
+            print(f"[plugin] router registration error: {e}", flush=True)
 
         # Initialize services integration after plugins are loaded
         try:
@@ -139,5 +151,29 @@ app.add_middleware(
 async def root():
     return {'status': 'ok', 'app': settings.app_name}
 
+# Serve plugin JavaScript files from /plugins/{plugin_name}/{filename}
+@app.get("/plugins/{plugin_name}/{filename:path}")
+async def serve_plugin_file(plugin_name: str, filename: str):
+    """Serve static files (like JavaScript) from plugin directories."""
+    plugin_dir = plugin_loader.PLUGIN_DIR
+    plugin_path = plugin_dir / plugin_name / filename
+    if plugin_path.exists() and plugin_path.is_file():
+        # Security: ensure the file is within the plugin directory
+        try:
+            plugin_path.resolve().relative_to(plugin_dir.resolve())
+        except ValueError:
+            # Path traversal attempt
+            return JSONResponse(status_code=403, content={"detail": "Forbidden"})
 
+        # Determine MIME type based on file extension
+        media_type = mimetypes.guess_type(str(plugin_path))[0]
+        # Ensure JavaScript files get the correct MIME type
+        if filename.endswith(".js"):
+            media_type = "application/javascript"
+        # Fallback to application/octet-stream if mimetypes cant determine it
+        if not media_type:
+            media_type = "application/octet-stream"
+
+        return FileResponse(plugin_path, media_type=media_type)
+    return JSONResponse(status_code=404, content={"detail": "File not found"})
 

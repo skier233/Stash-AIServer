@@ -72,6 +72,8 @@ cython_debug/
 poetry.toml
 .ruff_cache/
 pyrightconfig.json
+plugins/
+
 
 # Node.js
 node_modules/
@@ -83,3 +85,6 @@ yarn-error.log*
 # IDEs
 .idea/
 backend/config.docker.env
+
+# Development workflow:
+scripts/install/conda/start-dev.ps1

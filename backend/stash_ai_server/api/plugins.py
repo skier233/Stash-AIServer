@@ -16,8 +16,11 @@ from stash_ai_server.core.config import settings
 from stash_ai_server.core.compat import version_satisfies
 from stash_ai_server.utils.path_mutation import invalidate_path_mapping_cache
 from stash_ai_server.core.api_key import require_shared_api_key
+from stash_ai_server.services import registry as services_registry
+import logging
 
 router = APIRouter(prefix='/plugins', tags=['plugins'], dependencies=[Depends(require_shared_api_key)])
+logger = logging.getLogger(__name__)
 
 # Dependency removed - using standard get_db from db.session
 
@@ -493,3 +496,4 @@ async def remove_plugin_api(body: dict = Body(...), db: Session = Depends(get_db
         raise HTTPException(status_code=500, detail=str(e))
 
 ## Remote catalog 'available' endpoint removed for now; manifest fields supply human_name/server_link.
+
