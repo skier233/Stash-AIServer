@@ -30,6 +30,15 @@ ui:
       - ws://127.0.0.1:4153
       - https://127.0.0.1:4153
       # Add additional urls here for the stash-ai-server if your browser is not on the same host
+    script-src:
+      - 'self'
+      - http://localhost:4153
+      - https://localhost:4153
+      - http://www.gstatic.com
+      - https://www.gstatic.com
+      - 'unsafe-inline'
+      - 'unsafe-eval'
+      # Allow plugin JavaScript files to be loaded from the backend server
 interface: raw
 exec:
   - python

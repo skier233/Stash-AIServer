@@ -47,7 +47,7 @@
       return { ...(init || {}), headers };
     };
 
-  interface BasicSceneFile { duration?: number; size?: number; }
+  interface BasicSceneFile { duration?: number; size?: number; path?: string; }
   interface BasicScene { 
     id: number; 
     title?: string; 
@@ -555,7 +555,9 @@
 
     // Render scene in queue list format (matching the Queue tab exactly)
     const renderQueueScene = useCallback((scene: BasicScene, index: number) => {
-      const title = scene.title || `Scene ${scene.id}`;
+      const filepath = scene.files?.[0]?.path || '';
+      const filename = filepath ? filepath.replace(/\\/g, '/').split('/').pop() || '' : '';
+      const title = scene.title || filename || `Scene ${scene.id}`;
       const studio = scene.studio?.name || '';
       const performers = scene.performers?.map(p => p.name).join(', ') || '';
       const screenshot = scene.paths?.screenshot;
@@ -583,10 +585,11 @@
           className: 'queue-scene-details'
         }, [
           React.createElement('span', { key: 'title', className: 'queue-scene-title' }, title),
+          filepath ? React.createElement('span', { key: 'filepath', className: 'queue-scene-filepath', title: filepath, style: { fontSize: '0.75em', color: '#888', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '300px', display: 'block' } }, filepath) : null,
           React.createElement('span', { key: 'studio', className: 'queue-scene-studio' }, studio),
           React.createElement('span', { key: 'performers', className: 'queue-scene-performers' }, performers),
           React.createElement('span', { key: 'date', className: 'queue-scene-date' }, date)
-        ])
+        ].filter(Boolean))
       ])));
     }, [handleSceneClick]);
 

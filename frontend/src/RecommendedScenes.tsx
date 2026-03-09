@@ -155,7 +155,7 @@
   const LS_PAGE_KEY = 'aiRec.page';
   //
 
-  interface BasicSceneFile { duration?:number; size?:number; }
+  interface BasicSceneFile { duration?:number; size?:number; path?:string; }
   interface BasicScene { id:number; title?:string; rating100?:number; rating?:number; files?:BasicSceneFile[]; [k:string]:any }
   interface RecommenderDef { id:string; label:string; description?:string; config?:any[]; contexts?:string[]; }
 

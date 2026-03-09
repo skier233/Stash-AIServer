@@ -455,8 +455,15 @@ def _store_scene_timespans(
     frame_interval: float | None,
     resolve_reference: Callable[[str, str | None], int | None] | None = None,
 ) -> dict[tuple[str | None, str], float]:
+    import logging
+    _log = logging.getLogger(__name__)
     totals: dict[tuple[str | None, str], float] = {}
     timespans = result.get("timespans") or {}
+    _log.info("Storing scene timespans for scene_id=%s, run_id=%s: found %d categories in timespans", 
+             scene_id, run.id, len(timespans))
+    if not timespans:
+        _log.warning("No timespans found in result for scene_id=%s, run_id=%s. Result keys: %s", 
+                   scene_id, run.id, list(result.keys())[:20])
     interval = float(frame_interval) if frame_interval is not None else 2.0
     for category, tags in timespans.items():
         if not isinstance(tags, Mapping):
@@ -494,6 +501,8 @@ def _store_scene_timespans(
                 span = max(0.0, end_val - float(start))
                 key = (category_name, label_name)
                 totals[key] = totals.get(key, 0.0) + span
+    _log.info("Stored timespans for scene_id=%s, run_id=%s: %d unique tag/category combinations, total duration: %.2fs", 
+             scene_id, run.id, len(totals), sum(totals.values()))
     return totals
 
 
@@ -607,6 +616,10 @@ def store_scene_run(
         )
 
         if totals:
+            import logging
+            _log = logging.getLogger(__name__)
+            _log.info("Storing aggregates for scene_id=%s, run_id=%s: %d tag/category combinations", 
+                     scene_id_int, run.id, len(totals))
             _store_aggregates(
                 session,
                 run=run,
@@ -614,6 +627,12 @@ def store_scene_run(
                 totals=totals,
                 resolve_reference=resolve_reference,
             )
+            _log.info("Successfully stored aggregates for scene_id=%s, run_id=%s", scene_id_int, run.id)
+        else:
+            import logging
+            _log = logging.getLogger(__name__)
+            _log.warning("No totals to store as aggregates for scene_id=%s, run_id=%s (empty timespans?)", 
+                        scene_id_int, run.id)
 
         session.commit()
         return run.id
