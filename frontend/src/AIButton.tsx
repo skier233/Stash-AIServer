@@ -8,16 +8,6 @@
 //  - Assumes backend REST under /api/v1 and websocket under /api/v1/ws/tasks (with legacy fallback /ws/tasks).
 //  - Only parent/controller task IDs are tracked in activeTasks; child task events still drive progress inference.
 
-function formatSavingsSize(mb: number): string {
-  if (mb >= 10000 * 1024) return (mb / (1024 * 1024)).toFixed(1) + "TB";
-  if (mb >= 10000) return (mb / 1024).toFixed(1) + "GB";
-  return mb.toFixed(1) + "MB";
-}
-
-function formatSavingsSizeBytes(bytes: number): string {
-  return formatSavingsSize(bytes / (1024 * 1024));
-}
-
 interface PageContext {
   page: string;
   entityId: string | null;
@@ -35,40 +25,10 @@ interface AIAction {
   result_kind?: string;
 }
 
-// Result types for AI actions
-interface SingleSceneTagResult {
-  scene_id: number;
-  status: string;
-  message: string;
-  scene_tags?: {
-    applied: (string | number)[];
-    removed: (string | number)[];
-  };
-  summary?: string;
-  markers_applied?: number;
-  tags_applied: number;
-  tags_removed?: number;
-  processed_ids?: number[];
-  failed_ids?: number[];
-}
-
-interface MultipleScenesTagResult {
-  status: string;
-  message: string;
-  scenes_requested?: number;
-  scenes_completed: number;
-  scenes_failed?: number;
-  spawned?: string[];
-  count?: number;
-  held?: boolean;
-}
-
-type AITaskResult = SingleSceneTagResult | MultipleScenesTagResult | any;
-
 interface AITaskEvent {
   id: string;
   status: string;
-  result?: AITaskResult;
+  result?: any;
   error?: string;
   group_id?: string | null;
   action_id?: string;
@@ -107,101 +67,6 @@ const registerResultFormatter = (formatter: ActionResultFormatter) => {
 
 // Expose globally for plugin JS to call
 (window as any).AIRegisterResultFormatter = registerResultFormatter;
-
-// ---- Built-in formatters ----
-
-// Single scene reencode
-registerResultFormatter({
-  id: "builtin:reencode-single",
-  priority: 10,
-  match: (r) => r && typeof r === "object" && "scene_id" in r && "method_used" in r,
-  format: (r, _t, _actionId) => {
-    const sceneId = r.scene_id;
-    const tagged = r.tag_queued;
-    let msg: string;
-    if (r.status === "skipped") {
-      msg = r.message || "Scene skipped";
-    } else if (r.status === "failed") {
-      msg = r.message || "Re-encode failed";
-    } else {
-      let savings = "";
-      if (r.savings_pct) {
-        const savingsStr = r.original_size && r.new_size ? formatSavingsSizeBytes(r.original_size - r.new_size) : null;
-        savings = savingsStr ? ` (${savingsStr}, ${r.savings_pct}% saved)` : ` (${r.savings_pct}% saved)`;
-      }
-      msg = tagged ? `Re-encoded and tagged scene${savings}` : `Re-encoded scene${savings}`;
-    }
-    return {
-      message: msg,
-      type: r.status === "failed" ? "error" : "success",
-      link: { url: `${window.location.origin}/scenes/${sceneId}/`, text: "view" },
-      fullDetails: r,
-    };
-  },
-});
-
-// Batch reencode
-registerResultFormatter({
-  id: "builtin:reencode-batch",
-  priority: 10,
-  match: (r) => r && typeof r === "object" && "scenes_completed" in r && "total_savings_mb" in r,
-  format: (r) => {
-    const ok = r.scenes_completed || 0;
-    const failed = r.scenes_failed || 0;
-    const skipped = r.scenes_skipped || 0;
-    const savingsMB = r.total_savings_mb || 0;
-    const savingsPct = r.total_savings_pct || 0;
-    const parts: string[] = [];
-    if (ok > 0) parts.push(`${ok} re-encoded`);
-    if (skipped > 0) parts.push(`${skipped} skipped`);
-    if (failed > 0) parts.push(`${failed} failed`);
-    if (savingsMB > 0) {
-      const sizeStr = formatSavingsSize(savingsMB);
-      parts.push(savingsPct > 0 ? `(${sizeStr}, ${savingsPct}% saved)` : `(${sizeStr} saved)`);
-    }
-    return {
-      message: parts.join(", "),
-      type: failed > 0 && ok === 0 ? "error" : "success",
-      fullDetails: r,
-    };
-  },
-});
-
-// Single scene tagging
-registerResultFormatter({
-  id: "builtin:tagging-single",
-  priority: 5,
-  match: (r) => r && typeof r === "object" && "scene_id" in r && "tags_applied" in r,
-  format: (r) => {
-    const tagsCount = r.tags_applied || 0;
-    const sceneId = r.scene_id;
-    return {
-      message: `Applied ${tagsCount} tag${tagsCount !== 1 ? "s" : ""} to scene`,
-      type: "success",
-      link: { url: `${window.location.origin}/scenes/${sceneId}/`, text: "view" },
-      fullDetails: r,
-    };
-  },
-});
-
-// Batch tagging
-registerResultFormatter({
-  id: "builtin:tagging-batch",
-  priority: 5,
-  match: (r) => r && typeof r === "object" && "scenes_completed" in r && !("total_savings_mb" in r),
-  format: (r) => {
-    const ok = r.scenes_completed || 0;
-    const failed = r.scenes_failed || 0;
-    const parts: string[] = [];
-    parts.push(`${ok} scene${ok !== 1 ? "s" : ""} tagged`);
-    if (failed > 0) parts.push(`${failed} scene${failed !== 1 ? "s" : ""} failed`);
-    return {
-      message: parts.join(", "),
-      type: failed > 0 && ok === 0 ? "error" : "success",
-      fullDetails: r,
-    };
-  },
-});
 
 // ---- Toast notification system ----
 interface ToastOptions {
@@ -811,6 +676,24 @@ const MinimalAIButton = () => {
         updateBase as EventListener,
       );
   }, []);
+
+  // Load plugin formatters on mount
+  React.useEffect(() => {
+    if (!backendBase) return;
+    fetch(`${backendBase}/api/v1/plugins/installed`, withSharedHeaders())
+      .then((r: Response) => r.json())
+      .then((plugins: any[]) => {
+        for (const p of plugins) {
+          const url = `${backendBase}/plugins/${p.name}/formatters.js`;
+          fetch(url, withSharedHeaders())
+            .then((r: Response) => { if (r.ok) return r.text(); throw new Error("skip"); })
+            .then((code: string) => { try { new Function(code)(); } catch (e) { dlog("Formatter error", p.name, e); } })
+            .catch(() => {}); // silently skip plugins without formatters.js
+        }
+      })
+      .catch(() => {});
+  }, [backendBase]);
+
   const actionsRef: { current: AIAction[] | null } = React.useRef(null);
 
   React.useEffect(
