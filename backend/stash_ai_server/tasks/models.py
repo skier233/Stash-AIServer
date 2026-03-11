@@ -40,6 +40,7 @@ class TaskRecord(BaseModel):
     skip_concurrency: bool = False  # controller/coordination tasks that shouldn't consume a slot
     dedupe_ctx_key: str | None = None
     dedupe_params_key: str | None = None
+    last_progress: dict | None = None  # last emitted progress payload (transient, not persisted)
 
     class Config:
         arbitrary_types_allowed = True
@@ -58,6 +59,7 @@ class TaskRecord(BaseModel):
             'cancel_requested': self.cancel_requested,
             'result': self.result if self.status == TaskStatus.completed else None,
             'group_id': self.group_id,
+            'progress': self.last_progress,
         }
 
 class CancelToken:

@@ -15,7 +15,7 @@ services:
       timeout: 5s
       retries: 5
     volumes:
-      - ./data/docker/postgres:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
 
   backend_dev:
     build:
@@ -43,17 +43,53 @@ services:
   # image: ghcr.io/skier233/stash-ai-server:latest
 
   backend_prod:
-    image: ghcr.io/skier233/stash-ai-server:latest
+    image: stash-ai-server:local
     container_name: ai-overhaul-backend-prod
+    restart: always
+    network_mode: host
     depends_on:
       postgres:
         condition: service_healthy
-    ports:
-      - "4153:4153"
     env_file:
       - ./config.env
     volumes:
       - ./data:/app/data:rw
       - ./plugins:/app/plugins:rw
-      # Note: Adjust the path on the left side to the path of your Stash root folder. DO NOT change the "ro" on the end.
-      - /path/to/your/stash_root_folder:/app/stash:ro
+      - /mnt/z/f:/app/stash:ro
+      - /mnt/c/Users/KittyTricks/.stash:/app/.stash:ro
+      # Overlay local source for features not yet published to PyPI
+      - ./backend/stash_ai_server:/usr/local/lib/python3.14/site-packages/stash_ai_server:ro
+
+  # Sidecar for GPU-accelerated H.265 re-encoding.
+  # Isolated from backend_prod: only this container gets GPU + write access to media.
+  reencode_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.reencode
+    image: stash-ai-server-reencode:local
+    container_name: ai-overhaul-reencode-worker
+    restart: always
+    network_mode: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    env_file:
+      - ./config.env
+    environment:
+      - REENCODE_WORKER=1
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+    volumes:
+      - ./data:/app/data:rw
+      - ./plugins:/app/plugins:rw
+      - /mnt/z/f:/app/stash:rw
+      - /mnt/c/Users/KittyTricks/.stash:/app/.stash:ro
+      - ./backend/stash_ai_server:/usr/local/lib/python3.14/site-packages/stash_ai_server:ro
+      # Mount worker source so edits take effect without rebuilding
+      - ./reencode_worker:/app/reencode_worker:ro
+
+volumes:
+  postgres_data:
