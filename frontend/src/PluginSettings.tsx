@@ -1772,40 +1772,12 @@ const PluginSettings = () => {
 
     // Check for custom field renderers registered by plugins
     // Supports both plugin-specific (pluginName_type_Renderer) and generic (type_Renderer) naming
+    // Always use CustomFieldLoader to maintain a stable React tree — rendering the
+    // component directly here and then switching to CustomFieldLoader (or vice versa)
+    // would cause React to unmount/remount the component on parent re-renders,
+    // resetting all internal state (e.g. expanded panels collapsing).
     if (t && typeof t === 'string' && t !== 'string' && t !== 'boolean' && t !== 'number' && t !== 'select' && t !== 'path_map') {
-      const pluginSpecificName = `${pluginName}_${t}_Renderer`;
-      const genericName = `${t}_Renderer`;
-      const customRenderer = (window as any)[pluginSpecificName] || (window as any)[genericName];
-      const renderer = customRenderer;
-      
-      // Debug logging
-      if ((window as any).AIDebug) {
-        console.log('[PluginSettings.FieldRenderer] Custom field type detected:', {
-          type: t,
-          pluginName: pluginName,
-          pluginSpecificName: pluginSpecificName,
-          genericName: genericName,
-          hasPluginSpecific: !!(window as any)[pluginSpecificName],
-          hasGeneric: !!(window as any)[genericName],
-          renderer: renderer ? typeof renderer : 'null'
-        });
-      }
-      
-      if (renderer && typeof renderer === 'function') {
-        if ((window as any).AIDebug) {
-          console.log('[PluginSettings.FieldRenderer] Using custom renderer for', t);
-        }
-        return React.createElement(renderer, {
-          field: f,
-          pluginName: pluginName,
-          backendBase: backendBase,
-          savePluginSetting: savePluginSetting,
-          loadPluginSettings: loadPluginSettings,
-          setError: setError
-        });
-      } else {
-        // Renderer not found - use CustomFieldLoader to dynamically load it
-        // CustomFieldLoader will handle fallback to default input if renderer not found
+      {
         return React.createElement(CustomFieldLoader, {
           fieldType: t,
           pluginName: pluginName,

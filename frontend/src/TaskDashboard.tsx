@@ -203,11 +203,13 @@ const TaskDashboard = () => {
       active.length === 0 && React.createElement('div', { key: 'none', className: 'ai-task-dash__empty' }, 'No active tasks'),
       ...(active as any[]).map((t: any) => {
         const prog = computeProgress(t); const isCancelling = cancelling.has(t.id);
+        const statusLine = t.progress?.status_line;
+        const progressText = statusLine || (prog != null ? `${Math.round(prog*100)}%` : '');
         return React.createElement('div', { key: t.id, className: 'ai-task-row' }, [
           React.createElement('div', { key: 'svc', className: 'ai-task-row__svc' }, t.service),
             React.createElement('div', { key: 'act', className: 'ai-task-row__action' }, t.action_id),
             React.createElement('div', { key: 'status', className: 'ai-task-row__status' }, t.status + (isCancelling ? ' (cancelling...)' : '')),
-            React.createElement('div', { key: 'progress', className: 'ai-task-row__progress' }, prog != null ? `${Math.round(prog*100)}%` : ''),
+            React.createElement('div', { key: 'progress', className: 'ai-task-row__progress' }, progressText),
             React.createElement('div', { key: 'times', className: 'ai-task-row__times' }, formatTs(t.started_at)),
             (t.status === 'queued' || t.status === 'running') && React.createElement('button', { key: 'cancel', disabled: isCancelling, className: 'ai-task-row__cancel', onClick: () => cancelTask(t.id), style: { marginLeft: 8 } }, isCancelling ? 'Cancelling…' : 'Cancel')
         ]);

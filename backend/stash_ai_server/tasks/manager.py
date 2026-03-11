@@ -44,6 +44,7 @@ class TaskManager:
     """In‑memory async task scheduler with per‑service priority queues.
 
     Features:
+      - Global max concurrency across all services (default 1 — one job at a time)
       - Per service max concurrency (controllers skip slot consumption)
       - Priority (high < normal < low numeric ordering via enum int())
       - Websocket/event listeners via simple callback list
@@ -55,6 +56,7 @@ class TaskManager:
         self.cancel_tokens: Dict[str, CancelToken] = {}
         self.queues: Dict[str, _PriorityQueue] = {}
         self.running_counts: Dict[str, int] = {}
+        self.max_global_concurrent: int = 1  # default: one top-level action at a time
         self._service_locks: Dict[str, asyncio.Lock] = {}
         self._listeners: List[Callable[[str, TaskRecord, dict | None], None]] = []
         self._task_specs: Dict[str, TaskSpec] = {}
@@ -462,11 +464,18 @@ class TaskManager:
                 if self._shutdown_requested:
                     break
                 
+                # Global concurrency: count top-level running tasks (no group_id, not skip_concurrency)
+                global_running = sum(
+                    1 for t in self.tasks.values()
+                    if t.status == TaskStatus.running and not t.group_id and not t.skip_concurrency
+                )
+                global_at_limit = global_running >= self.max_global_concurrent
+
                 for service, queue in list(self.queues.items()):
                     # Check shutdown before processing each service
                     if self._shutdown_requested:
                         break
-                        
+
                     if not len(queue):
                         continue
                     cfg = SERVICE_CONFIG.get(service, {})
@@ -476,7 +485,7 @@ class TaskManager:
                         if self._debug and len(queue):
                             self._log.debug(f"SKIP service={service} busy running={self.running_counts.get(service)} limit={limit} queued={len(queue)}")
                         continue
-                    
+
                     # Add timeout to service ready check to prevent hanging
                     try:
                         service_ready = await asyncio.wait_for(self._service_ready(service), timeout=1.0)
@@ -490,20 +499,31 @@ class TaskManager:
                         if self._debug:
                             self._log.debug(f"SERVICE-ERROR service={service} error={e}")
                         continue
-                    
+
                     # Check shutdown again before dispatching task
                     if self._shutdown_requested:
                         break
-                    
+
+                    # Peek at the next task to check if it's a child or top-level
                     task_id = queue.pop()
                     if not task_id:
                         continue
                     task = self.tasks.get(task_id)
                     if not task or task.status != TaskStatus.queued:
                         continue
+
+                    # Global concurrency gate: block top-level tasks when at limit,
+                    # but always allow child tasks (they belong to an already-running action)
+                    if global_at_limit and not task.group_id:
+                        # Put it back in the queue
+                        queue.push(task.priority, task.id)
+                        if self._debug:
+                            self._log.debug(f"GLOBAL-LIMIT task={task.id} service={service} global_running={global_running} limit={self.max_global_concurrent}")
+                        continue
+
                     if self._debug:
                         self._log.debug(f"DISPATCH service={service} task={task.id} skip_concurrency={task.skip_concurrency} running={self.running_counts.get(service)} limit={limit}")
-                    
+
                     # Create task with name for easier identification during shutdown
                     task_coroutine = self._run_task(task)
                     asyncio_task = asyncio.create_task(task_coroutine, name=f"task_manager_run_{task.id}")
@@ -613,6 +633,7 @@ class TaskManager:
 
     def emit_progress(self, task: TaskRecord, payload: dict):
         """Emit a custom progress event for the provided task."""
+        task.last_progress = payload
         self._emit('progress', task, payload)
 
     def list(self, service: str | None = None, status: TaskStatus | None = None) -> List[TaskRecord]:
