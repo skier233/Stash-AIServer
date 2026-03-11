@@ -317,6 +317,202 @@
 .ai-task-dash__empty { font-style:italic; padding:4px 2px; color:#888; }
 .ai-task-row__progress { font-variant-numeric: tabular-nums; }
 
+/* =============================================================================
+  Rich Task View Styles (plugin-defined task renderers)
+  ============================================================================= */
+.ai-task-view {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 6px;
+}
+.ai-tv__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.ai-tv__title {
+  font-weight: 600;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.92);
+}
+.ai-tv__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.ai-tv__time {
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 12px;
+}
+.ai-tv__cancel-btn {
+  background: rgba(220, 53, 69, 0.15);
+  border: 1px solid rgba(220, 53, 69, 0.35);
+  color: #f87171;
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.ai-tv__cancel-btn:hover:not(:disabled) {
+  background: rgba(220, 53, 69, 0.3);
+}
+.ai-tv__cancel-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* -- Total progress bar -- */
+.ai-tv__progress-track {
+  position: relative;
+  height: 22px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+.ai-tv__progress-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: #137cbd;
+  border-radius: 4px;
+  transition: width 0.8s ease;
+}
+/* Striped animated overlay — matches Stash scan bar */
+.ai-tv__progress-fill--striped {
+  background-image: linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.12) 25%,
+    transparent 25%,
+    transparent 50%,
+    rgba(255, 255, 255, 0.12) 50%,
+    rgba(255, 255, 255, 0.12) 75%,
+    transparent 75%,
+    transparent
+  );
+  background-size: 22px 22px;
+  animation: ai-tv-stripe-scroll 0.6s linear infinite;
+}
+@keyframes ai-tv-stripe-scroll {
+  0% { background-position: 0 0; }
+  100% { background-position: 22px 0; }
+}
+.ai-tv__progress-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+  font-variant-numeric: tabular-nums;
+  z-index: 1;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+/* -- Counters -- */
+.ai-tv__counters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.ai-tv__counter {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.ai-tv__counter--running {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+}
+.ai-tv__counter--success {
+  background: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+}
+.ai-tv__counter--failed {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+}
+.ai-tv__counter--skipped {
+  background: rgba(234, 179, 8, 0.15);
+  color: #facc15;
+}
+.ai-tv__counter--savings {
+  background: rgba(168, 85, 247, 0.15);
+  color: #c084fc;
+}
+
+/* -- Worker sections -- */
+.ai-tv__workers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+.ai-tv__worker {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.ai-tv__worker-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+.ai-tv__worker-label {
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.75);
+}
+.ai-tv__worker-meta {
+  color: rgba(255, 255, 255, 0.45);
+  font-variant-numeric: tabular-nums;
+  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+  font-size: 11px;
+}
+.ai-tv__worker-pct {
+  margin-left: auto;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.7);
+}
+.ai-tv__worker-track {
+  position: relative;
+  height: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.ai-tv__worker-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: #2965cc;
+  border-radius: 3px;
+  transition: width 0.8s ease;
+}
+.ai-tv__worker-filename {
+  margin-top: 3px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.35);
+  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Compact nav tabs in scene details to prevent wrapping */
 .scene-tabs .nav-tabs .nav-item .nav-link {
   padding: 6px 8px; /* much smaller padding */

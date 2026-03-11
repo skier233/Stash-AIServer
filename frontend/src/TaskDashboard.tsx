@@ -108,6 +108,30 @@ function ensureWS(baseHttp:string) {
   }
 }
 
+// ---- Task View Renderer Registry ----
+interface TaskViewRenderer {
+  id: string;
+  match: (task: any) => boolean;
+  render: (task: any, React: any, helpers: any) => any;
+  priority?: number;
+}
+
+const getTaskViewRenderers = (): TaskViewRenderer[] => {
+  const g = window as any;
+  if (!g.__AI_TASK_VIEW_RENDERERS__) g.__AI_TASK_VIEW_RENDERERS__ = [];
+  return g.__AI_TASK_VIEW_RENDERERS__;
+};
+
+const registerTaskViewRenderer = (renderer: TaskViewRenderer) => {
+  const renderers = getTaskViewRenderers();
+  const idx = renderers.findIndex((r: TaskViewRenderer) => r.id === renderer.id);
+  if (idx >= 0) renderers[idx] = renderer;
+  else renderers.push(renderer);
+  renderers.sort((a: TaskViewRenderer, b: TaskViewRenderer) => (b.priority || 0) - (a.priority || 0));
+};
+
+(window as any).AIRegisterTaskViewRenderer = registerTaskViewRenderer;
+
 function listActiveParents(cache:any):any[] {
   const tasks = Object.values(cache || {}) as any[];
   return tasks.filter(t => !t.group_id && !['completed','failed','cancelled'].includes(t.status))
@@ -134,6 +158,25 @@ const TaskDashboard = () => {
   const [cancelling, setCancelling] = React.useState(new Set<string>());
 
   React.useEffect(() => { ensureWS(backendBase); }, [backendBase]);
+
+  // Load plugin taskview.js renderers on mount
+  React.useEffect(() => {
+    if (!backendBase) return;
+    fetch(`${backendBase}/api/v1/plugins/installed`, withSharedKeyHeaders())
+      .then((r: any) => r.json())
+      .then((plugins: any[]) => {
+        for (const p of plugins) {
+          const url = `${backendBase}/plugins/${p.name}/taskview.js`;
+          fetch(url, withSharedKeyHeaders())
+            .then((r: any) => { if (r.ok) return r.text(); throw new Error('skip'); })
+            .then((code: string) => {
+              try { new Function(code)(); dlog('Loaded taskview.js for', p.name); } catch (e) { dlog('taskview.js error', p.name, e); }
+            })
+            .catch(() => {}); // silently skip plugins without taskview.js
+        }
+      })
+      .catch(() => {});
+  }, [backendBase]);
 
   React.useEffect(() => {
     const handleBaseUpdate = () => {
@@ -203,6 +246,17 @@ const TaskDashboard = () => {
       active.length === 0 && React.createElement('div', { key: 'none', className: 'ai-task-dash__empty' }, 'No active tasks'),
       ...(active as any[]).map((t: any) => {
         const prog = computeProgress(t); const isCancelling = cancelling.has(t.id);
+        // Check for custom renderer
+        const renderers = getTaskViewRenderers();
+        const helpers = { cancelTask, formatTs, computeProgress, backendBase, isCancelling: (id: string) => cancelling.has(id) };
+        let customEl: any = null;
+        for (const renderer of renderers) {
+          try {
+            if (renderer.match(t)) { customEl = renderer.render(t, React, helpers); break; }
+          } catch (e) { dlog('TaskView renderer error', renderer.id, e); }
+        }
+        if (customEl) return React.createElement('div', { key: t.id }, customEl);
+        // Default compact row
         const statusLine = t.progress?.status_line;
         const progressText = statusLine || (prog != null ? `${Math.round(prog*100)}%` : '');
         return React.createElement('div', { key: t.id, className: 'ai-task-row' }, [
