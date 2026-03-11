@@ -33,7 +33,7 @@ services:
       - ./backend/alembic.ini:/app/alembic.ini:ro
       - ./backend/data:/app/data
       - ./backend/plugins:/app/plugins:rw
-      - /path/to/your/stash_root_folder:/app/stash:ro
+      - ${STASH_MEDIA_PATH:-/path/to/your/media}:/app/stash:ro
     env_file:
       - ./backend/config.env
     command: python -m stash_ai_server.dev_entrypoint
@@ -55,17 +55,18 @@ services:
     volumes:
       - ./data:/app/data:rw
       - ./plugins:/app/plugins:rw
-      - /mnt/z/f:/app/stash:ro
-      - /mnt/c/Users/KittyTricks/.stash:/app/.stash:ro
+      - ${STASH_MEDIA_PATH:-/path/to/your/media}:/app/stash:ro
+      - ${STASH_CONFIG_PATH:-/path/to/your/.stash}:/app/.stash:ro
       # Overlay local source for features not yet published to PyPI
       - ./backend/stash_ai_server:/usr/local/lib/python3.14/site-packages/stash_ai_server:ro
 
   # Sidecar for GPU-accelerated H.265 re-encoding.
   # Isolated from backend_prod: only this container gets GPU + write access to media.
+  # Requires the jiwenji_reencode plugin installed under ./plugins/jiwenji_reencode/
   reencode_worker:
     build:
       context: .
-      dockerfile: Dockerfile.reencode
+      dockerfile: plugins/jiwenji_reencode/Dockerfile
     image: stash-ai-server-reencode:local
     container_name: ai-overhaul-reencode-worker
     restart: always
@@ -85,11 +86,11 @@ services:
     volumes:
       - ./data:/app/data:rw
       - ./plugins:/app/plugins:rw
-      - /mnt/z/f:/app/stash:rw
-      - /mnt/c/Users/KittyTricks/.stash:/app/.stash:ro
+      - ${STASH_MEDIA_PATH:-/path/to/your/media}:/app/stash:rw
+      - ${STASH_CONFIG_PATH:-/path/to/your/.stash}:/app/.stash:ro
       - ./backend/stash_ai_server:/usr/local/lib/python3.14/site-packages/stash_ai_server:ro
       # Mount worker source so edits take effect without rebuilding
-      - ./reencode_worker:/app/reencode_worker:ro
+      - ./plugins/jiwenji_reencode/reencode_worker:/app/reencode_worker:ro
 
 volumes:
   postgres_data:
