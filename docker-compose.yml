@@ -60,37 +60,5 @@ services:
       # Overlay local source for features not yet published to PyPI
       - ./backend/stash_ai_server:/usr/local/lib/python3.14/site-packages/stash_ai_server:ro
 
-  # Sidecar for GPU-accelerated H.265 re-encoding.
-  # Isolated from backend_prod: only this container gets GPU + write access to media.
-  # Requires the jiwenji_reencode plugin installed under ./plugins/jiwenji_reencode/
-  reencode_worker:
-    build:
-      context: .
-      dockerfile: plugins/jiwenji_reencode/Dockerfile
-    image: stash-ai-server-reencode:local
-    container_name: ai-overhaul-reencode-worker
-    restart: always
-    network_mode: host
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    env_file:
-      - ./config.env
-    environment:
-      - REENCODE_WORKER=1
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
-    volumes:
-      - ./data:/app/data:rw
-      - ./plugins:/app/plugins:rw
-      - ${STASH_MEDIA_PATH:-/path/to/your/media}:/app/stash:rw
-      - ${STASH_CONFIG_PATH:-/path/to/your/.stash}:/app/.stash:ro
-      - ./backend/stash_ai_server:/usr/local/lib/python3.14/site-packages/stash_ai_server:ro
-      # Mount worker source so edits take effect without rebuilding
-      - ./plugins/jiwenji_reencode/reencode_worker:/app/reencode_worker:ro
-
 volumes:
   postgres_data:
