@@ -159,20 +159,37 @@ const TaskDashboard = () => {
 
   React.useEffect(() => { ensureWS(backendBase); }, [backendBase]);
 
-  // Load plugin taskview.js renderers on mount
+  // Load plugin taskview.js renderers and taskview.css styles on mount
   React.useEffect(() => {
     if (!backendBase) return;
     fetch(`${backendBase}/api/v1/plugins/installed`, withSharedKeyHeaders())
       .then((r: any) => r.json())
       .then((plugins: any[]) => {
         for (const p of plugins) {
-          const url = `${backendBase}/plugins/${p.name}/taskview.js`;
-          fetch(url, withSharedKeyHeaders())
+          // Load taskview.js
+          const jsUrl = `${backendBase}/plugins/${p.name}/taskview.js`;
+          fetch(jsUrl, withSharedKeyHeaders())
             .then((r: any) => { if (r.ok) return r.text(); throw new Error('skip'); })
             .then((code: string) => {
               try { new Function(code)(); dlog('Loaded taskview.js for', p.name); } catch (e) { dlog('taskview.js error', p.name, e); }
             })
             .catch(() => {}); // silently skip plugins without taskview.js
+
+          // Load taskview.css
+          const cssUrl = `${backendBase}/plugins/${p.name}/taskview.css`;
+          fetch(cssUrl, withSharedKeyHeaders())
+            .then((r: any) => { if (r.ok) return r.text(); throw new Error('skip'); })
+            .then((css: string) => {
+              const id = `ai-taskview-css-${p.name}`;
+              if (!document.getElementById(id)) {
+                const style = document.createElement('style');
+                style.id = id;
+                style.textContent = css;
+                document.head.appendChild(style);
+                dlog('Loaded taskview.css for', p.name);
+              }
+            })
+            .catch(() => {}); // silently skip plugins without taskview.css
         }
       })
       .catch(() => {});
