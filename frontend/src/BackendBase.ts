@@ -4,7 +4,17 @@
 
 const PLUGIN_NAME = 'AIOverhaul';
 // Local default to keep the UI functional before plugin config loads.
-const DEFAULT_BACKEND_BASE = 'http://localhost:4153';
+// Derive the default backend base from the current page's hostname so that
+// LAN access (e.g. 192.168.1.110:9999) automatically reaches the AI backend
+// on the same host (192.168.1.110:4153) without manual config.
+const DEFAULT_BACKEND_BASE = (() => {
+  try {
+    const host = location.hostname || 'localhost';
+    return `http://${host}:4153`;
+  } catch {
+    return 'http://localhost:4153';
+  }
+})();
 const STORAGE_KEY = 'ai_backend_base_url';
 const CONFIG_QUERY = `query AIOverhaulPluginConfig($ids: [ID!]) {
   configuration {
