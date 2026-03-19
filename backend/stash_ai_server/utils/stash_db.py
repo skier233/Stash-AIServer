@@ -141,9 +141,11 @@ def _build_engine_for_path(resolved_path: Path) -> Engine | None:
 def get_stash_engine(*, refresh: bool = False) -> Engine | None:
     """Return (and cache) an engine connected to the Stash database."""
 
-    global _STASH_ENGINE, _STASH_SESSION_FACTORY, _STASH_DB_PATH, _METADATA
+    global _STASH_ENGINE, _STASH_SESSION_FACTORY, _STASH_DB_PATH, _METADATA, _CACHED_DB_PATH
 
     with _ENGINE_LOCK:
+        if refresh:
+            _CACHED_DB_PATH = None
         path = _resolve_db_path()
         if path is None:
             if _STASH_ENGINE is not None:

@@ -63,6 +63,10 @@ class SceneWatch(Base):
     last_processed_event_ts: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now(timezone.utc), nullable=False)
 
+    __table_args__ = (
+        Index('ix_scene_watch_page_entered', 'page_entered_at'),
+    )
+
 
 class SceneWatchSegment(Base):
     __tablename__ = 'scene_watch_segments'
@@ -74,6 +78,10 @@ class SceneWatchSegment(Base):
     end_s: Mapped[float] = mapped_column(Float, nullable=False)
     watched_s: Mapped[float] = mapped_column(Float, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index('ix_scene_watch_segments_scene_start', 'scene_id', 'start_s'),
+    )
 
 
 class SceneDerived(Base):

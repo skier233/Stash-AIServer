@@ -300,6 +300,37 @@ class TestGetStashEngine:
         assert result == cached_engine
         mock_build_engine.assert_not_called()  # Should use cached
 
+    @patch('stash_ai_server.utils.stash_db._resolve_db_path')
+    @patch('stash_ai_server.utils.stash_db._build_engine_for_path')
+    def test_get_stash_engine_refresh_clears_cached_path(self, mock_build_engine, mock_resolve):
+        """Test refresh forces path re-resolution before rebuilding the engine."""
+        import stash_ai_server.utils.stash_db as stash_db_module
+
+        old_path = Mock(spec=Path)
+        old_path.exists.return_value = True
+        new_path = Mock(spec=Path)
+        new_path.exists.return_value = True
+        old_engine = Mock()
+        new_engine = Mock()
+
+        stash_db_module._STASH_ENGINE = old_engine
+        stash_db_module._STASH_SESSION_FACTORY = Mock()
+        stash_db_module._STASH_DB_PATH = old_path
+        stash_db_module._CACHED_DB_PATH = old_path
+
+        def resolve_side_effect():
+            return stash_db_module._CACHED_DB_PATH or new_path
+
+        mock_resolve.side_effect = resolve_side_effect
+        mock_build_engine.return_value = new_engine
+
+        result = get_stash_engine(refresh=True)
+
+        assert result == new_engine
+        assert stash_db_module._CACHED_DB_PATH is None
+        mock_build_engine.assert_called_once_with(new_path)
+        old_engine.dispose.assert_called_once()
+
 
 class TestGetStashSessionmaker:
     """Test get_stash_sessionmaker function."""

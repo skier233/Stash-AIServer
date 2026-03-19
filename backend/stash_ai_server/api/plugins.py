@@ -14,6 +14,7 @@ from stash_ai_server.core.system_settings import SYSTEM_PLUGIN_NAME, get_value a
 from stash_ai_server.core.runtime import schedule_backend_restart
 from stash_ai_server.core.config import settings
 from stash_ai_server.core.compat import version_satisfies
+from stash_ai_server.utils import stash_db
 from stash_ai_server.utils.path_mutation import invalidate_path_mapping_cache
 from stash_ai_server.core.api_key import require_shared_api_key
 from stash_ai_server.services import registry as services_registry
@@ -266,9 +267,14 @@ async def upsert_system_setting(key: str, payload: SettingUpsert, db: Session = 
     row.value = v
     db.commit()
     sys_invalidate_cache()
+    current_effective = row.value if row.value is not None else row.default_value
     if key == 'PATH_MAPPINGS':
         invalidate_path_mapping_cache(system=True)
-    current_effective = row.value if row.value is not None else row.default_value
+    if key in {'STASH_DB_PATH', 'PATH_MAPPINGS'} and current_effective != previous_effective:
+        try:
+            stash_db.get_stash_engine(refresh=True)
+        except Exception:
+            logger.exception("Failed to refresh Stash DB connection after %s update", key)
     if key in {'STASH_URL', 'STASH_API_KEY'} and current_effective != previous_effective:
         schedule_backend_restart()
     return {'status': 'ok'}

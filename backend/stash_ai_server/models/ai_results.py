@@ -105,6 +105,7 @@ class AIResultTimespan(Base):
     __table_args__ = (
         sa.Index("ix_ai_timespans_entity", "entity_type", "entity_id"),
         sa.Index("ix_ai_timespans_run", "run_id"),
+        sa.Index("ix_ai_timespans_run_payload", "run_id", "payload_type"),
         sa.Index("ix_ai_timespans_payload", "payload_type", "category", "str_value"),
         sa.Index("ix_ai_timespans_start", "entity_type", "entity_id", "start_s"),
     )
@@ -133,6 +134,7 @@ class AIResultAggregate(Base):
     __table_args__ = (
         sa.Index("ix_ai_aggregates_entity", "entity_type", "entity_id"),
         sa.Index("ix_ai_aggregates_payload", "payload_type", "str_value", "metric"),
+        sa.Index("ix_ai_aggregates_run_payload_metric", "run_id", "payload_type", "metric"),
     )
 
 
