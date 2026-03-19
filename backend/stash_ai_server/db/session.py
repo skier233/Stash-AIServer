@@ -57,4 +57,4 @@ def get_session_local():
 
 # Legacy compatibility - these should be phased out
 engine = property(lambda self: get_engine())
-SessionLocal = get_session_factory
+SessionLocal = get_session_factory()

@@ -137,6 +137,15 @@ class DatabaseTestManager:
         except ImportError as e:
             logger.warning(f"Could not import some model modules: {e}")
         
+        # Enable pgvector extension (required for face_clusters/face_embeddings vector columns)
+        try:
+            with self.test_engine.connect() as conn:
+                conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+                conn.commit()
+                logger.info("Enabled pgvector extension")
+        except Exception as e:
+            logger.warning(f"Could not enable pgvector extension (vector columns will fail): {e}")
+        
         logger.info(f"Creating tables with Base.metadata containing {len(Base.metadata.tables)} tables")
         Base.metadata.create_all(bind=self.test_engine)
         logger.info("Created all database tables")
