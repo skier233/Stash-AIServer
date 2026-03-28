@@ -174,6 +174,10 @@ async def serve_plugin_file(plugin_name: str, filename: str):
         if not media_type:
             media_type = "application/octet-stream"
 
-        return FileResponse(plugin_path, media_type=media_type)
+        return FileResponse(
+            plugin_path,
+            media_type=media_type,
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
     return JSONResponse(status_code=404, content={"detail": "File not found"})
 

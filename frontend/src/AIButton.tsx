@@ -25,45 +25,48 @@ interface AIAction {
   result_kind?: string;
 }
 
-// Result types for AI actions
-interface SingleSceneTagResult {
-  scene_id: number;
-  status: string;
-  message: string;
-  scene_tags?: {
-    applied: (string | number)[];
-    removed: (string | number)[];
-  };
-  summary?: string;
-  markers_applied?: number;
-  tags_applied: number;
-  tags_removed?: number;
-  processed_ids?: number[];
-  failed_ids?: number[];
-}
-
-interface MultipleScenesTagResult {
-  status: string;
-  message: string;
-  scenes_requested?: number;
-  scenes_completed: number;
-  scenes_failed?: number;
-  spawned?: string[];
-  count?: number;
-  held?: boolean;
-}
-
-type AITaskResult = SingleSceneTagResult | MultipleScenesTagResult | any;
-
 interface AITaskEvent {
   id: string;
   status: string;
-  result?: AITaskResult;
+  result?: any;
   error?: string;
   group_id?: string | null;
   action_id?: string;
   service?: string;
 }
+
+// ---- Action Result Formatter Registry ----
+// Plugins can register custom formatters via window.AIRegisterResultFormatter()
+// Each formatter declares a match() predicate and a format() function that returns toast options.
+interface ActionResultFormatter {
+  id: string;
+  /** Return true if this formatter handles the given result */
+  match: (result: any, task: AITaskEvent) => boolean;
+  /** Return toast options for the matched result */
+  format: (result: any, task: AITaskEvent, actionId: string) => ToastOptions;
+  /** Higher priority formatters are checked first (default: 0) */
+  priority?: number;
+}
+
+// Global registry array
+const getResultFormatters = (): ActionResultFormatter[] => {
+  const g = window as any;
+  if (!g.__AI_RESULT_FORMATTERS__) g.__AI_RESULT_FORMATTERS__ = [];
+  return g.__AI_RESULT_FORMATTERS__;
+};
+
+const registerResultFormatter = (formatter: ActionResultFormatter) => {
+  const formatters = getResultFormatters();
+  // Replace existing formatter with same id
+  const idx = formatters.findIndex((f: ActionResultFormatter) => f.id === formatter.id);
+  if (idx >= 0) formatters[idx] = formatter;
+  else formatters.push(formatter);
+  // Sort by priority descending (higher priority first)
+  formatters.sort((a: ActionResultFormatter, b: ActionResultFormatter) => (b.priority || 0) - (a.priority || 0));
+};
+
+// Expose globally for plugin JS to call
+(window as any).AIRegisterResultFormatter = registerResultFormatter;
 
 // ---- Toast notification system ----
 interface ToastOptions {
@@ -229,12 +232,21 @@ const showFullDetailsModal = (payload: any, type: "success" | "error" = "success
 
 const showToast = (options: ToastOptions) => {
   const { message, type = "success", link, timeout, fullDetails } = options;
-  const toastId = `ai-toast-${Date.now()}`;
+  const toastId = `ai-toast-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const toast = document.createElement("div");
   toast.id = toastId;
+  toast.className = "ai-toast-notification";
+
+  // Stack below existing toasts
+  const existingToasts = document.querySelectorAll(".ai-toast-notification");
+  let topOffset = 20;
+  existingToasts.forEach((el) => {
+    topOffset += (el as HTMLElement).offsetHeight + 10;
+  });
+
   toast.style.cssText = `
     position: fixed;
-    top: 20px;
+    top: ${topOffset}px;
     right: 20px;
     background: ${type === "success" ? "#2d5016" : "#5a1a1a"};
     color: ${type === "success" ? "#d4edda" : "#f8d7da"};
@@ -390,6 +402,18 @@ const showToast = (options: ToastOptions) => {
 
   document.body.appendChild(toast);
 
+  // Reflow remaining toasts so they slide up when one is removed
+  const reflowToasts = () => {
+    const remaining = document.querySelectorAll(".ai-toast-notification");
+    let top = 20;
+    remaining.forEach((el) => {
+      const h = el as HTMLElement;
+      h.style.top = `${top}px`;
+      h.style.transition = "top 0.25s ease-out";
+      top += h.offsetHeight + 10;
+    });
+  };
+
   // Dismiss function
   let dismissTimeout: number | null = null;
   const dismissToast = () => {
@@ -402,6 +426,7 @@ const showToast = (options: ToastOptions) => {
       if (toast.parentNode) {
         toast.parentNode.removeChild(toast);
       }
+      reflowToasts();
     }, 300);
   };
 
@@ -651,6 +676,24 @@ const MinimalAIButton = () => {
         updateBase as EventListener,
       );
   }, []);
+
+  // Load plugin formatters on mount
+  React.useEffect(() => {
+    if (!backendBase) return;
+    fetch(`${backendBase}/api/v1/plugins/installed`, withSharedHeaders())
+      .then((r: Response) => r.json())
+      .then((plugins: any[]) => {
+        for (const p of plugins) {
+          const url = `${backendBase}/plugins/${p.name}/formatters.js`;
+          fetch(url, withSharedHeaders())
+            .then((r: Response) => { if (r.ok) return r.text(); throw new Error("skip"); })
+            .then((code: string) => { try { new Function(code)(); } catch (e) { dlog("Formatter error", p.name, e); } })
+            .catch(() => {}); // silently skip plugins without formatters.js
+        }
+      })
+      .catch(() => {});
+  }, [backendBase]);
+
   const actionsRef: { current: AIAction[] | null } = React.useRef(null);
 
   React.useEffect(
@@ -699,6 +742,13 @@ const MinimalAIButton = () => {
   );
   React.useEffect(() => {
     refetchActions(context);
+    // Retry once after 2s if the initial fetch returned empty (backend may still be booting)
+    const retryTimer = setTimeout(() => {
+      if (!actionsRef.current || actionsRef.current.length === 0) {
+        refetchActions(context, { silent: true });
+      }
+    }, 2000);
+    return () => clearTimeout(retryTimer);
   }, [context, refetchActions]);
   const executeAction = React.useCallback(
     async (actionId: string) => {
@@ -765,59 +815,25 @@ const MinimalAIButton = () => {
         if (t.status === "completed") {
           if (resultKind === "dialog" || resultKind === "notification") {
             const result = t.result;
-            let message = "";
 
-            // Check if it's a single scene result
-            if (
-              result &&
-              typeof result === "object" &&
-              "scene_id" in result &&
-              "tags_applied" in result
-            ) {
-              const singleResult = result as SingleSceneTagResult;
-              const tagsCount = singleResult.tags_applied || 0;
-              const sceneId = singleResult.scene_id;
-              console.log("got single tag results", singleResult);
-              message = `Applied ${tagsCount} tag${tagsCount !== 1 ? "s" : ""} to scene`;
-
-              // Construct scene URL from current origin
-              const sceneUrl = `${window.location.origin}/scenes/${sceneId}/`;
-              showToast({ message, type: "success", link: { url: sceneUrl, text: "view" }, fullDetails: t.result });
-              return; // Early return to avoid showing toast twice
-            }
-            // Check if it's a multiple scenes result
-            else if (
-              result &&
-              typeof result === "object" &&
-              "scenes_completed" in result
-            ) {
-              const multiResult = result as MultipleScenesTagResult;
-              const scenesCount = multiResult.scenes_completed || 0;
-              const scenesFailed = multiResult.scenes_failed || 0;
-              console.log("got multiple tag results", multiResult);
-              let messageSuccessPart = `${scenesCount} scene${scenesCount !== 1 ? "s" : ""} tagged`;
-              let messageFailedPart = `${scenesFailed} scene${scenesFailed !== 1 ? "s" : ""} failed`;
-              let fullMessage = "";
-              if (scenesFailed > 0 && scenesCount > 0) {
-                fullMessage = `${messageSuccessPart}, ${messageFailedPart}`;
-              } else if (scenesFailed > 0) {
-                fullMessage = messageFailedPart;
-              } else {
-                fullMessage = messageSuccessPart;
+            // Dispatch through the result formatter registry
+            const formatters = getResultFormatters();
+            let handled = false;
+            for (const formatter of formatters) {
+              try {
+                if (formatter.match(result, t)) {
+                  const opts = formatter.format(result, t, actionId);
+                  showToast(opts);
+                  handled = true;
+                  break;
+                }
+              } catch (e) {
+                dlog("Formatter error", formatter.id, e);
               }
-              message = fullMessage;
-
-              // No link for multi-scene tagging (no way to construct list page from array of IDs)
-              showToast({ message, type: "success", fullDetails: t.result });
-              return; // Early return to avoid showing toast twice
-            }
-            // Fallback for other result types
-            else {
-              message = `Action ${actionId} completed`;
             }
 
-            if (message) {
-              showToast({ message, type: "success", fullDetails: t.result });
+            if (!handled) {
+              showToast({ message: `Action ${actionId} completed`, type: "success", fullDetails: t.result });
             }
           }
         } else if (t.status === "failed") {
@@ -887,7 +903,9 @@ const MinimalAIButton = () => {
       } catch {
         /* best effort */
       }
-      refetchActions(liveContext, { silent: true });
+      // If we have no actions yet, show loading state; otherwise silently refresh
+      const hasActions = actionsRef.current && actionsRef.current.length > 0;
+      refetchActions(liveContext, { silent: !!hasActions });
     }
     setOpenMenu((o: boolean) => !o);
   };

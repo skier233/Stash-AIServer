@@ -73,6 +73,8 @@ poetry.toml
 .ruff_cache/
 pyrightconfig.json
 plugins/
+docker-compose.override.yml
+config.env
 
 
 # Node.js
