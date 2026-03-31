@@ -40,6 +40,13 @@ interface SingleSceneTagResult {
   tags_removed?: number;
   processed_ids?: number[];
   failed_ids?: number[];
+  face_summary?: {
+    faces_new: number;
+    faces_matched: number;
+    faces_total: number;
+    new_cluster_ids: number[];
+    matched_cluster_ids: number[];
+  };
 }
 
 interface MultipleScenesTagResult {
@@ -51,6 +58,13 @@ interface MultipleScenesTagResult {
   spawned?: string[];
   count?: number;
   held?: boolean;
+  face_summary?: {
+    faces_new: number;
+    faces_matched: number;
+    faces_total: number;
+    new_cluster_ids: number[];
+    matched_cluster_ids: number[];
+  };
 }
 
 type AITaskResult = SingleSceneTagResult | MultipleScenesTagResult | any;
@@ -545,6 +559,7 @@ const ensureTaskWebSocket = (backendBase: string) => {
     return g.__AI_TASK_WS__;
   if (g.__AI_TASK_WS_INIT__) return g.__AI_TASK_WS__;
   g.__AI_TASK_WS_INIT__ = true;
+  g.__AI_TASK_WS_BACKEND__ = backendBase;
   const base = backendBase.replace(/^http/, "ws");
   const paths = [`${base}/api/v1/ws/tasks`, `${base}/ws/tasks`].map((candidate) => appendSharedKeyQuery(candidate));
   for (const url of paths) {
@@ -552,7 +567,7 @@ const ensureTaskWebSocket = (backendBase: string) => {
       dlog("Attempt WS connect", url);
       const sock = new WebSocket(url);
       g.__AI_TASK_WS__ = sock;
-      wireSocket(sock);
+      wireSocket(sock, backendBase);
       return sock;
     } catch (e) {
       if (debugEnabled())
@@ -563,13 +578,14 @@ const ensureTaskWebSocket = (backendBase: string) => {
   return null;
 };
 
-function wireSocket(sock: WebSocket) {
+function wireSocket(sock: WebSocket, backendBase: string) {
   const g: any = window as any;
   if (!g.__AI_TASK_WS_LISTENERS__) g.__AI_TASK_WS_LISTENERS__ = {};
   if (!g.__AI_TASK_ANY_LISTENERS__) g.__AI_TASK_ANY_LISTENERS__ = [];
   if (!g.__AI_TASK_CACHE__) g.__AI_TASK_CACHE__ = {};
   sock.onopen = () => {
     dlog("WS open", sock.url);
+    g.__AI_TASK_WS_RECONNECT_DELAY__ = 0;
   };
   sock.onmessage = (evt: MessageEvent) => {
     dlog("WS raw message", evt.data);
@@ -601,6 +617,16 @@ function wireSocket(sock: WebSocket) {
     if ((window as any).__AI_TASK_WS__ === sock)
       (window as any).__AI_TASK_WS__ = null;
     (window as any).__AI_TASK_WS_INIT__ = false;
+    // Auto-reconnect with exponential backoff (max 30s)
+    const bb = g.__AI_TASK_WS_BACKEND__;
+    if (bb) {
+      const delay = Math.min(30000, (g.__AI_TASK_WS_RECONNECT_DELAY__ || 1000));
+      g.__AI_TASK_WS_RECONNECT_DELAY__ = Math.min(30000, delay * 2);
+      dlog("WS reconnect in", delay, "ms");
+      setTimeout(() => {
+        if (!g.__AI_TASK_WS__ && bb) ensureTaskWebSocket(bb);
+      }, delay);
+    }
   };
   sock.onclose = cleanup;
   sock.onerror = cleanup;
@@ -653,6 +679,70 @@ const MinimalAIButton = () => {
   }, []);
   const actionsRef: { current: AIAction[] | null } = React.useRef(null);
 
+  // Connect WS on mount and restore active tasks from snapshot
+  React.useEffect(() => {
+    if (!backendBase) return;
+    ensureTaskWebSocket(backendBase);
+    // Wait briefly for WS snapshot to populate cache, then restore active parent tasks
+    const timer = setTimeout(() => {
+      const g: any = window as any;
+      const cache = g.__AI_TASK_CACHE__ || {};
+      const tasks = Object.values(cache) as any[];
+      const activeParentIds = tasks
+        .filter((t: any) => !t.group_id && !["completed", "failed", "cancelled"].includes(t.status))
+        .map((t: any) => t.id);
+      if (activeParentIds.length > 0) {
+        dlog("Restored active tasks from snapshot:", activeParentIds);
+        setActiveTasks((prev: string[]) => {
+          const merged = new Set([...prev, ...activeParentIds]);
+          return Array.from(merged);
+        });
+      }
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [backendBase]);
+
+  // Periodic REST polling fallback — sync active tasks every 30s
+  React.useEffect(() => {
+    if (!backendBase) return;
+    const poll = async () => {
+      try {
+        const res = await fetch(
+          `${backendBase}/api/v1/tasks?status=running&status=queued`,
+          withSharedHeaders(),
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        const serverTasks = (data.tasks || data || []) as any[];
+        const g: any = window as any;
+        if (!g.__AI_TASK_CACHE__) g.__AI_TASK_CACHE__ = {};
+        for (const t of serverTasks) {
+          if (t?.id) g.__AI_TASK_CACHE__[t.id] = t;
+        }
+        const parentIds = serverTasks
+          .filter((t: any) => !t.group_id)
+          .map((t: any) => t.id);
+        setActiveTasks((prev: string[]) => {
+          const merged = new Set([...prev, ...parentIds]);
+          // Remove tasks that the server no longer reports as active
+          const serverIdSet = new Set(parentIds);
+          const cleaned = Array.from(merged).filter((id) => {
+            if (serverIdSet.has(id)) return true;
+            // Keep tasks the server doesn't know about only if they're still in cache as active
+            const cached = g.__AI_TASK_CACHE__[id];
+            return cached && !["completed", "failed", "cancelled"].includes(cached.status);
+          });
+          if (cleaned.length === prev.length && cleaned.every((id, i) => id === prev[i])) return prev;
+          return cleaned;
+        });
+      } catch {
+        dlog("REST poll failed");
+      }
+    };
+    const interval = setInterval(poll, 30000);
+    return () => clearInterval(interval);
+  }, [backendBase]);
+
   React.useEffect(
     () => pageAPI.subscribe((ctx: PageContext) => setContext(ctx)),
     [],
@@ -698,6 +788,7 @@ const MinimalAIButton = () => {
     [backendBase],
   );
   React.useEffect(() => {
+    actionsRef.current = null;
     refetchActions(context);
   }, [context, refetchActions]);
   const executeAction = React.useCallback(
@@ -767,6 +858,57 @@ const MinimalAIButton = () => {
             const result = t.result;
             let message = "";
 
+            // Check if it's a face-scan result (any entity type)
+            if (
+              result &&
+              typeof result === "object" &&
+              (result as any).action_type === "face_scan"
+            ) {
+              const fsResult = result as any;
+              const fs = fsResult.face_summary;
+              const facesNew = fs ? fs.faces_new || 0 : 0;
+              const facesMatched = fs ? fs.faces_matched || 0 : 0;
+              const facesTotal = fs ? fs.faces_total || 0 : 0;
+
+              if (fsResult.scene_id) {
+                // Single scene face scan
+                message = `Scene: ${facesTotal} face${facesTotal !== 1 ? "s" : ""} detected, ${facesNew} new, ${facesMatched} matched`;
+                const sceneUrl = `${window.location.origin}/scenes/${fsResult.scene_id}/`;
+                showToast({ message, type: "success", link: { url: sceneUrl, text: "view" }, fullDetails: t.result });
+              } else if (fsResult.scenes_completed !== undefined) {
+                // Multi scene face scan
+                const done = fsResult.scenes_completed || 0;
+                const fail = fsResult.scenes_failed || 0;
+                message = `Face scan: ${done} scene${done !== 1 ? "s" : ""} scanned${fail ? `, ${fail} failed` : ""}`;
+                showToast({ message, type: "success", fullDetails: t.result });
+              } else {
+                // Image face scan (single or batch)
+                const processedCount = (fsResult.processed_ids || []).length;
+                const failedCount = (fsResult.failed_ids || []).length;
+                const successCount = processedCount - failedCount;
+                if (successCount > 0) {
+                  message = `Face scan: ${facesTotal} face${facesTotal !== 1 ? "s" : ""} detected, ${facesNew} new, ${facesMatched} matched`;
+                } else {
+                  message = `Face scan failed for ${failedCount} image${failedCount !== 1 ? "s" : ""}`;
+                }
+                showToast({ message, type: "success", fullDetails: t.result });
+              }
+
+              // Show face review panel if new faces were found
+              if (fs && facesNew > 0 && (window as any).showFaceReviewPanel) {
+                const apiBase = backendBase ? `${backendBase}/api/v1/plugins/skier_aitagging` : "";
+                (window as any).showFaceReviewPanel({
+                  apiBase,
+                  newClusterIds: fs.new_cluster_ids || [],
+                  matchedClusterIds: fs.matched_cluster_ids || [],
+                  facesNew: facesNew,
+                  facesMatched: facesMatched,
+                });
+              }
+
+              return;
+            }
+
             // Check if it's a single scene result
             if (
               result &&
@@ -783,6 +925,19 @@ const MinimalAIButton = () => {
               // Construct scene URL from current origin
               const sceneUrl = `${window.location.origin}/scenes/${sceneId}/`;
               showToast({ message, type: "success", link: { url: sceneUrl, text: "view" }, fullDetails: t.result });
+
+              // Show face review panel if new faces were found
+              if (singleResult.face_summary && singleResult.face_summary.faces_new > 0 && (window as any).showFaceReviewPanel) {
+                const apiBase = backendBase ? `${backendBase}/api/v1/plugins/skier_aitagging` : "";
+                (window as any).showFaceReviewPanel({
+                  apiBase,
+                  newClusterIds: singleResult.face_summary.new_cluster_ids || [],
+                  matchedClusterIds: singleResult.face_summary.matched_cluster_ids || [],
+                  facesNew: singleResult.face_summary.faces_new,
+                  facesMatched: singleResult.face_summary.faces_matched || 0,
+                });
+              }
+
               return; // Early return to avoid showing toast twice
             }
             // Check if it's a multiple scenes result
@@ -809,6 +964,56 @@ const MinimalAIButton = () => {
 
               // No link for multi-scene tagging (no way to construct list page from array of IDs)
               showToast({ message, type: "success", fullDetails: t.result });
+
+              // Show face review panel if new faces were found
+              if (multiResult.face_summary && multiResult.face_summary.faces_new > 0 && (window as any).showFaceReviewPanel) {
+                const apiBase = backendBase ? `${backendBase}/api/v1/plugins/skier_aitagging` : "";
+                (window as any).showFaceReviewPanel({
+                  apiBase,
+                  newClusterIds: multiResult.face_summary.new_cluster_ids || [],
+                  matchedClusterIds: multiResult.face_summary.matched_cluster_ids || [],
+                  facesNew: multiResult.face_summary.faces_new,
+                  facesMatched: multiResult.face_summary.faces_matched || 0,
+                });
+              }
+
+              return; // Early return to avoid showing toast twice
+            }
+            // Check if it's an image tagging result
+            else if (
+              result &&
+              typeof result === "object" &&
+              "processed_ids" in result &&
+              "tags_added" in result
+            ) {
+              const imageResult = result as any;
+              const processedCount = (imageResult.processed_ids || []).length;
+              const failedCount = (imageResult.failed_ids || []).length;
+              const successCount = processedCount - failedCount;
+              console.log("got image tag results", imageResult);
+
+              if (failedCount > 0 && successCount > 0) {
+                message = `${successCount} image${successCount !== 1 ? "s" : ""} tagged, ${failedCount} failed`;
+              } else if (failedCount > 0) {
+                message = `${failedCount} image${failedCount !== 1 ? "s" : ""} failed`;
+              } else {
+                message = `${successCount} image${successCount !== 1 ? "s" : ""} tagged`;
+              }
+
+              showToast({ message, type: "success", fullDetails: t.result });
+
+              // Show face review panel if new faces were found
+              if (imageResult.face_summary && imageResult.face_summary.faces_new > 0 && (window as any).showFaceReviewPanel) {
+                const apiBase = backendBase ? `${backendBase}/api/v1/plugins/skier_aitagging` : "";
+                (window as any).showFaceReviewPanel({
+                  apiBase,
+                  newClusterIds: imageResult.face_summary.new_cluster_ids || [],
+                  matchedClusterIds: imageResult.face_summary.matched_cluster_ids || [],
+                  facesNew: imageResult.face_summary.faces_new,
+                  facesMatched: imageResult.face_summary.faces_matched || 0,
+                });
+              }
+
               return; // Early return to avoid showing toast twice
             }
             // Fallback for other result types
@@ -854,14 +1059,21 @@ const MinimalAIButton = () => {
     [backendBase, context, pageAPI],
   );
 
-  // Any-task listener for progress updates
+  // Any-task listener for progress updates — use a ref to avoid re-registering on every activeTasks change
+  const activeTasksRef: { current: string[] } = React.useRef(activeTasks);
+  activeTasksRef.current = activeTasks;
   React.useEffect(() => {
     const g: any = window as any;
     if (!g.__AI_TASK_ANY_LISTENERS__) g.__AI_TASK_ANY_LISTENERS__ = [];
     const listener = (t: any) => {
-      if (!activeTasks.length) return;
-      if (activeTasks.includes(t.id) || activeTasks.includes(t.group_id))
+      const ids = activeTasksRef.current;
+      if (!ids.length) return;
+      if (ids.includes(t.id) || ids.includes(t.group_id))
         setProgressVersion((v: number) => v + 1);
+      // Auto-remove tasks that reach terminal state
+      if (ids.includes(t.id) && ['completed', 'failed', 'cancelled'].includes(t.status)) {
+        setActiveTasks((prev: string[]) => prev.filter((id: string) => id !== t.id));
+      }
     };
     g.__AI_TASK_ANY_LISTENERS__.push(listener);
     return () => {
@@ -869,7 +1081,7 @@ const MinimalAIButton = () => {
         (fn: any) => fn !== listener,
       );
     };
-  }, [activeTasks]);
+  }, []);
   const [progressVersion, setProgressVersion] = React.useState(0); // triggers re-render on child task activity
 
   const singleProgress = computeSingleProgress(activeTasks);

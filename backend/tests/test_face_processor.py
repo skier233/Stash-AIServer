@@ -130,17 +130,18 @@ class TestBuildTracks:
 
     def test_single_face_across_frames(self):
         """A face at roughly the same position across 3 frames → one track."""
+        # frame_index values are timestamps in seconds (matching AI model output)
         frames = [
-            _make_frame(0, [([0.1, 0.1, 0.3, 0.3], 0.9, "yolo")]),
-            _make_frame(1, [([0.11, 0.11, 0.31, 0.31], 0.92, "yolo")]),
-            _make_frame(2, [([0.12, 0.12, 0.32, 0.32], 0.88, "yolo")]),
+            _make_frame(0.0, [([0.1, 0.1, 0.3, 0.3], 0.9, "yolo")]),
+            _make_frame(2.0, [([0.11, 0.11, 0.31, 0.31], 0.92, "yolo")]),
+            _make_frame(4.0, [([0.12, 0.12, 0.32, 0.32], 0.88, "yolo")]),
         ]
         tracks = build_tracks(frames, frame_interval=2.0)
         assert len(tracks) == 1
         t = tracks[0]
         assert t.best_score == pytest.approx(0.92)
         assert t.start_s == pytest.approx(0.0)
-        assert t.end_s == pytest.approx(4.0)  # frame 2 * 2.0s
+        assert t.end_s == pytest.approx(4.0)  # frame at 4.0s
 
     def test_two_faces_two_tracks(self):
         """Two non-overlapping faces in same frame → two tracks."""

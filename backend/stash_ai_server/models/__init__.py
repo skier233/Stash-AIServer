@@ -11,3 +11,4 @@ from .detections import (  # noqa: F401
 	FaceEmbedding,
 )
 from .recommendation import RecommendationPreference  # noqa: F401
+from .ratings import EntityRating  # noqa: F401

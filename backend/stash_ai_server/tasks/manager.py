@@ -184,20 +184,7 @@ class TaskManager:
             if is_testing:
                 return
             
-            # Create database session with connection timeout to prevent hanging
-            from sqlalchemy import create_engine
-            from sqlalchemy.orm import sessionmaker
-            from stash_ai_server.core.config import settings
-            
-            # Create engine with connection timeout for this operation
-            timeout_engine = create_engine(
-                settings.database_url,
-                pool_pre_ping=True,
-                connect_args={"connect_timeout": 1}  # 1 second timeout
-            )
-            
-            SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=timeout_engine)
-            db = SessionLocal()
+            db = get_session()
             
             try:
                 # Quick check if record already exists
@@ -245,13 +232,8 @@ class TaskManager:
                     db.close()
                 except Exception:
                     pass
-                try:
-                    timeout_engine.dispose()
-                except Exception:
-                    pass
         except Exception:
-            # Silently ignore all persistence errors to prevent test hanging
-            pass
+            _log.debug("Failed to persist task history for %s", task.id, exc_info=True)
 
     def _coerce_spec(self, definition: Union[TaskSpec, Any]) -> TaskSpec:
         if isinstance(definition, TaskSpec):

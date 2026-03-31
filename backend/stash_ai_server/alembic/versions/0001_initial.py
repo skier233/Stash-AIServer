@@ -86,8 +86,8 @@ def upgrade() -> None:  # noqa: D401
         'task_history',
         sa.Column('id', sa.Integer, primary_key=True),
         # unique already implies an index; remove extra index=True
-        sa.Column('task_id', sa.Integer, nullable=False, unique=True),
-        sa.Column('action_id', sa.Integer, nullable=False),
+        sa.Column('task_id', sa.String(length=64), nullable=False, unique=True),
+        sa.Column('action_id', sa.String(length=200), nullable=False),
         sa.Column('service', sa.String(length=100), nullable=False),
         sa.Column('status', sa.String(length=50), nullable=False),
         sa.Column('started_at', sa.Float, nullable=True),
@@ -95,7 +95,7 @@ def upgrade() -> None:  # noqa: D401
         sa.Column('submitted_at', sa.Float, nullable=False),
         sa.Column('duration_ms', sa.Integer, nullable=True),
         sa.Column('items_sent', sa.Integer, nullable=True),
-        sa.Column('item_id', sa.Integer, nullable=True),
+        sa.Column('item_id', sa.String(length=200), nullable=True),
         sa.Column('error', sa.Text, nullable=True),
         sa.Column('created_at', sa.DateTime, nullable=False, server_default=sa.text('CURRENT_TIMESTAMP')),
     )

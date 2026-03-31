@@ -20,6 +20,7 @@ def get_engine():
         max_overflow=int(settings.db_credentials['max_overflow']),
         echo=bool(settings.db_credentials['echo']),
         future=True,
+        connect_args={"client_encoding": "utf8"},
     )
 
 

@@ -14,6 +14,7 @@ from typing import Any, Sequence
 import numpy as np
 import sqlalchemy as sa
 from sqlalchemy import select, update, delete, func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from stash_ai_server.db.session import get_session_local
@@ -21,6 +22,8 @@ from stash_ai_server.models.detections import (
     DetectionTrack,
     FaceCluster,
     FaceEmbedding,
+    FacePerformerAssignment,
+    StashDBPerformerRef,
 )
 
 _log = logging.getLogger(__name__)
@@ -42,6 +45,7 @@ def store_detection_track(
     detector: str,
     start_s: float | None = None,
     end_s: float | None = None,
+    cluster_id: int | None = None,
     keyframes: list[dict] | None = None,
     metadata: dict | None = None,
 ) -> DetectionTrack:
@@ -56,6 +60,7 @@ def store_detection_track(
         detector=detector,
         start_s=start_s,
         end_s=end_s,
+        cluster_id=cluster_id,
         keyframes=keyframes,
         metadata_=metadata,
     )
@@ -74,10 +79,16 @@ def cleanup_stale_detections(
     """Delete detection tracks from prior runs for this entity.
 
     Based on the cascade, this also removes associated ``face_embeddings``
-    rows.  Returns the number of tracks deleted.
+    rows.  After deletion, any clusters that lost embeddings but still have
+    remaining rows from other entities get their centroids recomputed.
+    Clusters that lost *all* embeddings keep their stale centroid so that
+    a subsequent scan can still match against them.
+
+    Returns the number of tracks deleted.
     """
+    affected_cluster_ids: set[int] = set()
+
     with get_session_local()() as session:
-        # Subquery: run_ids for this entity from the same service, excluding current
         from stash_ai_server.models.ai_results import AIModelRun
 
         stale_run_ids = (
@@ -89,6 +100,21 @@ def cleanup_stale_detections(
                 AIModelRun.id != exclude_run_id,
             )
         )
+
+        # Collect cluster_ids whose embeddings will be cascade-deleted
+        stale_track_ids = select(DetectionTrack.id).where(
+            DetectionTrack.run_id.in_(stale_run_ids),
+        )
+        rows = session.execute(
+            select(FaceEmbedding.cluster_id)
+            .where(
+                FaceEmbedding.track_id.in_(stale_track_ids),
+                FaceEmbedding.cluster_id.isnot(None),
+            )
+            .distinct()
+        ).all()
+        affected_cluster_ids = {r[0] for r in rows}
+
         result = session.execute(
             delete(DetectionTrack).where(
                 DetectionTrack.run_id.in_(stale_run_ids),
@@ -96,7 +122,30 @@ def cleanup_stale_detections(
         )
         deleted = result.rowcount  # type: ignore[union-attr]
         session.commit()
-        return deleted
+
+    # Recompute centroids only for clusters that still have embeddings.
+    # Clusters that lost ALL embeddings keep their stale centroid intact
+    # so the next scan can still match against them.
+    if affected_cluster_ids:
+        with get_session_local()() as session:
+            surviving = set(
+                r[0] for r in session.execute(
+                    select(FaceEmbedding.cluster_id)
+                    .where(FaceEmbedding.cluster_id.in_(list(affected_cluster_ids)))
+                    .distinct()
+                ).all()
+            )
+        for cid in surviving:
+            try:
+                _recompute_exemplars(cid)
+                update_cluster_centroid(cid)
+            except Exception:
+                _log.debug(
+                    "Failed to recompute cluster %d after stale cleanup",
+                    cid, exc_info=True,
+                )
+
+    return deleted
 
 
 async def cleanup_stale_detections_async(**kwargs: Any) -> int:
@@ -161,8 +210,32 @@ def create_cluster(
     return cluster
 
 
+def _compute_quality_score(
+    sample_count: int,
+    mean_norm: float,
+    mean_score: float,
+) -> float:
+    """Compute a 0–1 quality score for a face cluster.
+
+    Weights are calibrated from empirical analysis of identified vs ignored
+    clusters (56 identified, 75 ignored).  The three factors are:
+
+    * **Sample factor** (40 %): ``1 - 1/n``.  Single-detection clusters
+      score 0; this alone rejects 83 % of junk with 0 % false positives.
+    * **Norm factor** (35 %): mean embedding L2-norm mapped linearly
+      from [18, 26] → [0, 1].  Identified-cluster 5th-percentile is 20.5
+      vs 18.2 for ignored.
+    * **Score factor** (25 %): mean detection confidence mapped linearly
+      from [0.65, 0.95] → [0, 1].
+    """
+    sample_f = 1.0 - 1.0 / max(sample_count, 1)
+    norm_f = max(0.0, min(1.0, (mean_norm - 18.0) / 8.0))
+    score_f = max(0.0, min(1.0, (mean_score - 0.65) / 0.30))
+    return round(0.40 * sample_f + 0.35 * norm_f + 0.25 * score_f, 4)
+
+
 def update_cluster_centroid(cluster_id: int) -> None:
-    """Recompute the centroid of a cluster as the mean of its exemplar embeddings."""
+    """Recompute the centroid and quality_score of a cluster."""
     with get_session_local()() as session:
         # Fetch exemplar vectors
         stmt = (
@@ -178,7 +251,8 @@ def update_cluster_centroid(cluster_id: int) -> None:
             session.execute(
                 update(FaceCluster)
                 .where(FaceCluster.id == cluster_id)
-                .values(centroid=None, sample_count=0, updated_at=dt.datetime.now(dt.timezone.utc))
+                .values(centroid=None, sample_count=0, quality_score=None,
+                        updated_at=dt.datetime.now(dt.timezone.utc))
             )
             session.commit()
             return
@@ -190,11 +264,18 @@ def update_cluster_centroid(cluster_id: int) -> None:
         if norm > 0:
             mean_vec = mean_vec / norm
 
-        # Best quality score among all embeddings in this cluster
-        best_score_row = session.execute(
-            select(func.max(FaceEmbedding.score))
+        # Aggregate quality metrics across ALL embeddings in this cluster
+        stats_row = session.execute(
+            select(
+                func.avg(FaceEmbedding.norm),
+                func.avg(FaceEmbedding.score),
+            )
             .where(FaceEmbedding.cluster_id == cluster_id)
-        ).scalar()
+        ).one()
+        mean_emb_norm = float(stats_row[0] or 0.0)
+        mean_det_score = float(stats_row[1] or 0.0)
+
+        quality = _compute_quality_score(len(vectors), mean_emb_norm, mean_det_score)
 
         session.execute(
             update(FaceCluster)
@@ -202,7 +283,7 @@ def update_cluster_centroid(cluster_id: int) -> None:
             .values(
                 centroid=mean_vec.tolist(),
                 sample_count=len(vectors),
-                quality_score=best_score_row,
+                quality_score=quality,
                 updated_at=dt.datetime.now(dt.timezone.utc),
             )
         )
@@ -213,23 +294,61 @@ async def update_cluster_centroid_async(cluster_id: int) -> None:
     await asyncio.to_thread(update_cluster_centroid, cluster_id)
 
 
-def link_performer(cluster_id: int, performer_id: int) -> None:
-    """Set performer_id and status='identified' on a cluster."""
+def link_performer(cluster_id: int, performer_id: int, *, label: str | None = None) -> int:
+    """Set performer_id and status='identified' on a cluster.
+
+    If *label* is provided it is stored as the cluster's display name so the
+    UI can show the performer name without a separate lookup.
+
+    Returns the number of rows updated (should be 1 on success).
+    """
+    values: dict = {
+        "performer_id": performer_id,
+        "status": "identified",
+        "updated_at": dt.datetime.now(dt.timezone.utc),
+    }
+    if label is not None:
+        values["label"] = label
+    with get_session_local()() as session:
+        result = session.execute(
+            update(FaceCluster)
+            .where(FaceCluster.id == cluster_id)
+            .values(**values)
+        )
+        session.commit()
+        rows = result.rowcount
+        if rows == 0:
+            _log.warning(
+                "link_performer: UPDATE matched 0 rows for cluster_id=%s performer_id=%s",
+                cluster_id, performer_id,
+            )
+        else:
+            _log.debug("link_performer: cluster %s -> performer %s (%d rows)", cluster_id, performer_id, rows)
+        return rows
+
+
+async def link_performer_async(cluster_id: int, performer_id: int, *, label: str | None = None) -> None:
+    await asyncio.to_thread(link_performer, cluster_id, performer_id, label=label)
+
+
+def unlink_performer(cluster_id: int) -> None:
+    """Remove performer link from a cluster, resetting it to 'unidentified'."""
     with get_session_local()() as session:
         session.execute(
             update(FaceCluster)
             .where(FaceCluster.id == cluster_id)
             .values(
-                performer_id=performer_id,
-                status="identified",
+                performer_id=None,
+                label=None,
+                status="unidentified",
                 updated_at=dt.datetime.now(dt.timezone.utc),
             )
         )
         session.commit()
 
 
-async def link_performer_async(cluster_id: int, performer_id: int) -> None:
-    await asyncio.to_thread(link_performer, cluster_id, performer_id)
+async def unlink_performer_async(cluster_id: int) -> None:
+    await asyncio.to_thread(unlink_performer, cluster_id)
 
 
 def ignore_cluster(cluster_id: int) -> None:
@@ -247,17 +366,39 @@ async def ignore_cluster_async(cluster_id: int) -> None:
     await asyncio.to_thread(ignore_cluster, cluster_id)
 
 
+def unignore_cluster(cluster_id: int) -> None:
+    """Reset an ignored cluster back to 'unidentified'."""
+    with get_session_local()() as session:
+        session.execute(
+            update(FaceCluster)
+            .where(FaceCluster.id == cluster_id)
+            .values(status="unidentified", updated_at=dt.datetime.now(dt.timezone.utc))
+        )
+        session.commit()
+
+
+async def unignore_cluster_async(cluster_id: int) -> None:
+    await asyncio.to_thread(unignore_cluster, cluster_id)
+
+
 def merge_clusters(surviving_id: int, absorbed_id: int) -> None:
     """Merge one cluster into another.
 
-    Re-parents all embeddings to the surviving cluster, marks the absorbed
-    cluster as ``merged_away``, and recomputes the surviving cluster's centroid.
+    Re-parents all embeddings **and detection tracks** to the surviving
+    cluster, marks the absorbed cluster as ``merged_away``, and recomputes
+    the surviving cluster's centroid.
     """
     with get_session_local()() as session:
         # Re-parent embeddings
         session.execute(
             update(FaceEmbedding)
             .where(FaceEmbedding.cluster_id == absorbed_id)
+            .values(cluster_id=surviving_id)
+        )
+        # Re-parent detection tracks
+        session.execute(
+            update(DetectionTrack)
+            .where(DetectionTrack.cluster_id == absorbed_id)
             .values(cluster_id=surviving_id)
         )
         # Mark absorbed cluster
@@ -362,6 +503,14 @@ async def get_cluster_embeddings_async(
     return await asyncio.to_thread(get_cluster_embeddings, cluster_id, **kwargs)
 
 
+def count_cluster_embeddings(cluster_id: int) -> int:
+    """Return the total number of embeddings stored for a cluster."""
+    with get_session_local()() as session:
+        return session.execute(
+            select(func.count()).where(FaceEmbedding.cluster_id == cluster_id)
+        ).scalar() or 0
+
+
 def get_entity_tracks(
     entity_type: str,
     entity_id: int,
@@ -389,24 +538,67 @@ async def get_entity_tracks_async(
     return await asyncio.to_thread(get_entity_tracks, entity_type, entity_id, **kwargs)
 
 
+# Allowed sort columns for list_clusters
+_SORT_COLUMNS = {
+    "updated_at": FaceCluster.updated_at,
+    "created_at": FaceCluster.created_at,
+    "sample_count": FaceCluster.sample_count,
+    "quality_score": FaceCluster.quality_score,
+    "label": FaceCluster.label,
+    "id": FaceCluster.id,
+}
+
+
 def list_clusters(
     *,
     status: str | None = None,
+    search: str | None = None,
+    performer_id: int | None = None,
+    sort: str | None = None,
+    sort_dir: str | None = None,
     offset: int = 0,
     limit: int = 20,
 ) -> tuple[list[FaceCluster], int]:
-    """List face clusters with optional status filter. Returns (clusters, total)."""
+    """List face clusters with optional status filter, search, and sort.
+
+    *search* filters to clusters whose ``label`` contains the given text
+    (case-insensitive).
+
+    *sort* may be one of: updated_at, created_at, sample_count,
+    quality_score, label, id.  *sort_dir* is ``asc`` or ``desc``
+    (default ``desc``).
+    """
     with get_session_local()() as session:
         base = select(FaceCluster).where(FaceCluster.status != "merged_away")
         count_base = select(func.count(FaceCluster.id)).where(FaceCluster.status != "merged_away")
         if status:
             base = base.where(FaceCluster.status == status)
             count_base = count_base.where(FaceCluster.status == status)
+        if performer_id is not None:
+            base = base.where(FaceCluster.performer_id == performer_id)
+            count_base = count_base.where(FaceCluster.performer_id == performer_id)
+        if search:
+            pattern = f"%{search}%"
+            # Match clusters by label OR by StashDB suggested performer name
+            search_filter = sa.or_(
+                FaceCluster.label.ilike(pattern),
+                FaceCluster.stashdb_match_id.in_(
+                    select(StashDBPerformerRef.id).where(
+                        StashDBPerformerRef.name.ilike(pattern)
+                    )
+                ),
+            )
+            base = base.where(search_filter)
+            count_base = count_base.where(search_filter)
+
+        # Determine sort column + direction
+        sort_col = _SORT_COLUMNS.get(sort or "updated_at", FaceCluster.updated_at)
+        order = sort_col.asc() if sort_dir == "asc" else sort_col.desc()
 
         total = session.execute(count_base).scalar() or 0
         clusters = list(
             session.execute(
-                base.order_by(FaceCluster.updated_at.desc()).offset(offset).limit(limit)
+                base.order_by(order).offset(offset).limit(limit)
             ).scalars().all()
         )
         return clusters, total
@@ -424,6 +616,139 @@ def get_cluster_by_id(cluster_id: int) -> FaceCluster | None:
 
 async def get_cluster_by_id_async(cluster_id: int) -> FaceCluster | None:
     return await asyncio.to_thread(get_cluster_by_id, cluster_id)
+
+
+# ---------------------------------------------------------------------------
+# Cluster query helpers (for co-occurrence / UI)
+# ---------------------------------------------------------------------------
+
+def get_cluster_entity_pairs(cluster_id: int) -> list[tuple[str, int]]:
+    """Return all unique (entity_type, entity_id) rows for a cluster's tracks."""
+    with get_session_local()() as session:
+        stmt = (
+            select(
+                DetectionTrack.entity_type,
+                DetectionTrack.entity_id,
+            )
+            .where(DetectionTrack.cluster_id == cluster_id)
+            .distinct()
+        )
+        return [(row.entity_type, row.entity_id) for row in session.execute(stmt).all()]
+
+
+async def get_cluster_entity_pairs_async(cluster_id: int) -> list[tuple[str, int]]:
+    return await asyncio.to_thread(get_cluster_entity_pairs, cluster_id)
+
+
+def get_bulk_cluster_entity_pairs(
+    cluster_ids: list[int],
+) -> dict[int, list[tuple[str, int]]]:
+    """Return entity pairs for multiple clusters in a single query.
+
+    Returns ``{cluster_id: [(entity_type, entity_id), ...]}``.
+    """
+    if not cluster_ids:
+        return {}
+    with get_session_local()() as session:
+        stmt = (
+            select(
+                DetectionTrack.cluster_id,
+                DetectionTrack.entity_type,
+                DetectionTrack.entity_id,
+            )
+            .where(
+                DetectionTrack.cluster_id.in_(cluster_ids),
+                DetectionTrack.cluster_id.isnot(None),
+            )
+            .distinct()
+        )
+        result: dict[int, list[tuple[str, int]]] = {cid: [] for cid in cluster_ids}
+        for row in session.execute(stmt).all():
+            result[row.cluster_id].append((row.entity_type, row.entity_id))
+        return result
+
+
+def list_cluster_ids(
+    *,
+    status: str | None = None,
+    search: str | None = None,
+    performer_id: int | None = None,
+) -> list[int]:
+    """Return IDs of clusters matching *status*/*search* filters (no pagination)."""
+    with get_session_local()() as session:
+        stmt = select(FaceCluster.id).where(FaceCluster.status != "merged_away")
+        if status:
+            stmt = stmt.where(FaceCluster.status == status)
+        if performer_id is not None:
+            stmt = stmt.where(FaceCluster.performer_id == performer_id)
+        if search:
+            pattern = f"%{search}%"
+            stmt = stmt.where(
+                sa.or_(
+                    FaceCluster.label.ilike(pattern),
+                    FaceCluster.stashdb_match_id.in_(
+                        select(StashDBPerformerRef.id).where(
+                            StashDBPerformerRef.name.ilike(pattern)
+                        )
+                    ),
+                )
+            )
+        return [row[0] for row in session.execute(stmt).all()]
+
+
+def get_clusters_by_ids(
+    cluster_ids: list[int],
+) -> list[FaceCluster]:
+    """Fetch full cluster objects for the given IDs, preserving input order."""
+    if not cluster_ids:
+        return []
+    with get_session_local()() as session:
+        stmt = select(FaceCluster).where(FaceCluster.id.in_(cluster_ids))
+        by_id = {c.id: c for c in session.execute(stmt).scalars().all()}
+        return [by_id[cid] for cid in cluster_ids if cid in by_id]
+
+
+def get_cluster_for_performer(performer_id: int) -> FaceCluster | None:
+    """Return the cluster linked to the given performer, or None."""
+    with get_session_local()() as session:
+        stmt = (
+            select(FaceCluster)
+            .where(FaceCluster.performer_id == performer_id)
+            .where(FaceCluster.status != "merged_away")
+            .limit(1)
+        )
+        return session.execute(stmt).scalars().first()
+
+
+async def get_cluster_for_performer_async(performer_id: int) -> FaceCluster | None:
+    return await asyncio.to_thread(get_cluster_for_performer, performer_id)
+
+
+def get_entity_count_by_type(cluster_id: int) -> dict[str, int]:
+    """Return ``{scene_count: N, image_count: N}`` for a cluster.
+
+    Counts via ``detection_tracks.cluster_id`` directly so that tracks
+    matched to this cluster are counted even when the per-cluster embedding
+    budget was exhausted and no embeddings were stored for that track.
+    """
+    with get_session_local()() as session:
+        stmt = (
+            select(
+                DetectionTrack.entity_type,
+                func.count(sa.distinct(DetectionTrack.entity_id)).label("cnt"),
+            )
+            .where(DetectionTrack.cluster_id == cluster_id)
+            .group_by(DetectionTrack.entity_type)
+        )
+        rows = {row.entity_type: row.cnt for row in session.execute(stmt).all()}
+        return {
+            "scene_count": rows.get("scene", 0),
+            "image_count": rows.get("image", 0),
+        }
+
+
+async def get_entity_count_by_type_async(cluster_id: int) -> dict[str, int]:
+    return await asyncio.to_thread(get_entity_count_by_type, cluster_id)
 
 
 # ---------------------------------------------------------------------------
@@ -543,3 +868,224 @@ def _recompute_exemplars(cluster_id: int) -> None:
                 .values(is_exemplar=True)
             )
         session.commit()
+
+
+def remove_exemplar_from_cluster(
+    embedding_id: int,
+    cluster_id: int,
+    *,
+    auto_threshold: float = 0.55,
+) -> dict:
+    """Remove an exemplar embedding from a cluster and recompute state.
+
+    Steps:
+      1. Detach the embedding (set cluster_id=NULL, is_exemplar=False).
+      2. Recompute centroid from remaining exemplars.
+      3. Re-check all non-exemplar embeddings: unassign any whose cosine
+         similarity to the new centroid drops below *auto_threshold*.
+
+    Exemplar re-selection is intentionally **skipped** so that explicitly
+    removed faces are not backfilled from the non-exemplar pool.
+
+    Returns a dict with ``removed_entities`` (count of unassigned embeddings)
+    and ``remaining_exemplars`` (count after recomputation).
+    """
+    with get_session_local()() as session:
+        emb = session.get(FaceEmbedding, embedding_id)
+        if emb is None or emb.cluster_id != cluster_id:
+            raise ValueError("Embedding not found or does not belong to cluster")
+
+        # 1. Detach the target embedding
+        session.execute(
+            update(FaceEmbedding)
+            .where(FaceEmbedding.id == embedding_id)
+            .values(cluster_id=None, is_exemplar=False)
+        )
+        session.commit()
+        _log.info(
+            "Detached embedding %d from cluster %d (cluster_id→NULL, is_exemplar→False)",
+            embedding_id, cluster_id,
+        )
+
+    # 2. Recompute centroid from remaining exemplars.
+    #    NOTE: We intentionally do NOT call _recompute_exemplars() here.
+    #    When a user explicitly removes an exemplar, the remaining exemplars
+    #    are still valid — re-selecting would backfill the vacated slot with
+    #    another embedding, making it look like the face "came back".
+    update_cluster_centroid(cluster_id)
+
+    # 3. Re-check non-exemplar embeddings against new centroid
+    removed_count = _prune_weak_embeddings(cluster_id, auto_threshold)
+
+    # Count remaining exemplars
+    remaining_embs = get_cluster_embeddings(cluster_id, exemplars_only=True)
+    _log.info(
+        "remove_exemplar_from_cluster done: cluster=%d, remaining_exemplars=%d ids=%s, pruned=%d",
+        cluster_id, len(remaining_embs), [e.id for e in remaining_embs], removed_count,
+    )
+
+    return {"removed_entities": removed_count, "remaining_exemplars": len(remaining_embs)}
+
+
+async def remove_exemplar_from_cluster_async(
+    embedding_id: int, cluster_id: int, **kwargs,
+) -> dict:
+    return await asyncio.to_thread(
+        remove_exemplar_from_cluster, embedding_id, cluster_id, **kwargs,
+    )
+
+
+def _prune_weak_embeddings(cluster_id: int, threshold: float) -> int:
+    """Unassign non-exemplar embeddings whose similarity to the centroid
+    has dropped below *threshold*.  Returns count of removed embeddings."""
+    with get_session_local()() as session:
+        cluster = session.get(FaceCluster, cluster_id)
+        if cluster is None or cluster.centroid is None:
+            return 0
+        centroid = np.array(cluster.centroid, dtype=np.float32)
+        c_norm = np.linalg.norm(centroid)
+        if c_norm > 0:
+            centroid = centroid / c_norm
+
+        non_exemplars = list(
+            session.execute(
+                select(FaceEmbedding)
+                .where(
+                    FaceEmbedding.cluster_id == cluster_id,
+                    FaceEmbedding.is_exemplar.is_(False),
+                )
+            ).scalars().all()
+        )
+
+        to_remove: list[int] = []
+        for emb in non_exemplars:
+            vec = np.array(emb.embedding, dtype=np.float32)
+            v_norm = np.linalg.norm(vec)
+            if v_norm > 0:
+                vec = vec / v_norm
+            sim = float(np.dot(centroid, vec))
+            if sim < threshold:
+                to_remove.append(emb.id)
+
+        if to_remove:
+            session.execute(
+                update(FaceEmbedding)
+                .where(FaceEmbedding.id.in_(to_remove))
+                .values(cluster_id=None)
+            )
+            session.commit()
+            _log.info(
+                "Pruned %d weak embeddings from cluster %d (threshold=%.2f)",
+                len(to_remove), cluster_id, threshold,
+            )
+
+        return len(to_remove)
+
+
+# ---------------------------------------------------------------------------
+# Performer assignment tracking
+# ---------------------------------------------------------------------------
+
+def record_performer_assignments(
+    entity_pairs: list[tuple[str, int]],
+    performer_id: int,
+    cluster_id: int,
+) -> int:
+    """Record that we assigned *performer_id* to *entity_pairs* via *cluster_id*.
+
+    Uses INSERT … ON CONFLICT DO NOTHING so duplicates are safely ignored.
+    Returns the number of new rows inserted.
+    """
+    if not entity_pairs:
+        return 0
+    with get_session_local()() as session:
+        inserted = 0
+        for entity_type, entity_id in entity_pairs:
+            try:
+                session.execute(
+                    pg_insert(FacePerformerAssignment.__table__)
+                    .values(
+                        entity_type=entity_type,
+                        entity_id=entity_id,
+                        performer_id=performer_id,
+                        cluster_id=cluster_id,
+                    )
+                    .on_conflict_do_nothing(
+                        constraint="uq_face_performer_assignment",
+                    )
+                )
+                inserted += 1
+            except Exception:
+                _log.debug(
+                    "Failed to record assignment (%s, %s, performer=%s, cluster=%s)",
+                    entity_type, entity_id, performer_id, cluster_id,
+                    exc_info=True,
+                )
+        session.commit()
+        return inserted
+
+
+def delete_performer_assignments_for_cluster(
+    cluster_id: int,
+    performer_id: int,
+    entity_pairs: list[tuple[str, int]] | None = None,
+) -> int:
+    """Remove assignment records for *cluster_id* + *performer_id*.
+
+    If *entity_pairs* is given, only those specific entities are deleted.
+    Otherwise all assignments for the cluster+performer are removed.
+    Returns the count of deleted rows.
+    """
+    with get_session_local()() as session:
+        if entity_pairs:
+            total = 0
+            for entity_type, entity_id in entity_pairs:
+                result = session.execute(
+                    delete(FacePerformerAssignment)
+                    .where(
+                        FacePerformerAssignment.cluster_id == cluster_id,
+                        FacePerformerAssignment.performer_id == performer_id,
+                        FacePerformerAssignment.entity_type == entity_type,
+                        FacePerformerAssignment.entity_id == entity_id,
+                    )
+                )
+                total += result.rowcount
+        else:
+            result = session.execute(
+                delete(FacePerformerAssignment)
+                .where(
+                    FacePerformerAssignment.cluster_id == cluster_id,
+                    FacePerformerAssignment.performer_id == performer_id,
+                )
+            )
+            total = result.rowcount
+        session.commit()
+        return total
+
+
+def get_orphaned_performer_entities(
+    performer_id: int,
+    entity_pairs: list[tuple[str, int]],
+) -> list[tuple[str, int]]:
+    """Return entity pairs that have NO remaining assignment records for *performer_id*.
+
+    These are entities where we originally added the performer via face
+    recognition, and now no face cluster links remain to justify keeping it.
+    """
+    if not entity_pairs:
+        return []
+    orphaned: list[tuple[str, int]] = []
+    with get_session_local()() as session:
+        for entity_type, entity_id in entity_pairs:
+            count = session.scalar(
+                select(func.count())
+                .select_from(FacePerformerAssignment)
+                .where(
+                    FacePerformerAssignment.entity_type == entity_type,
+                    FacePerformerAssignment.entity_id == entity_id,
+                    FacePerformerAssignment.performer_id == performer_id,
+                )
+            )
+            if count == 0:
+                orphaned.append((entity_type, entity_id))
+    return orphaned

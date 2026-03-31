@@ -68,6 +68,15 @@ class ActionRegistry:
                 self._actions.pop(action_id, None)
                 self._handlers.pop(action_id, None)
 
+    def unregister_actions(self, action_ids: list[str]) -> int:
+        """Remove specific action IDs from the registry.  Returns count removed."""
+        removed = 0
+        for aid in action_ids:
+            if self._actions.pop(aid, None) is not None:
+                self._handlers.pop(aid, None)
+                removed += 1
+        return removed
+
 
 registry = ActionRegistry()
 

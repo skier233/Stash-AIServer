@@ -11,6 +11,7 @@ from stash_ai_server.api import recommendations as recommendations_router
 from stash_ai_server.api import plugins as plugins_router
 from stash_ai_server.api import system as system_router
 from stash_ai_server.api import version as version_router
+from stash_ai_server.api import ratings as ratings_router
 from stash_ai_server.recommendations.registry import recommender_registry
 from stash_ai_server.recommendations.models import RecContext
 from stash_ai_server.core.dependencies import get_task_manager, configure_task_manager
@@ -71,10 +72,11 @@ async def lifespan(app: FastAPI):
         try:
             from stash_ai_server.plugin_runtime.loader import get_plugin_routers
             plugin_routers = get_plugin_routers()
-            for plugin_name, router in plugin_routers.items():
-                # Mount at /api/v1/plugins so plugin routes can define their own sub-paths
-                app.include_router(router, prefix=f"{settings.api_v1_prefix}/plugins")
-                print(f"[plugin] registered router for {plugin_name} at {settings.api_v1_prefix}/plugins", flush=True)
+            for plugin_name, routers in plugin_routers.items():
+                for router in routers:
+                    # Mount at /api/v1/plugins so plugin routes can define their own sub-paths
+                    app.include_router(router, prefix=f"{settings.api_v1_prefix}/plugins")
+                print(f"[plugin] registered {len(routers)} router(s) for {plugin_name} at {settings.api_v1_prefix}/plugins", flush=True)
         except Exception as e:
             print(f"[plugin] router registration error: {e}", flush=True)
 
@@ -137,6 +139,7 @@ app.include_router(plugins_router.router, prefix=settings.api_v1_prefix)
 app.include_router(interactions_router.router, prefix=settings.api_v1_prefix)
 app.include_router(system_router.router, prefix=settings.api_v1_prefix)
 app.include_router(version_router.router, prefix=settings.api_v1_prefix)
+app.include_router(ratings_router.router, prefix=settings.api_v1_prefix)
 
 # Basic CORS (development) – restrict/adjust later as needed
 app.add_middleware(
