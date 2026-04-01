@@ -28,19 +28,22 @@ jobs:
           if [[ "$REF" == refs/tags/v* ]]; then
             TAG="${REF#refs/tags/}"
             VERSION=${TAG#v}
-            git fetch origin main --depth=1 || true
-            COMMIT=$(git rev-parse "$REF")
-            if git merge-base --is-ancestor "$COMMIT" origin/main; then
-              echo "is_release=true" >> $GITHUB_OUTPUT
-            else
-              echo "is_release=false" >> $GITHUB_OUTPUT
-            fi
             echo "tag=${TAG}" >> $GITHUB_OUTPUT
             echo "version=${VERSION}" >> $GITHUB_OUTPUT
             if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              # Final release (X.Y.Z) — must originate from main
               echo "is_final=true" >> $GITHUB_OUTPUT
+              git fetch origin main --depth=1 || true
+              COMMIT=$(git rev-parse "$REF")
+              if git merge-base --is-ancestor "$COMMIT" origin/main; then
+                echo "is_release=true" >> $GITHUB_OUTPUT
+              else
+                echo "is_release=false" >> $GITHUB_OUTPUT
+              fi
             else
+              # Pre-release (alpha/beta/rc/etc.) — allowed from any branch
               echo "is_final=false" >> $GITHUB_OUTPUT
+              echo "is_release=true" >> $GITHUB_OUTPUT
             fi
           else
             echo "is_release=false" >> $GITHUB_OUTPUT
