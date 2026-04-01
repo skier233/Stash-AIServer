@@ -799,7 +799,6 @@
     const [thumbCount, setThumbCount] = useState(1);
     const menuRef = useRef(null as any);
     const isLinked = cluster.status === "identified" && cluster.performer_id;
-    const isIgnored = cluster.status === "ignored";
 
     // Fetch how many exemplar thumbnails are available
     useEffect(() => {
@@ -1064,7 +1063,7 @@
         React.createElement(
           "div",
           { style: { display: "flex", gap: "4px", marginTop: "6px" } },
-          !isLinked && !isIgnored
+          !isLinked
             ? React.createElement("button", {
                 style: {
                   flex: 1, padding: "4px 0", background: THEME.accent, color: "#fff",
@@ -1081,16 +1080,14 @@
                 onClick: () => onAction("view", cluster),
               }, "View")
             : null,
-          !isLinked && !isIgnored
-            ? React.createElement("button", {
+          React.createElement("button", {
                 style: {
                   padding: "4px 6px", background: "transparent", color: THEME.danger,
                   border: `1px solid ${THEME.danger}33`, borderRadius: "4px", cursor: "pointer", fontSize: "11px",
                 },
-                onClick: () => onAction("ignore", cluster),
-                title: "Mark as junk / bad angle",
-              }, "Bad")
-            : null,
+                onClick: () => onAction("delete", cluster),
+                title: "Permanently delete this face cluster",
+              }, "\u2715"),
           // Menu button
           React.createElement(
             "div",
@@ -1120,7 +1117,7 @@
                         onMouseLeave: (e: any) => { e.target.style.background = "transparent"; },
                       }, "Change performer")
                     : null,
-                  !isLinked && !isIgnored
+                  !isLinked
                     ? React.createElement("div", {
                         style: { padding: "6px 12px", color: THEME.text, cursor: "pointer", fontSize: "12px" },
                         onClick: () => { setMenuOpen(false); onAction("link", cluster); },
@@ -1128,7 +1125,7 @@
                         onMouseLeave: (e: any) => { e.target.style.background = "transparent"; },
                       }, "Link to performer")
                     : null,
-                  !isLinked && !isIgnored
+                  !isLinked
                     ? React.createElement("div", {
                         style: { padding: "6px 12px", color: THEME.text, cursor: "pointer", fontSize: "12px" },
                         onClick: () => { setMenuOpen(false); onAction("create-performer", cluster); },
@@ -1144,27 +1141,18 @@
                         onMouseLeave: (e: any) => { e.target.style.background = "transparent"; },
                       }, "Unlink performer")
                     : null,
-                  !isIgnored
-                    ? React.createElement("div", {
+                  React.createElement("div", {
                         style: { padding: "6px 12px", color: THEME.text, cursor: "pointer", fontSize: "12px" },
                         onClick: () => { setMenuOpen(false); onAction("merge", cluster); },
                         onMouseEnter: (e: any) => { e.target.style.background = THEME.bgHover; },
                         onMouseLeave: (e: any) => { e.target.style.background = "transparent"; },
-                      }, "Merge with...")
-                    : null,
-                  !isIgnored
-                    ? React.createElement("div", {
+                      }, "Merge with..."),
+                  React.createElement("div", {
                         style: { padding: "6px 12px", color: THEME.danger, cursor: "pointer", fontSize: "12px" },
-                        onClick: () => { setMenuOpen(false); onAction("ignore", cluster); },
+                        onClick: () => { setMenuOpen(false); onAction("delete", cluster); },
                         onMouseEnter: (e: any) => { e.target.style.background = THEME.bgHover; },
                         onMouseLeave: (e: any) => { e.target.style.background = "transparent"; },
-                      }, "Mark as bad")
-                    : React.createElement("div", {
-                        style: { padding: "6px 12px", color: THEME.warning, cursor: "pointer", fontSize: "12px" },
-                        onClick: () => { setMenuOpen(false); onAction("unignore", cluster); },
-                        onMouseEnter: (e: any) => { e.target.style.background = THEME.bgHover; },
-                        onMouseLeave: (e: any) => { e.target.style.background = "transparent"; },
-                      }, "Un-ignore")
+                      }, "Delete face")
                 )
               : null
           )
@@ -1187,6 +1175,9 @@
     const [stashdbBusy, setStashdbBusy] = useState(false);
     const [removingExemplar, setRemovingExemplar] = useState(null as number | null);
     const [thumbToken, setThumbToken] = useState(() => Date.now());
+    const [similarFaces, setSimilarFaces] = useState([] as any[]);
+    const [similarLoading, setSimilarLoading] = useState(false);
+    const [mergingId, setMergingId] = useState(null as number | null);
 
     const fetchDetail = useCallback(async () => {
       setLoading(true);
@@ -1204,6 +1195,41 @@
     }, [apiBase, clusterId]);
 
     useEffect(() => { fetchDetail(); }, [fetchDetail]);
+
+    // Fetch similar faces
+    const fetchSimilar = useCallback(async () => {
+      setSimilarLoading(true);
+      try {
+        const res = await fetch(`${apiBase}/faces/clusters/${clusterId}/similar?limit=12`);
+        if (res.ok) {
+          const data = await res.json();
+          setSimilarFaces(data.matches || []);
+        }
+      } catch (_e) {}
+      setSimilarLoading(false);
+    }, [apiBase, clusterId]);
+
+    useEffect(() => { fetchSimilar(); }, [fetchSimilar]);
+
+    const handleMergeSimilar = useCallback(async (absorbedId: number) => {
+      if (!confirm(`Merge face #${absorbedId} into this cluster (#${clusterId})? This cannot be undone.`)) return;
+      setMergingId(absorbedId);
+      try {
+        const res = await fetch(`${apiBase}/faces/clusters/merge`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ surviving_id: clusterId, absorbed_id: absorbedId }),
+        });
+        if (res.ok) {
+          // Refresh detail and similar faces
+          await fetchDetail();
+          await fetchSimilar();
+        }
+      } catch (e) {
+        console.error("[FacesHub] Merge similar failed:", e);
+      }
+      setMergingId(null);
+    }, [apiBase, clusterId, fetchDetail, fetchSimilar]);
 
     const handleRemoveExemplar = useCallback(async (embeddingId: number) => {
       if (!confirm("Remove this face from the cluster's exemplars?\n\nThe cluster will be recalculated and images that no longer match may be unassigned.")) return;
@@ -1252,7 +1278,7 @@
       return React.createElement("div", { style: { padding: "40px", textAlign: "center", color: THEME.textMuted } }, "Cluster not found.");
     }
 
-    const statusColors: any = { identified: THEME.accent, unidentified: THEME.warning, ignored: THEME.danger };
+    const statusColors: any = { identified: THEME.accent, unidentified: THEME.warning };
     const statusColor = statusColors[detail.status] || THEME.textMuted;
     const displayName = detail.label || (detail.performer_id ? `Performer #${detail.performer_id}` : `Face #${detail.id}`);
     const totalAppearances = (detail.scene_count || 0) + (detail.image_count || 0);
@@ -1476,7 +1502,7 @@
               onClick: () => onAction("unlink", detail),
             }, "Unlink performer")
           : null,
-        !detail.performer_id && detail.status !== "ignored"
+        !detail.performer_id
           ? React.createElement("button", {
               style: {
                 padding: "6px 14px", background: "transparent", color: THEME.accent,
@@ -1485,21 +1511,13 @@
               onClick: () => onAction("create-performer", detail),
             }, "Create performer")
           : null,
-        detail.status !== "ignored"
-          ? React.createElement("button", {
+        React.createElement("button", {
               style: {
                 padding: "6px 14px", background: "transparent", color: THEME.danger,
                 border: `1px solid ${THEME.danger}33`, borderRadius: "4px", cursor: "pointer", fontSize: "12px",
               },
-              onClick: () => onAction("ignore", detail),
-            }, "Mark as bad")
-          : React.createElement("button", {
-              style: {
-                padding: "6px 14px", background: "transparent", color: THEME.warning,
-                border: `1px solid ${THEME.warning}55`, borderRadius: "4px", cursor: "pointer", fontSize: "12px",
-              },
-              onClick: () => onAction("unignore", detail),
-            }, "Un-ignore")
+              onClick: () => onAction("delete", detail),
+            }, "Delete face")
       ),
       // Exemplar face crops
       React.createElement("h3", { style: { fontSize: "16px", fontWeight: 600, marginBottom: "12px" } },
@@ -1640,7 +1658,76 @@
               )
             )
           )
-        : null
+        : null,
+      // Similar Faces section
+      React.createElement("h3", { style: { fontSize: "16px", fontWeight: 600, marginBottom: "12px" } },
+        "Similar Faces"
+      ),
+      similarLoading
+        ? React.createElement("div", { style: { color: THEME.textMuted, fontSize: "13px", marginBottom: "24px" } }, "Loading similar faces...")
+        : similarFaces.length === 0
+          ? React.createElement("div", { style: { color: THEME.textMuted, fontSize: "13px", marginBottom: "24px" } }, "No similar faces found.")
+          : React.createElement("div", {
+              style: {
+                display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))",
+                gap: "10px", marginBottom: "24px",
+              },
+            },
+              ...similarFaces.map((m: any) => {
+                const isMerging = mergingId === m.id;
+                return React.createElement("div", {
+                  key: m.id,
+                  style: {
+                    background: THEME.bgCard, borderRadius: "8px",
+                    border: `1px solid ${THEME.border}`, overflow: "hidden",
+                    opacity: isMerging ? 0.5 : 1,
+                    transition: "opacity 0.2s",
+                  },
+                },
+                  // Clickable thumbnail → navigate to that cluster
+                  React.createElement("a", {
+                    href: `/plugins/ai-faces?id=${m.id}`,
+                    style: { display: "block", textDecoration: "none" },
+                  },
+                    React.createElement("img", {
+                      src: `${apiBase}/faces/clusters/${m.id}/thumbnail?size=200&pad=0.2`,
+                      style: { width: "100%", aspectRatio: "1", objectFit: "cover", display: "block" },
+                      loading: "lazy",
+                      onError: (ev: any) => { ev.target.style.display = "none"; },
+                    })
+                  ),
+                  React.createElement("div", { style: { padding: "6px 8px" } },
+                    React.createElement("div", {
+                      style: {
+                        fontSize: "12px", fontWeight: 500, color: THEME.text,
+                        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                      },
+                    }, m.label || `Face #${m.id}`),
+                    React.createElement("div", {
+                      style: { fontSize: "11px", color: THEME.textMuted, marginTop: "2px" },
+                    }, `${Math.round(m.similarity * 100)}% match`),
+                    m.performer_id
+                      ? React.createElement("a", {
+                          href: `/performers/${m.performer_id}`,
+                          style: { fontSize: "11px", color: THEME.accent, textDecoration: "none" },
+                        }, m.label || `Performer #${m.performer_id}`)
+                      : null,
+                    // Merge button
+                    React.createElement("button", {
+                      style: {
+                        marginTop: "4px", width: "100%", padding: "4px 0",
+                        background: "transparent", color: "#4fc3f7",
+                        border: `1px solid #4fc3f733`, borderRadius: "4px",
+                        cursor: isMerging ? "wait" : "pointer", fontSize: "11px",
+                        opacity: isMerging ? 0.5 : 1,
+                      },
+                      disabled: isMerging,
+                      onClick: () => handleMergeSimilar(m.id),
+                    }, isMerging ? "Merging..." : "\u2B07 Merge into this")
+                  )
+                );
+              })
+            )
     );
   }
 
@@ -2058,9 +2145,14 @@
       compute();
       // Fallback: if element wasn't laid out yet, retry after browser paint
       const raf = requestAnimationFrame(compute);
+      // Interval retry: handles cases where element is hidden on mount (tab not visible)
+      const iv = setInterval(() => {
+        const w = el.offsetWidth || 0;
+        if (w > 0) { compute(); clearInterval(iv); }
+      }, 200);
       const ro = new ResizeObserver(compute);
       ro.observe(el);
-      return () => { ro.disconnect(); cancelAnimationFrame(raf); };
+      return () => { ro.disconnect(); cancelAnimationFrame(raf); clearInterval(iv); };
     }, [zoomIndex]);
     const [sortBy, setSortBy] = useState("suggestion_confidence");
     const [sortDir, setSortDir] = useState("desc");
@@ -2070,23 +2162,28 @@
     const [bulkBusy, setBulkBusy] = useState(false);
     const [bulkResult, setBulkResult] = useState(null as any);
 
+    const abortRef = useRef(null as AbortController | null);
     const fetchClusters = useCallback(async () => {
+      // Abort any in-flight fetch to avoid race conditions
+      if (abortRef.current) abortRef.current.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
       setLoading(true);
       setSelectedIds(new Set());  // clear selection on page/filter change
       try {
         const statusParam = filter === "all" ? "" : `&status=${filter}`;
         const sortParam = `&sort=${sortBy}&sort_dir=${sortDir}`;
         const searchParam = searchText ? `&search=${encodeURIComponent(searchText)}` : "";
-        const res = await fetch(`${apiBase}/faces/clusters?page=${page}&per_page=${perPage}${statusParam}${sortParam}${searchParam}`);
+        const res = await fetch(`${apiBase}/faces/clusters?page=${page}&per_page=${perPage}${statusParam}${sortParam}${searchParam}`, { signal: controller.signal });
         if (res.ok) {
           const data = await res.json();
           setClusters(data.clusters || []);
           setTotal(data.total || 0);
         }
-      } catch (e) {
-        console.error("[FacesHub] Failed to fetch clusters:", e);
+      } catch (e: any) {
+        if (e?.name !== 'AbortError') console.error("[FacesHub] Failed to fetch clusters:", e);
       }
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }, [apiBase, page, filter, perPage, sortBy, sortDir, searchText]);
 
     useEffect(() => { if (colCount > 0) fetchClusters(); }, [fetchClusters, colCount]);
@@ -2130,19 +2227,13 @@
         setMergeDialog(cluster);
       } else if (action === "create-performer") {
         setCreatePerformerDialog(cluster);
-      } else if (action === "ignore") {
+      } else if (action === "delete") {
+        if (!w.confirm("Permanently delete this face and all its data?")) return;
         try {
-          await fetch(`${apiBase}/faces/clusters/${cluster.id}/ignore`, { method: "POST" });
+          await fetch(`${apiBase}/faces/clusters/${cluster.id}`, { method: "DELETE" });
           fetchClusters();
         } catch (e) {
-          console.error("[FacesHub] Ignore failed:", e);
-        }
-      } else if (action === "unignore") {
-        try {
-          await fetch(`${apiBase}/faces/clusters/${cluster.id}/unignore`, { method: "POST" });
-          fetchClusters();
-        } catch (e) {
-          console.error("[FacesHub] Unignore failed:", e);
+          console.error("[FacesHub] Delete failed:", e);
         }
       } else if (action === "unlink") {
         try {
@@ -2192,7 +2283,6 @@
       { key: "all", label: "All" },
       { key: "unidentified", label: "Unlinked" },
       { key: "identified", label: "Linked" },
-      { key: "ignored", label: "Ignored" },
     ];
 
     // If StashDB management is open, show that
@@ -2214,7 +2304,7 @@
             // Run the action from detail view context
             handleAction(action, cluster);
             // For destructive actions, go back to the grid
-            if (action === "ignore" || action === "unignore" || action === "unlink") {
+            if (action === "delete" || action === "unlink") {
               navigateToCluster(null);
             }
           },
@@ -2449,18 +2539,21 @@
                     },
                     disabled: bulkBusy,
                     onClick: async () => {
-                      if (!confirm(`Ignore ${selectedIds.size} face(s)? They will be hidden from the unlinked list.`)) return;
+                      if (!confirm(`Permanently delete ${selectedIds.size} face cluster(s)? This cannot be undone.`)) return;
                       setBulkBusy(true);
-                      for (const cid of selectedIds) {
-                        try {
-                          await fetch(`${apiBase}/faces/clusters/${cid}/ignore`, { method: "POST" });
-                        } catch (_e) {}
-                      }
+                      const ids = Array.from(selectedIds);
+                      try {
+                        await fetch(`${apiBase}/faces/clusters/bulk-delete`, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ cluster_ids: ids }),
+                        });
+                      } catch (_e) {}
                       setSelectedIds(new Set());
                       fetchClusters();
                       setBulkBusy(false);
                     },
-                  }, "Mark as bad")
+                  }, "Delete selected")
                 )
               : null,
             // Bulk result banner
@@ -2568,7 +2661,7 @@
             // Zoom slider
             React.createElement("input", {
               type: "range", min: 0, max: 5, value: zoomIndex,
-              onChange: (e: any) => setZoomIndex(Number(e.target.value)),
+              onChange: (e: any) => { setZoomIndex(Number(e.target.value)); setPage(1); },
               style: { width: "60px", marginLeft: "12px", cursor: "pointer" },
             })
           )

@@ -18,12 +18,12 @@ from sqlalchemy.orm import Session
 
 from stash_ai_server.db.detection_store import (
     create_cluster,
+    delete_cluster,
     find_nearest_cluster,
     get_cluster_by_id,
     get_cluster_embeddings,
     get_cluster_exemplars,
     get_entity_tracks,
-    ignore_cluster,
     link_performer,
     list_clusters,
     merge_clusters,
@@ -287,13 +287,6 @@ class TestFindNearestCluster:
         best_id, best_sim = results[0]
         assert best_sim > 0.99  # near-perfect match
 
-    def test_excludes_ignored(self, det_session: Session):
-        vec = _make_vec(30)
-        self._seed_cluster(det_session, vec, status="ignored")
-
-        results = find_nearest_cluster(vec, limit=5)
-        assert len(results) == 0
-
     def test_excludes_merged_away(self, det_session: Session):
         vec = _make_vec(40)
         self._seed_cluster(det_session, vec, status="merged_away")
@@ -375,7 +368,7 @@ class TestUpdateClusterCentroid:
 
 
 # ===================================================================
-# link_performer / ignore_cluster
+# link_performer / delete_cluster
 # ===================================================================
 
 class TestLinkPerformer:
@@ -391,16 +384,15 @@ class TestLinkPerformer:
         assert refreshed.performer_id == 42
 
 
-class TestIgnoreCluster:
+class TestDeleteCluster:
 
-    def test_sets_ignored(self, det_session: Session):
+    def test_removes_cluster(self, det_session: Session):
         cluster = create_cluster(det_session)
         det_session.commit()
 
-        ignore_cluster(cluster.id)
+        delete_cluster(cluster.id)
 
-        refreshed = get_cluster_by_id(cluster.id)
-        assert refreshed.status == "ignored"
+        assert get_cluster_by_id(cluster.id) is None
 
 
 # ===================================================================

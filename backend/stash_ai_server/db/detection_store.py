@@ -159,7 +159,7 @@ async def cleanup_stale_detections_async(**kwargs: Any) -> int:
 def find_nearest_cluster(
     embedding: list[float] | np.ndarray,
     *,
-    exclude_statuses: Sequence[str] = ("ignored", "merged_away"),
+    exclude_statuses: Sequence[str] = ("merged_away",),
     limit: int = 1,
 ) -> list[tuple[int, float]]:
     """ANN search on ``face_clusters.centroid``.
@@ -351,34 +351,85 @@ async def unlink_performer_async(cluster_id: int) -> None:
     await asyncio.to_thread(unlink_performer, cluster_id)
 
 
-def ignore_cluster(cluster_id: int) -> None:
-    """Set status='ignored' on a cluster."""
+def delete_cluster(cluster_id: int) -> None:
+    """Permanently delete a face cluster and all associated data.
+
+    Removes: face_embeddings, detection_tracks, face_performer_assignments,
+    and the cluster row itself.  Caller is responsible for deleting
+    thumbnail files on disk (see ``_invalidate_cluster_thumbnails``).
+    """
     with get_session_local()() as session:
+        # 1. Delete embeddings belonging to this cluster
+        session.execute(
+            delete(FaceEmbedding).where(FaceEmbedding.cluster_id == cluster_id)
+        )
+        # 2. Delete performer assignments for this cluster
+        session.execute(
+            delete(FacePerformerAssignment)
+            .where(FacePerformerAssignment.cluster_id == cluster_id)
+        )
+        # 3. Unlink detection tracks (SET NULL, don't delete the tracks
+        #    themselves — they belong to the model run)
+        session.execute(
+            update(DetectionTrack)
+            .where(DetectionTrack.cluster_id == cluster_id)
+            .values(cluster_id=None)
+        )
+        # 4. Clear merged_into_id references from other clusters
         session.execute(
             update(FaceCluster)
-            .where(FaceCluster.id == cluster_id)
-            .values(status="ignored", updated_at=dt.datetime.now(dt.timezone.utc))
+            .where(FaceCluster.merged_into_id == cluster_id)
+            .values(merged_into_id=None)
+        )
+        # 5. Delete the cluster itself
+        session.execute(
+            delete(FaceCluster).where(FaceCluster.id == cluster_id)
         )
         session.commit()
+    _log.info("Deleted cluster %d and all associated data", cluster_id)
 
 
-async def ignore_cluster_async(cluster_id: int) -> None:
-    await asyncio.to_thread(ignore_cluster, cluster_id)
+async def delete_cluster_async(cluster_id: int) -> None:
+    await asyncio.to_thread(delete_cluster, cluster_id)
 
 
-def unignore_cluster(cluster_id: int) -> None:
-    """Reset an ignored cluster back to 'unidentified'."""
+def delete_clusters_bulk(cluster_ids: list[int]) -> int:
+    """Permanently delete multiple clusters in one transaction.
+
+    Returns the number of clusters actually deleted.
+    """
+    if not cluster_ids:
+        return 0
     with get_session_local()() as session:
         session.execute(
+            delete(FaceEmbedding)
+            .where(FaceEmbedding.cluster_id.in_(cluster_ids))
+        )
+        session.execute(
+            delete(FacePerformerAssignment)
+            .where(FacePerformerAssignment.cluster_id.in_(cluster_ids))
+        )
+        session.execute(
+            update(DetectionTrack)
+            .where(DetectionTrack.cluster_id.in_(cluster_ids))
+            .values(cluster_id=None)
+        )
+        session.execute(
             update(FaceCluster)
-            .where(FaceCluster.id == cluster_id)
-            .values(status="unidentified", updated_at=dt.datetime.now(dt.timezone.utc))
+            .where(FaceCluster.merged_into_id.in_(cluster_ids))
+            .values(merged_into_id=None)
+        )
+        result = session.execute(
+            delete(FaceCluster).where(FaceCluster.id.in_(cluster_ids))
         )
         session.commit()
+    count = result.rowcount
+    _log.info("Bulk-deleted %d clusters", count)
+    return count
 
 
-async def unignore_cluster_async(cluster_id: int) -> None:
-    await asyncio.to_thread(unignore_cluster, cluster_id)
+async def delete_clusters_bulk_async(cluster_ids: list[int]) -> int:
+    return await asyncio.to_thread(delete_clusters_bulk, cluster_ids)
 
 
 def merge_clusters(surviving_id: int, absorbed_id: int) -> None:

@@ -75,7 +75,7 @@
     const [handled, setHandled] = useState(new Set() as Set<number>);
     const [linked, setLinked] = useState(0);
     const [deferred, setDeferred] = useState(0);
-    const [ignored, setIgnored] = useState(0);
+    const [deleted, setDeleted] = useState(0);
     const [searchOpenFor, setSearchOpenFor] = useState(null as number | null);
     const [hoveredPerformer, setHoveredPerformer] = useState(null as any);
     const [hoveredCluster, setHoveredCluster] = useState(null as number | null);
@@ -166,18 +166,18 @@
       setSearchOpenFor(null);
     }, []);
 
-    const handleIgnore = useCallback(async (clusterId: number) => {
+    const handleDelete = useCallback(async (clusterId: number) => {
       try {
-        const res = await fetch(`${apiBase}/faces/clusters/${clusterId}/ignore`, {
-          method: "POST",
+        const res = await fetch(`${apiBase}/faces/clusters/${clusterId}`, {
+          method: "DELETE",
         });
         if (res.ok) {
           setHandled((prev: Set<number>) => new Set([...prev, clusterId]));
-          setIgnored((prev: number) => prev + 1);
+          setDeleted((prev: number) => prev + 1);
           setSearchOpenFor(null);
         }
       } catch (e) {
-        console.error("[FaceReviewPanel] Ignore failed:", e);
+        console.error("[FaceReviewPanel] Delete failed:", e);
       }
     }, [apiBase]);
 
@@ -216,7 +216,7 @@
     // Summary bar
     const totalUnique = facesNew + priorMatched;
     const summaryText = allHandled
-      ? `${totalUnique} face${totalUnique !== 1 ? "s" : ""}: ${linked} linked, ${deferred} deferred${ignored ? `, ${ignored} ignored` : ""}`
+      ? `${totalUnique} face${totalUnique !== 1 ? "s" : ""}: ${linked} linked, ${deferred} deferred${deleted ? `, ${deleted} deleted` : ""}`
       : priorMatched > 0
         ? `Detected ${totalUnique} unique face${totalUnique !== 1 ? "s" : ""} (${facesNew} new, ${priorMatched} seen before).`
         : `Detected ${facesNew} unique face${facesNew !== 1 ? "s" : ""}.`;
@@ -456,8 +456,8 @@
                       cursor: "pointer",
                       fontSize: "12px",
                     },
-                    onClick: () => handleIgnore(c.id),
-                    title: "Mark this face as junk / bad angle and ignore it",
+                    onClick: () => handleDelete(c.id),
+                    title: "Permanently delete this face",
                   },
                   "Bad Image"
                 )

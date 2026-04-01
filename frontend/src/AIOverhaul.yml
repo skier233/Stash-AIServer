@@ -12,6 +12,7 @@ ui:
     - PerformerSearch.js
     - RatingWidget.js
     - PerformerFacesPanel.js
+    - SceneFacesPanel.js
     - FaceReviewPanel.js
     - FacesHub.js
     - AIButton.js

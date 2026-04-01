@@ -11,6 +11,7 @@ let files = [
   'src/PageContext.ts',
   'src/PerformerSearch.tsx',
   'src/PerformerFacesPanel.tsx',
+  'src/SceneFacesPanel.tsx',
   'src/RatingWidget.tsx',
   'src/InteractionTracker.ts',
   'src/RecommendationUtils.tsx',

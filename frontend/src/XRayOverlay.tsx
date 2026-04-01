@@ -110,11 +110,9 @@
   const COL = {
     performer: '#66bb6a',
     unknown: '#ffa726',
-    ignored: '#888',
   };
 
   function faceColor(f: VisibleFace): string {
-    if (f.cluster_status === 'ignored') return COL.ignored;
     if (f.performer_id) return COL.performer;
     return COL.unknown;
   }
@@ -298,7 +296,13 @@
       btn.addEventListener('mouseleave', () => { btn.style.opacity = this.active ? '1' : '0.7'; });
       btn.addEventListener('click', () => this.toggle());
 
-      bar.appendChild(btn);
+      // Insert before the fullscreen button so it sits between the gear and fullscreen
+      const fullscreenBtn = bar.querySelector('.vjs-fullscreen-control');
+      if (fullscreenBtn) {
+        bar.insertBefore(btn, fullscreenBtn);
+      } else {
+        bar.appendChild(btn);
+      }
       this.toggleBtn = btn;
       dlog('Injected X-Ray button into control bar');
     }
