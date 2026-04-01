@@ -625,12 +625,38 @@ def backfill_stashdb_matches() -> int:
 
     Iterates all clusters with ``status='unidentified'`` and
     ``stashdb_match_id IS NULL``, runs an ANN query for each against
-    the StashDB ref centroids, and stores the best match (≥ 0.60
-    similarity) on the cluster.
+    the StashDB ref centroids, and stores the best match.
+
+    Clusters whose match exceeds the ``stashdb_auto_link_threshold``
+    plugin setting are automatically linked to the matching performer
+    (or a new one is created).
 
     Returns the number of clusters that received a new match.
     """
     from stash_ai_server.models.detections import FaceCluster
+
+    # Read the auto-link threshold from plugin settings
+    auto_link_threshold = 0.70
+    min_similarity = 0.60
+    try:
+        from stash_ai_server.models.plugin import PluginSetting
+        with get_session_local()() as s:
+            row = s.execute(
+                select(PluginSetting.value, PluginSetting.default_value)
+                .where(
+                    PluginSetting.plugin_name == "skier_aitagging",
+                    PluginSetting.key == "stashdb_auto_link_threshold",
+                )
+            ).first()
+            if row:
+                raw = row[0] if row[0] is not None else row[1]
+                if raw is not None:
+                    auto_link_threshold = float(raw)
+    except Exception:
+        _log.debug("Could not read stashdb_auto_link_threshold", exc_info=True)
+    # Use the lower of the auto-link threshold and 0.60 as the minimum
+    # similarity for storing suggestions.
+    min_similarity = min(min_similarity, auto_link_threshold) if auto_link_threshold > 0 else min_similarity
 
     # Load unmatched cluster IDs + centroids in one query
     with get_session_local()() as session:
@@ -647,14 +673,14 @@ def backfill_stashdb_matches() -> int:
         return 0
 
     matched = 0
-    batch: list[tuple[int, int, float]] = []  # (cluster_id, ref_id, similarity)
+    batch: list[tuple[int, int, float, str, str]] = []  # (cluster_id, ref_id, similarity, stashdb_id, name)
 
     for cluster_id, centroid in rows:
         centroid_list = list(centroid) if not isinstance(centroid, list) else centroid
-        results = find_nearest_stashdb_ref(centroid_list, limit=1, min_similarity=0.60)
+        results = find_nearest_stashdb_ref(centroid_list, limit=1, min_similarity=min_similarity)
         if results:
-            ref_id, _stashdb_id, _name, similarity = results[0]
-            batch.append((cluster_id, ref_id, similarity))
+            ref_id, stashdb_id, name, similarity = results[0]
+            batch.append((cluster_id, ref_id, similarity, stashdb_id, name))
 
     # Apply matches in batches of 500
     if batch:
@@ -663,7 +689,7 @@ def backfill_stashdb_matches() -> int:
         for i in range(0, len(batch), 500):
             chunk = batch[i : i + 500]
             with get_session_local()() as session:
-                for cluster_id, ref_id, similarity in chunk:
+                for cluster_id, ref_id, similarity, _sid, _name in chunk:
                     session.execute(
                         sa.update(FC)
                         .where(FC.id == cluster_id)
@@ -675,7 +701,22 @@ def backfill_stashdb_matches() -> int:
                 session.commit()
             matched += len(chunk)
 
-    _log.info("StashDB backfill: matched %d cluster(s) out of %d unmatched", matched, len(rows))
+    # Auto-link clusters that exceed the threshold
+    auto_linked = 0
+    if auto_link_threshold > 0:
+        for cluster_id, ref_id, similarity, stashdb_id, name in batch:
+            if similarity >= auto_link_threshold:
+                try:
+                    from plugins.skier_aitagging.face_processor import _auto_link_cluster_to_stashdb
+                    _auto_link_cluster_to_stashdb(cluster_id, ref_id, stashdb_id, name, similarity)
+                    auto_linked += 1
+                except Exception:
+                    _log.debug("Backfill auto-link failed for cluster %d", cluster_id, exc_info=True)
+
+    _log.info(
+        "StashDB backfill: matched %d / %d unmatched cluster(s), auto-linked %d",
+        matched, len(rows), auto_linked,
+    )
     return matched
 
 

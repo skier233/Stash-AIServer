@@ -41,18 +41,22 @@
     const apiBase = getApiBase();
     const [faces, setFaces] = useState([] as any[]);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null as string | null);
 
     const fetchFaces = useCallback(async () => {
       if (!apiBase || !sceneId) return;
       setLoading(true);
+      setError(null);
       try {
         const res = await fetch(`${apiBase}/faces/scenes/${sceneId}/faces`);
         if (res.ok) {
           const data = await res.json();
           setFaces(data.faces || []);
+        } else {
+          setError(`Failed to load faces (${res.status})`);
         }
       } catch (e) {
-        console.error(LOG, "fetch failed:", e);
+        setError("Could not connect to AI backend");
       }
       setLoading(false);
     }, [apiBase, sceneId]);
@@ -65,7 +69,12 @@
         style: { color: THEME.textMuted, fontSize: "13px", padding: "8px 0" },
       }, "Loading detected faces...");
     }
-    if (faces.length === 0) return null; // Don't show section if no faces
+    if (error) {
+      return React.createElement("div", {
+        style: { color: "#c62828", fontSize: "12px", padding: "8px 0" },
+      }, error);
+    }
+    if (faces.length === 0) return null; // No faces detected — hide section
 
     return React.createElement("div", { style: { marginTop: "16px" } },
       React.createElement("h3", {
@@ -97,6 +106,7 @@
           },
             React.createElement("img", {
               src: `${apiBase}/faces/clusters/${f.id}/thumbnail?size=160&pad=0.2`,
+              alt: f.label || `Face #${f.id}`,
               style: { width: "100%", aspectRatio: "1", objectFit: "cover", display: "block" },
               loading: "lazy",
               onError: (e: any) => { e.currentTarget.style.display = "none"; },
@@ -229,18 +239,20 @@
     }
 
     renderPanel(panel, sceneId);
-    console.log(LOG, "Injected scene faces panel for scene", sceneId);
   }
 
   // ---------- Re-injection Observer ----------
 
+  let _reinjectObserver: MutationObserver | null = null;
+
   function setupReinjectObserver() {
-    const obs = new MutationObserver(() => {
+    if (_reinjectObserver) return; // already watching
+    _reinjectObserver = new MutationObserver(() => {
       if (_currentSceneId && !document.getElementById(PANEL_ID)) {
         injectPanel(_currentSceneId);
       }
     });
-    obs.observe(document.body, { childList: true, subtree: true });
+    _reinjectObserver.observe(document.body, { childList: true, subtree: true });
   }
 
   // ---------- Integration ----------
@@ -260,7 +272,6 @@
         return result;
       });
       integrated = true;
-      console.log(LOG, "Registered patch.after('ScenePage')");
     } catch (e) {
       console.warn(LOG, "patch.after('ScenePage') failed:", e);
     }
@@ -289,5 +300,4 @@
   setupReinjectObserver();
 
   w.SceneFacesPanel = SceneFacesGrid;
-  console.log(LOG, "Registered window.SceneFacesPanel");
 })();

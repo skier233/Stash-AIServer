@@ -179,12 +179,14 @@
     const apiBase = getApiBase();
     const [clusters, setClusters] = useState([] as any[]);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null as string | null);
     const [similarPerformers, setSimilarPerformers] = useState([] as any[]);
     const [similarLoading, setSimilarLoading] = useState(false);
 
     const fetchClusters = useCallback(async () => {
       if (!apiBase || !performerId) return;
       setLoading(true);
+      setError(null);
       try {
         const res = await fetch(
           `${apiBase}/faces/clusters?performer_id=${performerId}&per_page=100`
@@ -192,9 +194,11 @@
         if (res.ok) {
           const data = await res.json();
           setClusters(data.clusters || []);
+        } else {
+          setError(`Failed to load faces (${res.status})`);
         }
       } catch (e) {
-        console.error(LOG, "fetch failed:", e);
+        setError("Could not connect to AI backend");
       }
       setLoading(false);
     }, [apiBase, performerId]);
@@ -210,9 +214,7 @@
           const data = await res.json();
           setSimilarPerformers(data.matches || []);
         }
-      } catch (e) {
-        console.error(LOG, "similar fetch failed:", e);
-      }
+      } catch (_e) { /* non-critical — similar section just won't load */ }
       setSimilarLoading(false);
     }, [apiBase, performerId]);
 
@@ -228,6 +230,12 @@
       return React.createElement("div", {
         style: { color: THEME.textMuted, padding: "20px" },
       }, "Loading faces...");
+    }
+
+    if (error) {
+      return React.createElement("div", {
+        style: { color: "#c62828", padding: "20px" },
+      }, error);
     }
 
     if (clusters.length === 0) {
@@ -296,6 +304,7 @@
                   },
                     React.createElement("img", {
                       src: `/performer/${m.performer_id}/image`,
+                      alt: m.performer_name || `Performer #${m.performer_id}`,
                       style: { width: "100%", height: "100%", objectFit: "contain", display: "block" },
                       loading: "lazy",
                       onError: (e: any) => {
@@ -375,7 +384,6 @@
     if (!navBar) {
       // DOM not ready yet — retry with backoff (up to ~2 s total)
       if (attempt < 10) {
-        if (attempt === 0) console.log(LOG, "Tab bar not ready, will retry...");
         setTimeout(() => injectFacesTab(performerId, attempt + 1), 150 + attempt * 100);
       } else {
         console.warn(LOG, "Could not find performer tab nav after retries");
@@ -481,7 +489,6 @@
       childList: true,
     });
 
-    console.log(LOG, "Injected Faces tab for performer", performerId);
   }
 
   // ---------- Re-injection on React re-render ----------
@@ -489,14 +496,17 @@
   // which may remove our injected nav item.  We observe the container and
   // re-inject when our element disappears.
 
+  let _reinjectObserver: MutationObserver | null = null;
+
   function setupReinjectObserver() {
-    const bodyObs = new MutationObserver(() => {
+    if (_reinjectObserver) return; // already watching
+    _reinjectObserver = new MutationObserver(() => {
       if (_currentPid && !document.getElementById(NAV_ID)) {
         // Our nav was removed by a React re-render — re-inject
         injectFacesTab(_currentPid);
       }
     });
-    bodyObs.observe(document.body, { childList: true, subtree: true });
+    _reinjectObserver.observe(document.body, { childList: true, subtree: true });
   }
 
   // ---------- Integration: use patch.after("PerformerPage") ----------
@@ -522,7 +532,6 @@
         return result; // return original JSX unchanged
       });
       integrated = true;
-      console.log(LOG, "Registered patch.after('PerformerPage') for DOM injection");
     } catch (e) {
       console.warn(LOG, "patch.after('PerformerPage') failed:", e);
     }
@@ -530,8 +539,6 @@
 
   // Fallback: URL-based detection if patch.after is unavailable
   if (!integrated) {
-    console.log(LOG, "patch.after not available, using URL-based detection");
-
     function checkUrl() {
       const match = window.location.pathname.match(/\/performers\/(\d+)/);
       if (match) {
@@ -555,5 +562,4 @@
   setupReinjectObserver();
 
   w.PerformerFacesPanel = PerformerFacesPanel;
-  console.log(LOG, "Registered window.PerformerFacesPanel");
 })();

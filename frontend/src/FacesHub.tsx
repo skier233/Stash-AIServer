@@ -1185,7 +1185,6 @@
         const res = await fetch(`${apiBase}/faces/clusters/${clusterId}`, { cache: 'no-store' });
         if (res.ok) {
           const data = await res.json();
-          console.log("[FacesHub] fetchDetail response: exemplars=", data.exemplars?.length, "ids=", data.exemplars?.map((e: any) => e.id));
           setDetail(data);
         }
       } catch (e) {
@@ -1238,7 +1237,6 @@
         const res = await fetch(`${apiBase}/faces/clusters/${clusterId}/exemplars/${embeddingId}`, { method: "DELETE" });
         if (res.ok) {
           const data = await res.json();
-          console.log("[FacesHub] DELETE exemplar response:", JSON.stringify(data));
           const parts: string[] = [];
           if (data.removed_entities > 0) {
             parts.push(`${data.removed_entities} weak embedding(s) unassigned from this cluster`);
@@ -1254,7 +1252,6 @@
           const newToken = Date.now();
           setThumbToken(newToken);
           if (data.cluster) {
-            console.log("[FacesHub] Updating detail from DELETE response, exemplars:", data.cluster.exemplars?.length, data.cluster.exemplars?.map((e: any) => e.id));
             setDetail(data.cluster);
           } else {
             // Fallback: re-fetch if server didn't include cluster detail
@@ -2699,5 +2696,4 @@
   // ---------- Register ----------
 
   w.FacesHub = FacesHub;
-  console.log("[FacesHub] Registered window.FacesHub");
 })();

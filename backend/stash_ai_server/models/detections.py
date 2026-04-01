@@ -40,6 +40,8 @@ class DetectionTrack(Base):
         sa.ForeignKey("face_clusters.id", ondelete="SET NULL"), nullable=True,
     )
     keyframes: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
+    # Reserved for plugin-specific track metadata (e.g. source info).
+    # Written by detection_store.store_detection_track(); may be None.
     metadata_: Mapped[dict | None] = mapped_column("metadata", sa.JSON, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(
         sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()"),
@@ -81,6 +83,10 @@ class FaceCluster(Base):
         sa.Integer, nullable=False, server_default="0",
     )
     quality_score: Mapped[float | None] = mapped_column(sa.REAL, nullable=True)
+    # Audit trail: when cluster B is merged into cluster A, B's
+    # ``merged_into_id`` is set to A and B's status becomes
+    # ``merged_away``.  This allows tracing merge history but is
+    # NOT used for runtime lookups (status filtering is sufficient).
     merged_into_id: Mapped[int | None] = mapped_column(
         sa.ForeignKey("face_clusters.id", ondelete="SET NULL"), nullable=True,
     )
