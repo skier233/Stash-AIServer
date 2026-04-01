@@ -2,16 +2,30 @@
 
 These tests exercise the pure-logic functions without needing a running database.
 Database-touching functions are mocked.
+
+The skier_aitagging plugin lives in an external registry repo and may not be
+present in every checkout.  All tests in this module are skipped when the
+plugin is unavailable.
 """
 from __future__ import annotations
 
 import math
+import sys
+import pathlib
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 
-from plugins.skier_aitagging.face_processor import (
+# Ensure the plugins directory is importable
+_plugins_dir = pathlib.Path(__file__).resolve().parents[1] / "plugins"
+if str(_plugins_dir) not in sys.path:
+    sys.path.insert(0, str(_plugins_dir))
+
+# Skip the entire module when the plugin is not installed / checked-out
+pytest.importorskip("skier_aitagging", reason="skier_aitagging plugin not available")
+
+from plugins.skier_aitagging.face_processor import (  # noqa: E402
     _iou,
     _l2_normalise,
     build_tracks,
@@ -19,7 +33,7 @@ from plugins.skier_aitagging.face_processor import (
     select_representative_embeddings,
     has_embedding_capability,
 )
-from plugins.skier_aitagging.models import (
+from plugins.skier_aitagging.models import (  # noqa: E402
     Detection,
     FrameEmbedding,
     ParsedFrameData,

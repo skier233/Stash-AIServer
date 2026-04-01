@@ -2,6 +2,10 @@
 
 Validates classification of dynamic API keys, normalised parsing of image
 and video results, and edge-case resilience.
+
+The skier_aitagging plugin lives in an external registry repo and may not be
+present in every checkout.  All tests in this module are skipped when the
+plugin is unavailable.
 """
 
 from __future__ import annotations
@@ -17,7 +21,10 @@ _plugins_dir = pathlib.Path(__file__).resolve().parents[1] / "plugins"
 if str(_plugins_dir) not in sys.path:
     sys.path.insert(0, str(_plugins_dir))
 
-from skier_aitagging.response_parser import (  # type: ignore[import-untyped]
+# Skip the entire module when the plugin is not installed / checked-out
+pytest.importorskip("skier_aitagging", reason="skier_aitagging plugin not available")
+
+from skier_aitagging.response_parser import (  # type: ignore[import-untyped]  # noqa: E402
     build_category_classifier,
     count_detections,
     count_regions,
@@ -28,7 +35,7 @@ from skier_aitagging.response_parser import (  # type: ignore[import-untyped]
     parse_video_frames,
     parse_video_result,
 )
-from skier_aitagging.models import (  # type: ignore[import-untyped]
+from skier_aitagging.models import (  # type: ignore[import-untyped]  # noqa: E402
     AIModelInfo,
     Detection,
     EmbeddingResult,
