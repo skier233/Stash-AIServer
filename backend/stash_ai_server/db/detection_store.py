@@ -438,8 +438,29 @@ def merge_clusters(surviving_id: int, absorbed_id: int) -> None:
     Re-parents all embeddings **and detection tracks** to the surviving
     cluster, marks the absorbed cluster as ``merged_away``, and recomputes
     the surviving cluster's centroid.
+
+    If the surviving cluster has no performer link but the absorbed cluster
+    does, the performer link (and label) are transferred to the survivor so
+    that merging into a linked face doesn't silently lose the association.
     """
     with get_session_local()() as session:
+        # Read both clusters so we can decide whether to transfer a link
+        surviving = session.get(FaceCluster, surviving_id)
+        absorbed = session.get(FaceCluster, absorbed_id)
+
+        # Transfer performer link when the survivor has none but absorbed does
+        if surviving and absorbed:
+            if not surviving.performer_id and absorbed.performer_id:
+                surviving.performer_id = absorbed.performer_id
+                surviving.label = absorbed.label
+                surviving.status = "identified"
+                _log.info(
+                    "merge_clusters: transferred performer_id=%s label=%r from "
+                    "absorbed cluster %d to surviving cluster %d",
+                    absorbed.performer_id, absorbed.label,
+                    absorbed_id, surviving_id,
+                )
+
         # Re-parent embeddings
         session.execute(
             update(FaceEmbedding)

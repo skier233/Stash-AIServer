@@ -323,26 +323,33 @@
             { style: { textAlign: "center", flexShrink: 0 } },
             selectedPerformer
               ? React.createElement(React.Fragment, null,
-                  React.createElement("img", {
-                    src: getPerformerImageUrl(
-                      selectedPerformer.stashdb_image_url
-                      || selectedPerformer.performer_image || selectedPerformer.image_path
-                      || (selectedPerformer.stashdb_match?.image_url)
-                      || ""
-                    ),
-                    style: { width: 150, height: 150, borderRadius: "8px", objectFit: "contain", background: THEME.bg, border: `2px solid ${THEME.borderAccent}` },
-                    onError: (e: any) => {
-                      // Replace broken image with a placeholder div
-                      const el = e.target as HTMLImageElement;
-                      const parent = el.parentElement;
-                      if (parent) {
-                        const ph = document.createElement("div");
-                        ph.style.cssText = `width:150px;height:150px;border-radius:8px;background:${THEME.border};display:flex;align-items:center;justify-content:center;color:${THEME.textMuted};font-size:11px;border:2px solid ${THEME.borderAccent}`;
-                        ph.textContent = "No image available";
-                        parent.replaceChild(ph, el);
-                      }
-                    },
-                  }),
+                  (() => {
+                    const stashdbUrl = selectedPerformer.stashdb_match?.source_endpoint && selectedPerformer.stashdb_match?.stashdb_id
+                      ? selectedPerformer.stashdb_match.source_endpoint.replace(/\/graphql\/?$/, "") + "/performers/" + selectedPerformer.stashdb_match.stashdb_id
+                      : null;
+                    const imgEl = React.createElement("img", {
+                      src: getPerformerImageUrl(
+                        selectedPerformer.stashdb_image_url
+                        || selectedPerformer.performer_image || selectedPerformer.image_path
+                        || (selectedPerformer.stashdb_match?.image_url)
+                        || ""
+                      ),
+                      style: { width: 150, height: 150, borderRadius: "8px", objectFit: "contain", background: THEME.bg, border: `2px solid ${THEME.borderAccent}`, cursor: stashdbUrl ? "pointer" : "default" },
+                      onError: (e: any) => {
+                        const el = e.target as HTMLImageElement;
+                        const parent = el.parentElement;
+                        if (parent) {
+                          const ph = document.createElement("div");
+                          ph.style.cssText = `width:150px;height:150px;border-radius:8px;background:${THEME.border};display:flex;align-items:center;justify-content:center;color:${THEME.textMuted};font-size:11px;border:2px solid ${THEME.borderAccent}`;
+                          ph.textContent = "No image available";
+                          parent.replaceChild(ph, el);
+                        }
+                      },
+                    });
+                    return stashdbUrl
+                      ? React.createElement("a", { href: stashdbUrl, target: "_blank", rel: "noopener noreferrer" }, imgEl)
+                      : imgEl;
+                  })(),
                 )
               : React.createElement("div", {
                   style: {
@@ -1142,12 +1149,6 @@
                       }, "Unlink performer")
                     : null,
                   React.createElement("div", {
-                        style: { padding: "6px 12px", color: THEME.text, cursor: "pointer", fontSize: "12px" },
-                        onClick: () => { setMenuOpen(false); onAction("merge", cluster); },
-                        onMouseEnter: (e: any) => { e.target.style.background = THEME.bgHover; },
-                        onMouseLeave: (e: any) => { e.target.style.background = "transparent"; },
-                      }, "Merge with..."),
-                  React.createElement("div", {
                         style: { padding: "6px 12px", color: THEME.danger, cursor: "pointer", fontSize: "12px" },
                         onClick: () => { setMenuOpen(false); onAction("delete", cluster); },
                         onMouseEnter: (e: any) => { e.target.style.background = THEME.bgHover; },
@@ -1178,6 +1179,7 @@
     const [similarFaces, setSimilarFaces] = useState([] as any[]);
     const [similarLoading, setSimilarLoading] = useState(false);
     const [mergingId, setMergingId] = useState(null as number | null);
+    const [deletingId, setDeletingId] = useState(null as number | null);
 
     const fetchDetail = useCallback(async () => {
       setLoading(true);
@@ -1229,6 +1231,18 @@
       }
       setMergingId(null);
     }, [apiBase, clusterId, fetchDetail, fetchSimilar]);
+
+    const handleDeleteSimilar = useCallback(async (targetId: number) => {
+      if (!confirm(`Permanently delete face #${targetId}? This cannot be undone.`)) return;
+      setDeletingId(targetId);
+      try {
+        await fetch(`${apiBase}/faces/clusters/${targetId}`, { method: "DELETE" });
+        await fetchSimilar();
+      } catch (e) {
+        console.error("[FacesHub] Delete similar failed:", e);
+      }
+      setDeletingId(null);
+    }, [apiBase, fetchSimilar]);
 
     const handleRemoveExemplar = useCallback(async (embeddingId: number) => {
       if (!confirm("Remove this face from the cluster's exemplars?\n\nThe cluster will be recalculated and images that no longer match may be unassigned.")) return;
@@ -1371,22 +1385,38 @@
               }, `${Math.round((detail.stashdb_match.similarity || 0) * 100)}% confidence`)
             ),
             React.createElement("div", { style: { display: "flex", gap: "24px", flexWrap: "wrap", fontSize: "13px", marginBottom: "12px" } },
-              // StashDB performer image (if available)
+              // StashDB performer image (if available) — clickable to StashDB page
               detail.stashdb_match.image_url || detail.stashdb_match.local_performer_id
-                ? React.createElement("img", {
-                    src: detail.stashdb_match.image_url || `/performer/${detail.stashdb_match.local_performer_id}/image`,
-                    style: {
-                      width: 80, height: 80, borderRadius: "6px", objectFit: "contain", background: THEME.bg,
-                      border: "2px solid #42a5f544", flexShrink: 0,
-                    },
-                    loading: "lazy",
-                    onError: (e: any) => { e.target.style.display = "none"; },
-                  })
+                ? React.createElement("a", {
+                    href: detail.stashdb_match.source_endpoint && detail.stashdb_match.stashdb_id
+                      ? detail.stashdb_match.source_endpoint.replace(/\/graphql\/?$/, "") + "/performers/" + detail.stashdb_match.stashdb_id
+                      : undefined,
+                    target: "_blank",
+                    rel: "noopener noreferrer",
+                    style: { display: "block", flexShrink: 0 },
+                  },
+                    React.createElement("img", {
+                      src: detail.stashdb_match.image_url || `/performer/${detail.stashdb_match.local_performer_id}/image`,
+                      style: {
+                        width: 80, height: 80, borderRadius: "6px", objectFit: "contain", background: THEME.bg,
+                        border: "2px solid #42a5f544", cursor: "pointer",
+                      },
+                      loading: "lazy",
+                      onError: (e: any) => { e.target.style.display = "none"; },
+                    })
+                  )
                 : null,
               React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: "4px" } },
                 React.createElement("div", null,
                   React.createElement("span", { style: { color: THEME.textMuted } }, "Name: "),
-                  React.createElement("strong", null, detail.stashdb_match.name || "Unknown"),
+                  detail.stashdb_match.source_endpoint && detail.stashdb_match.stashdb_id
+                    ? React.createElement("a", {
+                        href: detail.stashdb_match.source_endpoint.replace(/\/graphql\/?$/, "") + "/performers/" + detail.stashdb_match.stashdb_id,
+                        target: "_blank",
+                        rel: "noopener noreferrer",
+                        style: { color: THEME.accent, textDecoration: "none", fontWeight: 700 },
+                      }, detail.stashdb_match.name || "Unknown")
+                    : React.createElement("strong", null, detail.stashdb_match.name || "Unknown"),
                   detail.stashdb_match.disambiguation
                     ? React.createElement("span", { style: { color: THEME.textMuted, marginLeft: "4px" } }, `(${detail.stashdb_match.disambiguation})`)
                     : null
@@ -1612,7 +1642,7 @@
                     loading: "lazy",
                     onError: (ev: any) => { ev.target.style.display = "none"; },
                   }),
-                  React.createElement("span", null, `Scene #${e.entity_id}`)
+                  React.createElement("span", null, e.title || `Scene #${e.entity_id}`)
                 )
               )
             )
@@ -1720,7 +1750,19 @@
                       },
                       disabled: isMerging,
                       onClick: () => handleMergeSimilar(m.id),
-                    }, isMerging ? "Merging..." : "\u2B07 Merge into this")
+                    }, isMerging ? "Merging..." : "\u2B07 Merge into this"),
+                    // Delete button
+                    React.createElement("button", {
+                      style: {
+                        marginTop: "3px", width: "100%", padding: "4px 0",
+                        background: "transparent", color: THEME.danger,
+                        border: `1px solid ${THEME.danger}33`, borderRadius: "4px",
+                        cursor: deletingId === m.id ? "wait" : "pointer", fontSize: "11px",
+                        opacity: deletingId === m.id ? 0.5 : 1,
+                      },
+                      disabled: deletingId === m.id,
+                      onClick: () => handleDeleteSimilar(m.id),
+                    }, deletingId === m.id ? "Deleting..." : "\u2715 Delete")
                   )
                 );
               })
@@ -1744,6 +1786,8 @@
     const [refsSearchInput, setRefsSearchInput] = useState("");
     const refsPerPage = 20;
     const fileInputRef = useRef(null as HTMLInputElement | null);
+    const [faceSettings, setFaceSettings] = useState(null as any);
+    const [faceSettingsSaving, setFaceSettingsSaving] = useState(false);
 
     const fetchStats = useCallback(async () => {
       try {
@@ -1776,6 +1820,29 @@
 
     useEffect(() => { fetchStats(); fetchPacks(); }, [fetchStats, fetchPacks]);
     useEffect(() => { fetchRefs(); }, [fetchRefs]);
+
+    const fetchFaceSettings = useCallback(async () => {
+      try {
+        const res = await fetch(`${apiBase}/faces/settings`);
+        if (res.ok) setFaceSettings(await res.json());
+      } catch (e) { console.error("[StashDB] Failed to fetch face settings:", e); }
+    }, [apiBase]);
+    useEffect(() => { fetchFaceSettings(); }, [fetchFaceSettings]);
+
+    const saveFaceSetting = useCallback(async (key: string, value: any) => {
+      setFaceSettingsSaving(true);
+      try {
+        const res = await fetch(`${apiBase}/faces/settings`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ [key]: value }),
+        });
+        if (res.ok) {
+          setFaceSettings((prev: any) => ({ ...prev, [key]: value }));
+        }
+      } catch (e) { console.error("[StashDB] Failed to save face setting:", e); }
+      setFaceSettingsSaving(false);
+    }, [apiBase]);
 
     const handleUpload = useCallback(async (file: File) => {
       setUploading(true);
@@ -1897,6 +1964,47 @@
                   React.createElement("strong", null, stats.embedders.join(", "))
                 )
               : null
+          )
+        : null,
+      // Auto-link settings
+      faceSettings
+        ? React.createElement("div", {
+            style: {
+              marginBottom: "20px", padding: "16px", borderRadius: "8px",
+              background: THEME.bgCard, border: `1px solid ${THEME.border}`,
+            },
+          },
+            React.createElement("h3", { style: { margin: "0 0 12px 0", fontSize: "15px", fontWeight: 600 } }, "Auto-Link Settings"),
+            React.createElement("label", {
+              style: { display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", color: THEME.text, cursor: "pointer", marginBottom: "8px" },
+            },
+              React.createElement("input", {
+                type: "checkbox",
+                checked: !!faceSettings.stashdb_auto_link_enabled,
+                disabled: faceSettingsSaving,
+                onChange: (e: any) => saveFaceSetting("stashdb_auto_link_enabled", e.target.checked),
+                style: { width: "15px", height: "15px", accentColor: THEME.accent },
+              }),
+              "Enable StashDB auto-link",
+              React.createElement("span", { style: { color: THEME.textMuted, fontSize: "11px" } },
+                "(automatically match faces to StashDB performers)"
+              )
+            ),
+            React.createElement("label", {
+              style: { display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", color: THEME.text, cursor: "pointer", marginBottom: "8px" },
+            },
+              React.createElement("input", {
+                type: "checkbox",
+                checked: !!faceSettings.stashdb_auto_create_performers,
+                disabled: faceSettingsSaving || !faceSettings.stashdb_auto_link_enabled,
+                onChange: (e: any) => saveFaceSetting("stashdb_auto_create_performers", e.target.checked),
+                style: { width: "15px", height: "15px", accentColor: THEME.accent },
+              }),
+              "Auto-create performers",
+              React.createElement("span", { style: { color: THEME.textMuted, fontSize: "11px" } },
+                "(create new performers in Stash when no local match exists)"
+              )
+            )
           )
         : null,
       // Upload section
@@ -2041,7 +2149,14 @@
                   background: THEME.bgCard, border: `1px solid ${THEME.border}`, fontSize: "13px",
                 },
               },
-                React.createElement("span", { style: { fontWeight: 600, minWidth: "140px" } }, r.name || "Unknown"),
+                r.source_endpoint && r.stashdb_id
+                  ? React.createElement("a", {
+                      href: r.source_endpoint.replace(/\/graphql\/?$/, "") + "/performers/" + r.stashdb_id,
+                      target: "_blank",
+                      rel: "noopener noreferrer",
+                      style: { fontWeight: 600, minWidth: "140px", color: THEME.accent, textDecoration: "none" },
+                    }, r.name || "Unknown")
+                  : React.createElement("span", { style: { fontWeight: 600, minWidth: "140px" } }, r.name || "Unknown"),
                 r.disambiguation
                   ? React.createElement("span", { style: { color: THEME.textMuted, fontSize: "11px" } }, `(${r.disambiguation})`)
                   : null,
@@ -2122,6 +2237,7 @@
     });
     const [colCount, setColCount] = useState(0);
     const wrapperRef = useRef(null as any);
+    const zoomDragging = useRef(false);
     const ZOOM_WIDTHS = [120, 150, 180, 230, 300, 380];
     const perPage = rowsPerPage * Math.max(1, colCount);
 
@@ -2150,7 +2266,7 @@
       const ro = new ResizeObserver(compute);
       ro.observe(el);
       return () => { ro.disconnect(); cancelAnimationFrame(raf); clearInterval(iv); };
-    }, [zoomIndex]);
+    }, [zoomIndex, selectedClusterId]);
     const [sortBy, setSortBy] = useState("suggestion_confidence");
     const [sortDir, setSortDir] = useState("desc");
     const [searchText, setSearchText] = useState("");
@@ -2183,7 +2299,7 @@
       if (!controller.signal.aborted) setLoading(false);
     }, [apiBase, page, filter, perPage, sortBy, sortDir, searchText]);
 
-    useEffect(() => { if (colCount > 0) fetchClusters(); }, [fetchClusters, colCount]);
+    useEffect(() => { if (colCount > 0 && !zoomDragging.current) fetchClusters(); }, [fetchClusters, colCount]);
 
     // Parse URL params for initial filter
     useEffect(() => {
@@ -2550,7 +2666,37 @@
                       fetchClusters();
                       setBulkBusy(false);
                     },
-                  }, "Delete selected")
+                  }, "Delete selected"),
+                  selectedIds.size >= 2
+                    ? React.createElement("button", {
+                        style: {
+                          padding: "6px 14px", background: "transparent", color: THEME.warning,
+                          border: `1px solid ${THEME.warning}44`, borderRadius: "4px",
+                          cursor: bulkBusy ? "not-allowed" : "pointer",
+                          fontSize: "12px", opacity: bulkBusy ? 0.6 : 1,
+                        },
+                        disabled: bulkBusy,
+                        onClick: async () => {
+                          if (!confirm(`Merge ${selectedIds.size} faces into the largest cluster?`)) return;
+                          setBulkBusy(true);
+                          try {
+                            const res = await fetch(`${apiBase}/faces/clusters/bulk-merge`, {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ cluster_ids: Array.from(selectedIds) }),
+                            });
+                            if (!res.ok) {
+                              setBulkResult({ error: await res.text() });
+                            }
+                          } catch (e: any) {
+                            setBulkResult({ error: e.message });
+                          }
+                          setSelectedIds(new Set());
+                          fetchClusters();
+                          setBulkBusy(false);
+                        },
+                      }, bulkBusy ? "Merging..." : "Merge selected")
+                    : null
                 )
               : null,
             // Bulk result banner
@@ -2655,10 +2801,14 @@
                 React.createElement("option", { key: n, value: n }, `${n} rows`)
               )
             ),
-            // Zoom slider
+            // Zoom slider — commit only on release to avoid re-fetches during drag
             React.createElement("input", {
               type: "range", min: 0, max: 5, value: zoomIndex,
-              onChange: (e: any) => { setZoomIndex(Number(e.target.value)); setPage(1); },
+              onMouseDown: () => { zoomDragging.current = true; },
+              onTouchStart: () => { zoomDragging.current = true; },
+              onChange: (e: any) => { setZoomIndex(Number(e.target.value)); },
+              onMouseUp: () => { zoomDragging.current = false; setPage(1); },
+              onTouchEnd: () => { zoomDragging.current = false; setPage(1); },
               style: { width: "60px", marginLeft: "12px", cursor: "pointer" },
             })
           )
