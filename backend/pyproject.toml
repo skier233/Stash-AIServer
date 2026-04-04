@@ -27,7 +27,8 @@ dependencies = [
   "PyYAML==6.0.3",
   "packaging==25.0",
   "opencv-python-headless==4.13.0.92",
-  "python-multipart==0.0.21"
+  "python-multipart==0.0.21",
+  "pillow==12.1.1"
 ]
 
 [project.optional-dependencies]

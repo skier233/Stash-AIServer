@@ -15,3 +15,4 @@ PyYAML==6.0.3
 packaging==25.0
 stash-ai-server
 python-multipart==0.0.21
+pillow==12.1.1
