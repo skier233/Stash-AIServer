@@ -1823,8 +1823,23 @@
 
     const fetchFaceSettings = useCallback(async () => {
       try {
-        const res = await fetch(`${apiBase}/faces/settings`);
-        if (res.ok) setFaceSettings(await res.json());
+        const settingsUrl = apiBase.replace("/api/v1/plugins/skier_aitagging", "/api/v1/plugins/settings/skier_aitagging");
+        const res = await fetch(settingsUrl);
+        if (res.ok) {
+          const arr = await res.json();
+          const dict: any = {};
+          for (const item of (Array.isArray(arr) ? arr : [])) {
+            const raw = item.value ?? item.default;
+            if (item.type === "boolean") {
+              dict[item.key] = ["1", "true", "yes", "on"].includes(String(raw ?? "").trim().toLowerCase());
+            } else if (item.type === "number") {
+              dict[item.key] = parseFloat(raw);
+            } else {
+              dict[item.key] = raw;
+            }
+          }
+          setFaceSettings(dict);
+        }
       } catch (e) { console.error("[StashDB] Failed to fetch face settings:", e); }
     }, [apiBase]);
     useEffect(() => { fetchFaceSettings(); }, [fetchFaceSettings]);
@@ -1832,10 +1847,11 @@
     const saveFaceSetting = useCallback(async (key: string, value: any) => {
       setFaceSettingsSaving(true);
       try {
-        const res = await fetch(`${apiBase}/faces/settings`, {
+        const settingsUrl = `${apiBase.replace("/api/v1/plugins/skier_aitagging", "/api/v1/plugins/settings/skier_aitagging")}/${encodeURIComponent(key)}`;
+        const res = await fetch(settingsUrl, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ [key]: value }),
+          body: JSON.stringify({ value }),
         });
         if (res.ok) {
           setFaceSettings((prev: any) => ({ ...prev, [key]: value }));

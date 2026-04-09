@@ -836,6 +836,9 @@ def try_add_exemplar(
     score: float,
     max_exemplars: int = 10,
     dedup_threshold: float = 0.85,
+    entity_type: str | None = None,
+    entity_id: int | None = None,
+    max_per_entity: int = 4,
 ) -> bool:
     """Decide whether a new embedding should become an exemplar.
 
@@ -845,7 +848,10 @@ def try_add_exemplar(
     1. If the embedding is too similar (cosine >= dedup_threshold) to any
        existing exemplar, reject it.
     2. If adding it would exceed max_exemplars, evict the lowest-quality
-       exemplar only if the new one is strictly better.
+       exemplar — preferring to evict from the most over-represented
+       entity so exemplars are distributed across different scenes/images.
+    3. If the new embedding's entity already has *max_per_entity* exemplars,
+       only accept it if it beats the worst exemplar from that same entity.
     """
     existing = get_cluster_exemplars(cluster_id, session=session)
 
@@ -867,30 +873,71 @@ def try_add_exemplar(
     if len(existing) < max_exemplars:
         return True  # Room available
 
-    # Find worst existing exemplar
-    worst = min(existing, key=lambda e: (e.score, e.norm))
+    # --- Entity-aware eviction ---
     new_quality = (score, norm)
-    worst_quality = (worst.score, worst.norm)
 
-    if new_quality > worst_quality:
-        # Evict worst
-        session.execute(
-            update(FaceEmbedding)
-            .where(FaceEmbedding.id == worst.id)
-            .values(is_exemplar=False)
-        )
-        session.flush()
-        return True
+    # Build per-entity counts
+    entity_counts: dict[tuple[str, int], list[FaceEmbedding]] = {}
+    for ex in existing:
+        key = (ex.entity_type, ex.entity_id)
+        entity_counts.setdefault(key, []).append(ex)
 
-    return False  # New embedding isn't better than the worst exemplar
+    new_key = (entity_type, entity_id) if entity_type and entity_id else None
+
+    # If the new embedding's entity already has max_per_entity exemplars,
+    # only accept if it beats the worst from *that* entity.
+    if new_key and new_key in entity_counts:
+        same_entity = entity_counts[new_key]
+        if len(same_entity) >= max_per_entity:
+            worst_same = min(same_entity, key=lambda e: (e.score, e.norm))
+            if new_quality <= (worst_same.score, worst_same.norm):
+                return False
+            # Evict worst from same over-represented entity
+            session.execute(
+                update(FaceEmbedding)
+                .where(FaceEmbedding.id == worst_same.id)
+                .values(is_exemplar=False)
+            )
+            session.flush()
+            return True
+
+    # Find the most over-represented entity and evict its worst member,
+    # but only if the new embedding is better than the global worst.
+    worst_global = min(existing, key=lambda e: (e.score, e.norm))
+    if new_quality <= (worst_global.score, worst_global.norm):
+        return False
+
+    # Prefer evicting from the entity with the most exemplars
+    most_represented_key = max(entity_counts, key=lambda k: len(entity_counts[k]))
+    most_represented = entity_counts[most_represented_key]
+    if len(most_represented) > 1:
+        # Evict worst from the over-represented entity
+        evict = min(most_represented, key=lambda e: (e.score, e.norm))
+    else:
+        # All entities have exactly 1 exemplar — fall back to global worst
+        evict = worst_global
+
+    session.execute(
+        update(FaceEmbedding)
+        .where(FaceEmbedding.id == evict.id)
+        .values(is_exemplar=False)
+    )
+    session.flush()
+    return True
 
 
 def _recompute_exemplars(cluster_id: int) -> None:
     """After a merge, re-select the best exemplar set for a cluster.
 
     Keeps at most 10 exemplars, chosen greedily by quality with
-    dedup filtering.
+    dedup filtering **and entity-level diversity**.  A soft cap limits
+    how many exemplars can come from a single (entity_type, entity_id)
+    so thumbnails are distributed across different scenes/images.
     """
+    max_exemplars = 10
+    dedup_threshold = 0.85
+    hard_max_per_entity = 4  # absolute ceiling per entity
+
     with get_session_local()() as session:
         # First, clear all exemplar flags
         session.execute(
@@ -909,12 +956,50 @@ def _recompute_exemplars(cluster_id: int) -> None:
             ).scalars().all()
         )
 
+        if not all_embs:
+            session.commit()
+            return
+
+        # Compute a dynamic per-entity cap based on how many unique entities
+        # contributed embeddings.  E.g. 10 entities → 1-2 each, 2 entities → 4 each.
+        unique_entities = {(e.entity_type, e.entity_id) for e in all_embs}
+        dynamic_cap = max(2, -(-max_exemplars // len(unique_entities)))  # ceil div
+        per_entity_cap = min(dynamic_cap, hard_max_per_entity)
+
         selected_ids: list[int] = []
         selected_vecs: list[np.ndarray] = []
-        max_exemplars = 10
-        dedup_threshold = 0.85
+        entity_counts: dict[tuple[str, int], int] = {}
+        deferred: list[FaceEmbedding] = []
 
+        # Pass 1: greedily pick from quality-ordered list, respecting
+        # per-entity cap and dedup threshold.
         for emb in all_embs:
+            if len(selected_ids) >= max_exemplars:
+                break
+            ekey = (emb.entity_type, emb.entity_id)
+
+            vec = np.array(emb.embedding, dtype=np.float32)
+            vec_norm = np.linalg.norm(vec)
+            if vec_norm > 0:
+                vec = vec / vec_norm
+
+            too_similar = any(
+                float(np.dot(vec, sv)) >= dedup_threshold for sv in selected_vecs
+            )
+            if too_similar:
+                continue
+
+            if entity_counts.get(ekey, 0) >= per_entity_cap:
+                deferred.append(emb)  # save for pass 2
+                continue
+
+            selected_ids.append(emb.id)
+            selected_vecs.append(vec)
+            entity_counts[ekey] = entity_counts.get(ekey, 0) + 1
+
+        # Pass 2: if we still have slots, fill from deferred (over-represented
+        # entities).  This ensures we reach max_exemplars when possible.
+        for emb in deferred:
             if len(selected_ids) >= max_exemplars:
                 break
             vec = np.array(emb.embedding, dtype=np.float32)
@@ -922,11 +1007,9 @@ def _recompute_exemplars(cluster_id: int) -> None:
             if vec_norm > 0:
                 vec = vec / vec_norm
 
-            too_similar = False
-            for sv in selected_vecs:
-                if float(np.dot(vec, sv)) >= dedup_threshold:
-                    too_similar = True
-                    break
+            too_similar = any(
+                float(np.dot(vec, sv)) >= dedup_threshold for sv in selected_vecs
+            )
             if too_similar:
                 continue
 
@@ -950,9 +1033,12 @@ def remove_exemplar_from_cluster(
 ) -> dict:
     """Remove an exemplar embedding from a cluster and recompute state.
 
+    Everything runs in a **single** session/transaction to avoid pool
+    thrashing and race conditions when the user rapidly deletes exemplars.
+
     Steps:
       1. Detach the embedding (set cluster_id=NULL, is_exemplar=False).
-      2. Recompute centroid from remaining exemplars.
+      2. Recompute centroid from remaining exemplars (inline).
       3. Re-check all non-exemplar embeddings: unassign any whose cosine
          similarity to the new centroid drops below *auto_threshold*.
 
@@ -973,30 +1059,107 @@ def remove_exemplar_from_cluster(
             .where(FaceEmbedding.id == embedding_id)
             .values(cluster_id=None, is_exemplar=False)
         )
-        session.commit()
+        session.flush()
         _log.info(
             "Detached embedding %d from cluster %d (cluster_id→NULL, is_exemplar→False)",
             embedding_id, cluster_id,
         )
 
-    # 2. Recompute centroid from remaining exemplars.
-    #    NOTE: We intentionally do NOT call _recompute_exemplars() here.
-    #    When a user explicitly removes an exemplar, the remaining exemplars
-    #    are still valid — re-selecting would backfill the vacated slot with
-    #    another embedding, making it look like the face "came back".
-    update_cluster_centroid(cluster_id)
+        # 2. Recompute centroid from remaining exemplars (inline, same session).
+        exemplar_rows = session.execute(
+            select(FaceEmbedding.embedding)
+            .where(
+                FaceEmbedding.cluster_id == cluster_id,
+                FaceEmbedding.is_exemplar.is_(True),
+            )
+        ).all()
 
-    # 3. Re-check non-exemplar embeddings against new centroid
-    removed_count = _prune_weak_embeddings(cluster_id, auto_threshold)
+        if not exemplar_rows:
+            session.execute(
+                update(FaceCluster)
+                .where(FaceCluster.id == cluster_id)
+                .values(centroid=None, sample_count=0, quality_score=None,
+                        updated_at=dt.datetime.now(dt.timezone.utc))
+            )
+            session.commit()
+            return {"removed_entities": 0, "remaining_exemplars": 0}
 
-    # Count remaining exemplars
-    remaining_embs = get_cluster_embeddings(cluster_id, exemplars_only=True)
+        vectors = [np.array(row[0], dtype=np.float32) for row in exemplar_rows]
+        mean_vec = np.mean(vectors, axis=0)
+        norm = np.linalg.norm(mean_vec)
+        if norm > 0:
+            mean_vec = mean_vec / norm
+
+        stats_row = session.execute(
+            select(
+                func.avg(FaceEmbedding.norm),
+                func.avg(FaceEmbedding.score),
+            )
+            .where(FaceEmbedding.cluster_id == cluster_id)
+        ).one()
+        mean_emb_norm = float(stats_row[0] or 0.0)
+        mean_det_score = float(stats_row[1] or 0.0)
+        quality = _compute_quality_score(len(vectors), mean_emb_norm, mean_det_score)
+
+        session.execute(
+            update(FaceCluster)
+            .where(FaceCluster.id == cluster_id)
+            .values(
+                centroid=mean_vec.tolist(),
+                sample_count=len(vectors),
+                quality_score=quality,
+                updated_at=dt.datetime.now(dt.timezone.utc),
+            )
+        )
+
+        # 3. Prune non-exemplar embeddings below threshold (inline).
+        centroid = mean_vec  # already L2-normalised above
+        non_exemplars = list(
+            session.execute(
+                select(FaceEmbedding)
+                .where(
+                    FaceEmbedding.cluster_id == cluster_id,
+                    FaceEmbedding.is_exemplar.is_(False),
+                )
+            ).scalars().all()
+        )
+        to_remove: list[int] = []
+        for ne in non_exemplars:
+            vec = np.array(ne.embedding, dtype=np.float32)
+            v_norm = np.linalg.norm(vec)
+            if v_norm > 0:
+                vec = vec / v_norm
+            sim = float(np.dot(centroid, vec))
+            if sim < auto_threshold:
+                to_remove.append(ne.id)
+        if to_remove:
+            session.execute(
+                update(FaceEmbedding)
+                .where(FaceEmbedding.id.in_(to_remove))
+                .values(cluster_id=None)
+            )
+            _log.info(
+                "Pruned %d weak embeddings from cluster %d (threshold=%.2f)",
+                len(to_remove), cluster_id, auto_threshold,
+            )
+
+        session.commit()
+
+        # Count remaining exemplars (still in same session after commit)
+        remaining_count = session.execute(
+            select(func.count())
+            .where(
+                FaceEmbedding.cluster_id == cluster_id,
+                FaceEmbedding.is_exemplar.is_(True),
+            )
+        ).scalar() or 0
+
     _log.info(
-        "remove_exemplar_from_cluster done: cluster=%d, remaining_exemplars=%d ids=%s, pruned=%d",
-        cluster_id, len(remaining_embs), [e.id for e in remaining_embs], removed_count,
+        "remove_exemplar_from_cluster done: cluster=%d, remaining_exemplars=%d, pruned=%d",
+        cluster_id, remaining_count, len(to_remove),
     )
 
-    return {"removed_entities": removed_count, "remaining_exemplars": len(remaining_embs)}
+    return {"removed_entities": len(to_remove), "remaining_exemplars": remaining_count}
 
 
 async def remove_exemplar_from_cluster_async(
