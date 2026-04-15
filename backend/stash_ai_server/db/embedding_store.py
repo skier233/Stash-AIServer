@@ -245,11 +245,9 @@ def find_similar_entities(
 
     Returns results sorted by ascending distance (most similar first).
     """
-    vec_str = "[" + ",".join(str(float(v)) for v in query_vector) + "]"
-
     with get_session_local()() as session:
         # pgvector cosine distance operator: <=>
-        distance_expr = EntityEmbedding.embedding.cosine_distance(vec_str)
+        distance_expr = EntityEmbedding.embedding.cosine_distance(query_vector)
 
         q = (
             select(

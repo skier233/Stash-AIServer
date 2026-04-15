@@ -555,7 +555,7 @@
           control = React.createElement('div',{ className:'text-muted small'}, 'Unsupported: '+field.type);
       }
       const showLabelAbove = true;
-  const capWidth = (field.type==='tags'||field.type==='performers') ? (narrowTagWidth ?? 400) : (field.type==='slider'? 92 : (['text','search','select','enum'].includes(field.type)? 180: undefined));
+  const capWidth = (field.type==='tags'||field.type==='performers') ? (narrowTagWidth ?? 400) : (field.type==='search'? 300 : (field.type==='slider'? 92 : (['text','select','enum'].includes(field.type)? 180: undefined)));
       const labelStyle = capWidth ? { display:'inline-block', width: capWidth+'px', maxWidth: capWidth+'px' } : undefined;
   const labelProps:any = { htmlFor:id, className:'form-label d-flex justify-content-between mb-0', style: labelStyle };
   if(field.help) labelProps.title = field.help;

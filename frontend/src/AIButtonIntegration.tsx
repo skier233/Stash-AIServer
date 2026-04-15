@@ -80,6 +80,28 @@
     dlog('Registered /plugins/ai-faces route');
   } catch(e){ if (debug) console.warn('[AIIntegration] faces route register failed', e); }
 
+  // Register Taste Profile route
+  try {
+    PluginApi.register.route('/plugins/ai-taste-profile', () => {
+      const Comp = (g as any).TasteProfile;
+      return Comp
+        ? React.createElement(Comp, {})
+        : React.createElement('div', { style:{padding:16}}, 'Loading Taste Profile...');
+    });
+    dlog('Registered /plugins/ai-taste-profile route');
+  } catch(e){ if (debug) console.warn('[AIIntegration] taste profile route register failed', e); }
+
+  // Register Training Page route
+  try {
+    PluginApi.register.route('/plugins/ai-training', () => {
+      const Comp = (g as any).TrainingPage;
+      return Comp
+        ? React.createElement(Comp, {})
+        : React.createElement('div', { style:{padding:16}}, 'Loading Training Page...');
+    });
+    dlog('Registered /plugins/ai-training route');
+  } catch(e){ if (debug) console.warn('[AIIntegration] training route register failed', e); }
+
   // Settings tools entry
   try {
     PluginApi.patch.before('SettingsToolsSection', function(props:any){
@@ -95,6 +117,12 @@
         } />
         <Setting heading={
           Link ? <Link to="/plugins/ai-faces"><Button>Faces</Button></Link> : React.createElement(Button, { onClick:()=> (location.href = '/plugins/ai-faces') }, 'Faces')
+        } />
+        <Setting heading={
+          Link ? <Link to="/plugins/ai-taste-profile"><Button>Taste Profile</Button></Link> : React.createElement(Button, { onClick:()=> (location.href = '/plugins/ai-taste-profile') }, 'Taste Profile')
+        } />
+        <Setting heading={
+          Link ? <Link to="/plugins/ai-training"><Button>Training</Button></Link> : React.createElement(Button, { onClick:()=> (location.href = '/plugins/ai-training') }, 'Training')
         } />
       </>)}];
     });

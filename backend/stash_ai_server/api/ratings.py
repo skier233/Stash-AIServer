@@ -15,6 +15,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from stash_ai_server.db.session import get_session_local
 from stash_ai_server.models.ratings import EntityRating
+from stash_ai_server.schemas.rating_dimensions import get_dimensions
 
 _log = logging.getLogger(__name__)
 
@@ -38,6 +39,24 @@ class RatingOut(BaseModel):
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+@router.get("/dimensions/{entity_type}")
+async def get_rating_dimensions(entity_type: str) -> dict:
+    """Return the available rating dimensions for an entity type."""
+    dims = get_dimensions(entity_type)
+    return {
+        "entity_type": entity_type,
+        "dimensions": [
+            {
+                "key": d.key,
+                "label": d.label,
+                "description": d.description,
+                "icon": d.icon,
+            }
+            for d in dims
+        ],
+    }
+
 
 @router.get("/{entity_type}/{entity_id}")
 async def get_ratings(entity_type: str, entity_id: str) -> dict[str, Any]:

@@ -44,6 +44,9 @@ class RecommendationQueryBody(BaseModel):
     # Client supplies limit (page size) and optional offset (start index). If offset omitted, defaults to 0.
     limit: int | None = None
     offset: int | None = 0
+    # Cross-cutting tag filters (applied post-handler on all recommenders)
+    exclude_tag_names: list[str] | None = None
+    include_tag_names: list[str] | None = None
 
 class RecommendationQueryResponse(BaseModel):
     recommenderId: str
@@ -197,6 +200,25 @@ async def query_recommendations(payload: RecommendationQueryBody = Body(...)):
             validated.append(model.dict())
         except ValidationError as ve:
             warnings.append(f'scene[{idx}] validation failed')
+
+    # Cross-cutting tag filter (applied after handler, before pagination)
+    if payload.exclude_tag_names or payload.include_tag_names:
+        from stash_ai_server.api.tags import resolve_and_filter_scene_ids
+        pre_count = len(validated)
+        valid_ids = [s['id'] for s in validated]
+        kept_ids = set(resolve_and_filter_scene_ids(
+            valid_ids,
+            exclude_tag_names=payload.exclude_tag_names,
+            include_tag_names=payload.include_tag_names,
+        ))
+        validated = [s for s in validated if s['id'] in kept_ids]
+        removed = pre_count - len(validated)
+        if removed > 0:
+            # Adjust handler totals to reflect filtering
+            if handler_total is not None:
+                handler_total = max(0, handler_total - removed)
+            if handler_has_more is not None and not validated:
+                handler_has_more = False
 
     # Pagination handling: trust handler when it provides totals/has_more; otherwise slice here
     offset = max(payload.offset or 0, 0)

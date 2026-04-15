@@ -122,8 +122,18 @@
         return ()=>{ window.removeEventListener('storage', onStorage); window.removeEventListener('aiRec.showConfig', onCustom as EventListener); };
       }, []);
       function toggleShowConfig(){ const next = !showConfig; try { localStorage.setItem(LS_SHOW_CONFIG_KEY, next ? '1' : '0'); } catch(_){} try { window.dispatchEvent(new CustomEvent('aiRec.showConfig', { detail: next })); } catch(_){} setShowConfig(next); }
-    
-  // Root ref for the tab content container (used to find the nearest scrollable parent)
+      // Debug overlay toggle (shared with RecommendedScenes via localStorage)
+      const LS_SHOW_DEBUG_KEY = 'aiRec.showDebug';
+      const [showDebug, setShowDebug] = useState(()=>{ try { return localStorage.getItem(LS_SHOW_DEBUG_KEY) === '1'; } catch(_){ return false; } });
+      useEffect(()=>{
+        function onStorage(e: StorageEvent){ try { if(e.key === LS_SHOW_DEBUG_KEY){ setShowDebug(e.newValue === '1'); } } catch(_){} }
+        function onCustom(ev: any){ try { if(ev && ev.detail !== undefined) setShowDebug(Boolean(ev.detail)); } catch(_){} }
+        window.addEventListener('storage', onStorage);
+        window.addEventListener('aiRec.showDebug', onCustom as EventListener);
+        return ()=>{ window.removeEventListener('storage', onStorage); window.removeEventListener('aiRec.showDebug', onCustom as EventListener); };
+      }, []);
+      function toggleShowDebug(){ const next = !showDebug; try{ localStorage.setItem(LS_SHOW_DEBUG_KEY, next ? '1' : '0'); } catch(_){} try{ window.dispatchEvent(new CustomEvent('aiRec.showDebug', { detail: next })); } catch(_){} setShowDebug(next); }
+      // Root ref for the tab content container (used to find the nearest scrollable parent)
   const componentRef = useRef(null as any);
   const scrollContainerRef = useRef(null as any);
   const pendingScrollRef = useRef(null as any);
@@ -553,6 +563,33 @@
       }
     }, [onSceneClicked]);
 
+    // Inline debug panel for list rows — returns an element or null
+    function makeDebugPanel(scene: BasicScene) {
+      const meta = (scene as any).debug_meta;
+      if (!meta) return null;
+      const cb = meta.content_based;
+      const eng = meta.engagement_scored;
+      if (!cb && !eng) return null;
+      const score = (scene as any).score != null ? (scene as any).score : (cb ? cb.score : (eng ? eng.score : null));
+      function sColor(s: number){ if(s>=0.75) return '#4caf50'; if(s>=0.5) return '#8bc34a'; if(s>=0.3) return '#ffc107'; if(s>=0.15) return '#ff9800'; return '#f44336'; }
+      const parts: any[] = [];
+      if (score != null) parts.push(React.createElement('span', { key:'sc', style:{ fontWeight:700, color: sColor(score), marginRight:'8px' } }, `${(score*100).toFixed(0)}%`));
+      if (cb) {
+        if ((cb.tag_similarity||0) > 0) parts.push(React.createElement('span', { key:'t', style:{ color:'#6495ed', fontSize:'10px', marginRight:'5px' } }, `Tags:${(cb.tag_similarity*100).toFixed(0)}%`));
+        if ((cb.performer_score||0) > 0) parts.push(React.createElement('span', { key:'p', style:{ color:'#c792ea', fontSize:'10px', marginRight:'5px' } }, `Perf:${(cb.performer_score*100).toFixed(0)}%`));
+        if ((cb.studio_score||0) > 0) parts.push(React.createElement('span', { key:'s', style:{ color:'#89ddff', fontSize:'10px', marginRight:'5px' } }, `Studio:${(cb.studio_score*100).toFixed(0)}%`));
+        if ((cb.embedding_score||0) > 0) parts.push(React.createElement('span', { key:'e', style:{ color:'#f9a825', fontSize:'10px', marginRight:'5px' } }, `Embed:${(cb.embedding_score*100).toFixed(0)}%`));
+        if ((cb.ai_tag_score||0) > 0) parts.push(React.createElement('span', { key:'ai', style:{ color:'#66bb6a', fontSize:'10px', marginRight:'5px' } }, `AI:${(cb.ai_tag_score*100).toFixed(0)}%`));
+        if (cb.top_matching_tags && cb.top_matching_tags.length > 0) {
+          parts.push(React.createElement('span', { key:'tags', style:{ color:'#7aabcc', fontSize:'10px' } },
+            cb.top_matching_tags.slice(0,5).map((t: any) => t.tag_name).join(', ')
+          ));
+        }
+      }
+      if (!cb && eng) parts.push(React.createElement('span', { key:'eng', style:{ color:'#888', fontSize:'10px' } }, `Conf:${(eng.confidence*100).toFixed(0)}% Signals:${eng.signal_count}/${eng.total_possible}`));
+      if (parts.length === 0) return null;
+      return React.createElement('div', { key:'debug', style:{ marginTop:'4px', display:'flex', flexWrap:'wrap' as any, alignItems:'center', gap:'4px', background:'#1a1a1e', borderRadius:'3px', padding:'3px 8px', fontSize:'11px', fontFamily:'monospace' } }, parts);
+    }
     // Render scene in queue list format (matching the Queue tab exactly)
     const renderQueueScene = useCallback((scene: BasicScene, index: number) => {
       const filepath = scene.files?.[0]?.path || '';
@@ -588,10 +625,11 @@
           filepath ? React.createElement('span', { key: 'filepath', className: 'queue-scene-filepath', title: filepath, style: { fontSize: '0.75em', color: '#888', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '300px', display: 'block' } }, filepath) : null,
           React.createElement('span', { key: 'studio', className: 'queue-scene-studio' }, studio),
           React.createElement('span', { key: 'performers', className: 'queue-scene-performers' }, performers),
-          React.createElement('span', { key: 'date', className: 'queue-scene-date' }, date)
+          React.createElement('span', { key: 'date', className: 'queue-scene-date' }, date),
+          showDebug ? makeDebugPanel(scene) : null
         ].filter(Boolean))
       ])));
-    }, [handleSceneClick]);
+    }, [handleSceneClick, showDebug]);
 
     // Render recommender selector when recommenders are available
     const renderRecommenderSelector = useCallback(() => {
@@ -688,7 +726,8 @@
       backendNotice,
       // Algorithm selector (no surrounding background)
       React.createElement('div', { key: 'controls', className: 'd-flex align-items-center gap-3 mb-3 p-0' }, [
-        renderRecommenderSelector()
+        renderRecommenderSelector(),
+        React.createElement('button', { key:'debug', type:'button', className:`btn btn-sm ${ showDebug ? 'btn-info' : 'btn-secondary' }`, style:{ fontSize:'11px', padding:'2px 10px', marginLeft:'4px' }, title:'Toggle score/tag debug info on each result', onClick: toggleShowDebug }, showDebug ? 'Debug ✓' : 'Debug')
       ]),
 
       // Config panel separate block (full width) so it doesn't overflow out of the tab

@@ -13,6 +13,9 @@ ui:
     - RatingWidget.js
     - PerformerFacesPanel.js
     - SceneFacesPanel.js
+    - ImageFacesPanel.js
+    - TasteProfile.js
+    - TrainingPage.js
     - FaceReviewPanel.js
     - FacesHub.js
     - AIButton.js
@@ -23,6 +26,8 @@ ui:
     - SimilarTabIntegration.js
     - InteractionTracker.js
     - XRayOverlay.js
+    - EngagementDebug.js
+    - SceneRatingPanel.js
     - AIButtonIntegration.js # integration last after components
   css:
     - css/AIOverhaul.css

@@ -228,6 +228,17 @@
     return ()=>{ window.removeEventListener('storage', onStorage); window.removeEventListener('aiRec.showConfig', onCustom as EventListener); };
   }, []);
   function toggleShowConfigRec(){ const next = !showConfig; try{ localStorage.setItem(LS_SHOW_CONFIG_KEY, next ? '1' : '0'); } catch(_){} try{ window.dispatchEvent(new CustomEvent('aiRec.showConfig', { detail: next })); } catch(_){} setShowConfig(next); }
+  // Debug overlay toggle (shared with SimilarScenes via localStorage)
+  const LS_SHOW_DEBUG_KEY = 'aiRec.showDebug';
+  const [showDebug, setShowDebug] = useState(()=>{ try{ return localStorage.getItem(LS_SHOW_DEBUG_KEY) === '1'; } catch(_){ return false; } });
+  useEffect(()=>{
+    function onStorage(e:StorageEvent){ try { if(e.key === LS_SHOW_DEBUG_KEY){ setShowDebug(e.newValue === '1'); } } catch(_){} }
+    function onCustom(ev:any){ try { if(ev && ev.detail !== undefined) setShowDebug(Boolean(ev.detail)); } catch(_){} }
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('aiRec.showDebug', onCustom as EventListener);
+    return ()=>{ window.removeEventListener('storage', onStorage); window.removeEventListener('aiRec.showDebug', onCustom as EventListener); };
+  }, []);
+  function toggleShowDebugRec(){ const next = !showDebug; try{ localStorage.setItem(LS_SHOW_DEBUG_KEY, next ? '1' : '0'); } catch(_){} try{ window.dispatchEvent(new CustomEvent('aiRec.showDebug', { detail: next })); } catch(_){} setShowDebug(next); }
   // Generic tick to force config panel rerender (for tag mode changes)
   const [configRerenderTick, setConfigRerenderTick] = useState(0);
   function forceConfigRerender(){ setConfigRerenderTick((t:number)=> t+1); }
@@ -1262,7 +1273,7 @@
   // Render labels above every control (including boolean switches) so layout is consistent
   const showLabelAbove = true;
       // Make labels inline-block and only as wide as the control beneath to prevent blocking layout
-  const capWidth = (field.type==='tags' || field.type==='performers') ? 400 : (field.type==='slider' ? 92 : (['text','search','select','enum'].includes(field.type) ? 180 : undefined));
+  const capWidth = (field.type==='tags' || field.type==='performers') ? 400 : (field.type==='search' ? 300 : (field.type==='slider' ? 92 : (['text','select','enum'].includes(field.type) ? 180 : undefined)));
       const labelStyle = capWidth ? { display:'inline-block', width: capWidth+'px', maxWidth: capWidth+'px' } : undefined;
       const labelProps:any = { htmlFor:id, className:'form-label d-flex justify-content-between mb-0', style: labelStyle };
       if(field.help) labelProps.title = field.help;
@@ -1294,6 +1305,7 @@
 
   // filtered scenes (placeholder for future filters/search)
   const filteredScenes = useMemo(()=> scenes, [scenes]);
+
   // totalPages is heuristic if hasMore: allow navigating one page past current computed value repeatedly
   const totalPages = useMemo(()=> {
     const base = Math.max(1, Math.ceil(total / itemsPerPage));
@@ -1606,15 +1618,333 @@
     if((w as any).AIDebug && !ResolvedTagIDSelect && !ResolvedTagSelect){
       console.debug('[RecommendedScenes] Tag selector components not found; falling back to text input');
     }
+    // Inline debug panel — shows score breakdown from debug_meta when Debug mode is on
+    // ── ScoreDetailModal — full-page overlay with per-signal breakdown ──
+    function ScoreDetailModal({ scene, onClose }: { scene: any; onClose: () => void }) {
+      const meta = scene?.debug_meta;
+      const dt = meta?.deep_taste;
+      const cb = meta?.content_based;
+      const ss = meta?.semantic_search;
+      const pluginData = dt || cb;
+      if (!pluginData && !ss) return null;
+      const score = scene.score ?? pluginData?.score ?? ss?.score ?? null;
+      const weights = pluginData?.weights || {};
+      // Stop propagation so clicking inside doesn't close
+      function stopProp(e: any) { e.stopPropagation(); }
+
+      function sColor(s: number) { if (s >= 0.75) return '#4caf50'; if (s >= 0.5) return '#8bc34a'; if (s >= 0.3) return '#ffc107'; if (s >= 0.15) return '#ff9800'; return '#f44336'; }
+
+      // Section renderer helper
+      function Section({ title, children, color }: any) {
+        return React.createElement('div', { style: { marginBottom: 16 } },
+          React.createElement('div', { style: { fontSize: 13, fontWeight: 700, color: color || '#ccc', marginBottom: 6, borderBottom: '1px solid #333', paddingBottom: 4 } }, title),
+          children
+        );
+      }
+
+      // Bar with label, value, and weight indicator
+      function DetailBar({ label, value, weight, color }: { label: string; value: number; weight?: number; color: string }) {
+        const pct = Math.min(100, Math.max(0, value * 100));
+        return React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 } },
+          React.createElement('span', { style: { color: '#888', width: 80, flexShrink: 0, fontSize: 11 } }, label),
+          React.createElement('div', { style: { flex: 1, height: 8, borderRadius: 4, background: '#222', position: 'relative' as any, overflow: 'hidden' as any } },
+            React.createElement('div', { style: { position: 'absolute' as any, top: 0, left: 0, height: '100%', width: `${pct}%`, background: color, borderRadius: 4 } })
+          ),
+          React.createElement('span', { style: { color: '#bbb', width: 42, textAlign: 'right' as any, flexShrink: 0, fontSize: 11, fontWeight: 600 } }, value > 0 ? `${(value * 100).toFixed(1)}%` : '—'),
+          weight != null ? React.createElement('span', { style: { color: '#666', width: 32, textAlign: 'right' as any, flexShrink: 0, fontSize: 9 } }, `w:${weight}`) : null,
+        );
+      }
+
+      // Tag contribution list
+      function TagContribList({ items, title, color }: { items: any[]; title: string; color: string }) {
+        if (!items || !items.length) return null;
+        return React.createElement('div', { style: { marginTop: 6 } },
+          React.createElement('div', { style: { fontSize: 10, color: '#888', marginBottom: 3, textTransform: 'uppercase' as any, letterSpacing: 0.5 } }, title),
+          items.map((t: any, i: number) =>
+            React.createElement('div', { key: i, style: { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 } },
+              React.createElement('span', { style: { background: '#1e2a3a', color, border: '1px solid #2a3a4a', borderRadius: 3, padding: '1px 6px', fontSize: 10, minWidth: 80 } }, t.tag_name || `tag_${t.tag_id}`),
+              React.createElement('div', { style: { flex: 1, height: 4, borderRadius: 2, background: '#222', overflow: 'hidden' as any } },
+                React.createElement('div', { style: { height: '100%', width: `${Math.min(100, Math.abs(t.contribution || t.penalty || 0) * 500)}%`, background: color, borderRadius: 2 } })
+              ),
+              React.createElement('span', { style: { color: '#888', fontSize: 9, width: 50, textAlign: 'right' as any, flexShrink: 0 } },
+                (t.contribution != null ? t.contribution : t.penalty != null ? t.penalty : 0).toFixed(4)
+              ),
+              t.duration != null ? React.createElement('span', { style: { color: '#666', fontSize: 9, width: 40, textAlign: 'right' as any } }, `${t.duration.toFixed(0)}s`) : null,
+            )
+          )
+        );
+      }
+
+      // Performer detail list
+      function PerformerDetailList({ items }: { items: any[] }) {
+        if (!items || !items.length) return null;
+        return React.createElement('div', { style: { marginTop: 6 } },
+          items.map((p: any, i: number) =>
+            React.createElement('div', { key: i, style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 } },
+              React.createElement('span', { style: { color: '#c792ea', fontSize: 11, fontWeight: 600, minWidth: 120 } }, p.performer_name),
+              React.createElement('div', { style: { flex: 1, height: 6, borderRadius: 3, background: '#222', overflow: 'hidden' as any } },
+                React.createElement('div', { style: { height: '100%', width: `${Math.min(100, p.affinity * 100)}%`, background: '#c792ea', borderRadius: 3 } })
+              ),
+              React.createElement('span', { style: { color: '#aaa', fontSize: 10, width: 40, textAlign: 'right' as any } }, `${(p.affinity * 100).toFixed(0)}%`),
+            )
+          )
+        );
+      }
+
+      const title = scene.title || `Scene ${scene.id}`;
+
+      // Build sections
+      const sections: any[] = [];
+
+      // Score header
+      if (score != null) {
+        sections.push(React.createElement('div', { key: 'score-hdr', style: { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, paddingBottom: 12, borderBottom: '1px solid #333' } },
+          React.createElement('span', { style: { fontSize: 28, fontWeight: 800, color: sColor(score) } }, `${(score * 100).toFixed(1)}%`),
+          React.createElement('span', { style: { fontSize: 12, color: '#888' } }, 'Composite Score'),
+          dt?.cluster_id != null ? React.createElement('span', { style: { background: '#1e2a3a', color: '#7aabcc', borderRadius: 4, padding: '2px 8px', fontSize: 11 } }, `Cluster ${dt.cluster_id}`) : null,
+        ));
+      }
+
+      if (dt || cb) {
+        // Tags section
+        sections.push(React.createElement(Section, { key: 'tags', title: `Tags (similarity: ${((pluginData.tag_similarity || 0) * 100).toFixed(1)}%)`, color: '#6495ed' },
+          React.createElement(DetailBar, { label: 'Tag Sim', value: pluginData.tag_similarity || 0, weight: weights.tag, color: '#6495ed' }),
+          React.createElement('div', { style: { fontSize: 10, color: '#666', marginTop: 2 } }, `${pluginData.scene_tags || '?'} scene tags vs ${pluginData.profile_tags || '?'} profile tags`),
+          dt?.tag_contributions ? React.createElement(TagContribList, { items: dt.tag_contributions, title: 'Top Contributing Tags', color: '#7aabcc' }) : null,
+          pluginData.top_matching_tags?.length > 0 ? React.createElement('div', { style: { marginTop: 6 } },
+            React.createElement('div', { style: { fontSize: 10, color: '#888', marginBottom: 3, textTransform: 'uppercase' as any, letterSpacing: 0.5 } }, 'Scene Tags in Profile'),
+            React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap' as any, gap: 4 } },
+              pluginData.top_matching_tags.map((t: any) =>
+                React.createElement('span', {
+                  key: t.tag_id,
+                  title: `Profile: ${t.profile_weight?.toFixed(4)} | IDF: ${t.idf?.toFixed(2)}`,
+                  style: { background: '#1e2a3a', color: '#7aabcc', border: '1px solid #2a3a4a', borderRadius: 3, padding: '2px 6px', fontSize: 10 }
+                }, t.tag_name)
+              )
+            )
+          ) : null,
+        ));
+
+        // Performers section
+        sections.push(React.createElement(Section, { key: 'perf', title: `Performers (score: ${((pluginData.performer_score || 0) * 100).toFixed(1)}%)`, color: '#c792ea' },
+          React.createElement(DetailBar, { label: 'Perf Score', value: pluginData.performer_score || 0, weight: weights.performer, color: '#c792ea' }),
+          dt?.performer_detail ? React.createElement(PerformerDetailList, { items: dt.performer_detail }) :
+            pluginData.matched_performers?.length > 0 ? React.createElement('div', { style: { fontSize: 10, color: '#aaa', marginTop: 4 } }, `Matched IDs: ${pluginData.matched_performers.join(', ')}`) : React.createElement('div', { style: { fontSize: 10, color: '#666', marginTop: 4 } }, 'No performers matched from profile'),
+        ));
+
+        // Studio section
+        if (weights.studio > 0 || pluginData.studio_score > 0) {
+          sections.push(React.createElement(Section, { key: 'studio', title: `Studio (score: ${((pluginData.studio_score || 0) * 100).toFixed(1)}%)`, color: '#89ddff' },
+            React.createElement(DetailBar, { label: 'Studio', value: pluginData.studio_score || 0, weight: weights.studio, color: '#89ddff' }),
+            dt?.studio_name ? React.createElement('div', { style: { fontSize: 11, color: '#aaa', marginTop: 2 } }, dt.studio_name) : null,
+          ));
+        }
+
+        // Embeddings section (deep_taste specific)
+        if (dt) {
+          sections.push(React.createElement(Section, { key: 'embed', title: 'Embedding Similarity', color: '#f9a825' },
+            React.createElement(DetailBar, { label: 'DINOv3', value: dt.dinov3_sim || 0, weight: weights.dinov3, color: '#f9a825' }),
+            React.createElement('div', { style: { fontSize: 9, color: '#666', marginLeft: 86 } }, 'Visual style & appearance'),
+            React.createElement(DetailBar, { label: 'MetaCLIP2', value: dt.metaclip2_sim || 0, weight: weights.metaclip2, color: '#ff7043' }),
+            React.createElement('div', { style: { fontSize: 9, color: '#666', marginLeft: 86 } }, 'Semantic scene content'),
+            React.createElement(DetailBar, { label: 'Audio', value: dt.audio_sim || 0, weight: weights.audio, color: '#26c6da' }),
+            React.createElement('div', { style: { fontSize: 9, color: '#666', marginLeft: 86 } }, 'Speech, moaning, breathing'),
+            dt.face_sim > 0 ? React.createElement(DetailBar, { label: 'Face Sim', value: dt.face_sim, weight: weights.face, color: '#ab47bc' }) : null,
+          ));
+        } else if (cb) {
+          // content_based: single embedding bar
+          sections.push(React.createElement(Section, { key: 'embed', title: 'Embedding Similarity', color: '#f9a825' },
+            React.createElement(DetailBar, { label: 'Embed', value: cb.embedding_score || 0, weight: weights.embedding, color: '#f9a825' }),
+          ));
+        }
+
+        // AI Tags section
+        if (pluginData.ai_tag_score > 0 || (dt?.ai_tag_detail && dt.ai_tag_detail.length > 0)) {
+          sections.push(React.createElement(Section, { key: 'ai', title: `AI Tags (score: ${((pluginData.ai_tag_score || 0) * 100).toFixed(1)}%)`, color: '#66bb6a' },
+            React.createElement(DetailBar, { label: 'AI Tag Sim', value: pluginData.ai_tag_score || 0, weight: weights.ai_tag, color: '#66bb6a' }),
+            React.createElement('div', { style: { fontSize: 9, color: '#666', marginLeft: 86 } }, 'Duration-weighted AI tag temporal similarity'),
+            dt?.ai_tag_detail ? React.createElement(TagContribList, { items: dt.ai_tag_detail, title: 'Top AI Tag Contributors', color: '#a5d6a7' }) : null,
+          ));
+        }
+
+        // Negative signals section
+        if (pluginData.negative_penalty > 0 || (dt?.negative_detail?.tag_contributions?.length > 0)) {
+          const nd = dt?.negative_detail || {};
+          sections.push(React.createElement(Section, { key: 'neg', title: `Negative Signals (penalty: ${((pluginData.negative_penalty || 0) * 100).toFixed(1)}%)`, color: '#ef5350' },
+            React.createElement(DetailBar, { label: 'Neg Penalty', value: pluginData.negative_penalty || 0, weight: weights.negative, color: '#ef5350' }),
+            nd.tag_penalty > 0 ? React.createElement('div', { style: { fontSize: 10, color: '#ef9a9a', marginTop: 2 } }, `Tag penalty: ${(nd.tag_penalty * 100).toFixed(1)}%`) : null,
+            nd.performer_penalty > 0 ? React.createElement('div', { style: { fontSize: 10, color: '#ef9a9a' } }, `Performer penalty: ${(nd.performer_penalty * 100).toFixed(1)}%`) : null,
+            nd.tag_contributions ? React.createElement(TagContribList, { items: nd.tag_contributions, title: 'Negative Tags Matched', color: '#ef9a9a' }) : null,
+            nd.performer_penalties?.length > 0 ? React.createElement('div', { style: { marginTop: 6 } },
+              React.createElement('div', { style: { fontSize: 10, color: '#888', marginBottom: 3, textTransform: 'uppercase' as any } }, 'Negative Performers'),
+              nd.performer_penalties.map((p: any, i: number) =>
+                React.createElement('div', { key: i, style: { color: '#ef9a9a', fontSize: 10 } }, `Performer #${p.performer_id}: ${(p.penalty * 100).toFixed(0)}% penalty`)
+              )
+            ) : null,
+          ));
+        }
+
+        // Weight summary
+        if (weights) {
+          const wEntries = Object.entries(weights).filter(([, v]: any) => v > 0);
+          const totalW = wEntries.reduce((s: number, [, v]: any) => s + v, 0);
+          sections.push(React.createElement(Section, { key: 'weights', title: 'Signal Weights', color: '#888' },
+            React.createElement('div', { style: { display: 'flex', flexWrap: 'wrap' as any, gap: 6 } },
+              wEntries.map(([k, v]: any) =>
+                React.createElement('span', { key: k, style: { background: '#1a1a22', border: '1px solid #333', borderRadius: 4, padding: '3px 8px', fontSize: 10, color: '#aaa' } },
+                  `${k}: ${v} (${(v / totalW * 100).toFixed(0)}%)`
+                )
+              )
+            ),
+            React.createElement('div', { style: { fontSize: 10, color: '#666', marginTop: 4 } },
+              `Corpus: ${pluginData.corpus_size || '?'} scenes | Recency half-life: ${pluginData.recency_half_life || '?'} days`
+            ),
+          ));
+        }
+      }
+
+      // Semantic search detail
+      if (ss) {
+        sections.push(React.createElement(Section, { key: 'ss', title: 'Semantic Search', color: '#f9a825' },
+          React.createElement(DetailBar, { label: 'Best Sim', value: ss.best_section_sim || 0, color: '#f9a825' }),
+          React.createElement(DetailBar, { label: 'Coverage', value: ss.coverage_ratio || 0, color: '#66bb6a' }),
+          ss.multi_term && ss.match_ratio != null ? React.createElement(DetailBar, { label: 'Match Ratio', value: ss.match_ratio, color: '#26c6da' }) : null,
+          ss.query ? React.createElement('div', { style: { color: '#7aabcc', fontSize: 11, marginTop: 4 } }, `Query: "${ss.query}"`) : null,
+        ));
+      }
+
+      // Modal overlay
+      return React.createElement('div', {
+        onClick: onClose,
+        style: {
+          position: 'fixed' as any, top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.75)', zIndex: 20000,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }
+      },
+        React.createElement('div', {
+          onClick: stopProp,
+          style: {
+            background: '#151518', borderRadius: 10, border: '1px solid #333',
+            maxWidth: 580, width: '95vw', maxHeight: '85vh',
+            display: 'flex', flexDirection: 'column' as any,
+            boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
+          }
+        },
+          // Header
+          React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 18px', borderBottom: '1px solid #2a2a2a' } },
+            React.createElement('div', { style: { fontSize: 14, fontWeight: 700, color: '#e0e0e0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as any, flex: 1 } }, title),
+            React.createElement('button', {
+              onClick: onClose,
+              style: { background: 'none', border: 'none', color: '#888', fontSize: 20, cursor: 'pointer', padding: '0 4px', lineHeight: 1 }
+            }, '\u00d7'),
+          ),
+          // Scrollable body
+          React.createElement('div', { style: { padding: '14px 18px', overflowY: 'auto' as any, flex: 1 } },
+            ...sections
+          ),
+        )
+      );
+    }
+
+    // State for the detail modal
+    const [detailScene, setDetailScene] = useState(null as any);
+
+    // Escape key to close detail modal
+    React.useEffect(() => {
+      if (!detailScene) return;
+      const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setDetailScene(null); };
+      document.addEventListener('keydown', handler);
+      return () => document.removeEventListener('keydown', handler);
+    }, [detailScene]);
+
+    function RecDebugPanel({ scene }: any) {
+      const meta = scene && (scene as any).debug_meta;
+      if (!meta) return null;
+      const cb = meta.content_based;
+      const dt = meta.deep_taste;
+      const ss = meta.semantic_search;
+      const eng = meta.engagement_scored;
+      // Use whichever plugin key has data
+      const pluginData = dt || cb;
+      if (!pluginData && !eng && !ss) return null;
+      const score = (scene as any).score != null ? (scene as any).score : (pluginData ? pluginData.score : (eng ? eng.score : (ss ? ss.score : null)));
+      function sColor(s: number){ if(s>=0.75) return '#4caf50'; if(s>=0.5) return '#8bc34a'; if(s>=0.3) return '#ffc107'; if(s>=0.15) return '#ff9800'; return '#f44336'; }
+      const scoreRow = score != null ? React.createElement('div', { key:'sc', style:{ display:'flex', alignItems:'center', gap:'6px', marginBottom:'4px' } }, [
+        React.createElement('span', { key:'l', style:{ color:'#888', fontSize:'10px', textTransform:'uppercase' as any, letterSpacing:'0.5px' } }, 'Score'),
+        React.createElement('span', { key:'v', style:{ color: sColor(score), fontWeight:700, fontSize:'14px' } }, `${ (score*100).toFixed(0) }%`),
+        dt && dt.cluster_id != null ? React.createElement('span', { key:'cl', style:{ color:'#666', fontSize:'9px', marginLeft:'2px' } }, `C${dt.cluster_id}`) : null,
+        dt && dt.clusters_available === false ? React.createElement('span', { key:'nocl', style:{ color:'#f44336', fontSize:'9px', marginLeft:'4px' } }, 'No clusters') : null,
+        // Detail button
+        (pluginData || ss) ? React.createElement('span', { key:'det', onClick: (e: any) => { e.stopPropagation(); setDetailScene(scene); }, style:{ color:'#58a6ff', fontSize:'9px', marginLeft:'auto', cursor:'pointer', textDecoration:'underline' } }, 'Details') : null,
+      ].filter(Boolean)) : null;
+      // Build bar data dynamically based on which plugin is in play
+      let barDefs: { label: string; value: number; color: string }[] = [];
+      if (dt) {
+        barDefs = [
+          { label: 'Tags', value: dt.tag_similarity || 0, color: '#6495ed' },
+          { label: 'Perf', value: dt.performer_score || 0, color: '#c792ea' },
+          { label: 'DINOv3', value: dt.dinov3_sim || 0, color: '#f9a825' },
+          { label: 'MCLIP', value: dt.metaclip2_sim || 0, color: '#ff7043' },
+          { label: 'Audio', value: dt.audio_sim || 0, color: '#26c6da' },
+          { label: 'Face', value: dt.face_sim || 0, color: '#ab47bc' },
+          { label: 'AI', value: dt.ai_tag_score || 0, color: '#66bb6a' },
+          { label: 'Neg', value: dt.negative_penalty || 0, color: '#ef5350' },
+        ];
+      } else if (cb) {
+        barDefs = [
+          { label: 'Tags', value: cb.tag_similarity || 0, color: '#6495ed' },
+          { label: 'Perf', value: cb.performer_score || 0, color: '#c792ea' },
+          { label: 'Studio', value: cb.studio_score || 0, color: '#89ddff' },
+          { label: 'Embed', value: cb.embedding_score || 0, color: '#f9a825' },
+          { label: 'AI', value: cb.ai_tag_score || 0, color: '#66bb6a' },
+          { label: 'Neg', value: cb.negative_penalty || 0, color: '#ef5350' },
+        ];
+      } else if (ss) {
+        // Semantic search: show best section sim + coverage
+        barDefs = [
+          { label: 'BestSim', value: ss.best_section_sim || 0, color: '#f9a825' },
+          { label: 'Cover', value: ss.coverage_ratio || 0, color: '#66bb6a' },
+        ];
+        if (ss.multi_term && ss.match_ratio != null) {
+          barDefs.push({ label: 'Match', value: ss.match_ratio, color: '#26c6da' });
+        }
+      }
+      const bars = barDefs.length > 0 ? barDefs.map((b) => {
+        return React.createElement('div', { key: b.label, style:{ display:'flex', alignItems:'center', gap:'4px', marginBottom:'2px' } }, [
+          React.createElement('span', { key:'l', style:{ color:'#888', width:'40px', flexShrink:0, fontSize:'10px' } }, b.label),
+          React.createElement('div', { key:'b', style:{ flex:1, height:'4px', borderRadius:'2px', background:'#333', position:'relative' as any, overflow:'hidden' as any } },
+            React.createElement('div', { style:{ position:'absolute' as any, top:0, left:0, height:'100%', width:`${ Math.min(100,Math.max(0,b.value*100)) }%`, background: b.color, borderRadius:'2px' } })
+          ),
+          React.createElement('span', { key:'v', style:{ color:'#aaa', width:'30px', textAlign:'right' as any, flexShrink:0, fontSize:'10px' } }, b.value > 0 ? `${ (b.value*100).toFixed(0) }%` : '—'),
+        ]);
+      }) : null;
+      const tagChips = pluginData && pluginData.top_matching_tags && pluginData.top_matching_tags.length > 0
+        ? React.createElement('div', { key:'tags', style:{ display:'flex', flexWrap:'wrap' as any, gap:'3px', marginTop:'5px' } },
+            pluginData.top_matching_tags.slice(0,6).map((t: any) => React.createElement('span', {
+              key: t.tag_id,
+              title: `IDF: ${ t.idf ? t.idf.toFixed(2) : '?' } | Weight: ${ t.profile_weight ? t.profile_weight.toFixed(4) : '?' }`,
+              style:{ background:'#1e2a3a', color:'#7aabcc', border:'1px solid #2a3a4a', borderRadius:'3px', padding:'1px 5px', fontSize:'10px', cursor:'default', lineHeight:'1.4' }
+            }, t.tag_name))
+          ) : null;
+      // Semantic search query display
+      const ssQuery = ss && ss.query ? React.createElement('div', { key:'ssq', style:{ color:'#7aabcc', fontSize:'10px', marginTop:'3px' } }, `"${ss.query}"`) : null;
+      const engRow = !pluginData && !ss && eng
+        ? React.createElement('div', { key:'eng', style:{ color:'#888', fontSize:'11px' } }, `Conf: ${ (eng.confidence*100).toFixed(0) }% | Signals: ${ eng.signal_count }/${ eng.total_possible }`)
+        : null;
+      return React.createElement('div', { style:{ background:'#111', borderTop:'1px solid #2a2a2a', padding:'7px 10px', fontSize:'11px', fontFamily:'monospace', lineHeight:'1.4', cursor: 'pointer' }, onClick: () => { if (pluginData || ss) setDetailScene(scene); } },
+        [scoreRow, bars ? React.createElement('div', { key:'bars' }, bars) : null, tagChips, ssQuery, engRow].filter(Boolean)
+      );
+    }
     const grid = useMemo(()=>{
       if(loading || componentsLoading) return React.createElement('div',{ className:'scene-grid-loading'}, 'Loading scenes...');
       if(error) return React.createElement('div',{ className:'scene-grid-error'}, error);
       if(!paginatedScenes.length) return React.createElement('div',{ className:'scene-grid-empty'}, 'No scenes');
       if(cardWidth===undefined) return React.createElement('div',{ className:'scene-grid-calculating'}, 'Calculating layout...');
-  const children = paginatedScenes.map((s:BasicScene,i:number)=> React.createElement('div',{ key:s.id+'_'+i, style:{display:'contents'}}, SceneCard ? React.createElement(SceneCard,{ scene:s, zoomIndex, queue: undefined, index: i }) : null) );
+  const children = paginatedScenes.map((s:BasicScene,i:number)=> React.createElement('div',{ key:s.id+'_'+i, style: showDebug ? { display:'flex', flexDirection:'column', marginBottom:'4px', borderRadius:'4px', overflow:'hidden' } : {display:'contents'}}, SceneCard ? React.createElement(SceneCard,{ scene:s, zoomIndex, queue: undefined, index: i }) : null, showDebug ? React.createElement(RecDebugPanel, { key:'dbg', scene: s }) : null) );
 
       return React.createElement('div',{ className:'row ai-rec-grid d-flex flex-wrap justify-content-center', ref:componentRef, style:{ ['--ai-card-width' as any]: cardWidth+'px'}}, children);
-    }, [loading, componentsLoading, error, paginatedScenes, SceneCard, cardWidth, zoomIndex]);
+    }, [loading, componentsLoading, error, paginatedScenes, SceneCard, cardWidth, zoomIndex, showDebug]);
 
     useEffect(()=>{ if((w as any).AIDebug && cardWidth) log('layout', { containerWidth, zoomIndex, preferredWidth: zoomWidths[zoomIndex], cardWidth }); }, [containerWidth, zoomIndex, cardWidth, paginatedScenes]);
 
@@ -1647,7 +1977,8 @@
           React.createElement('input',{ key:'zr', min:0, max:3, type:'range', className:'zoom-slider ml-1 form-control-range', value:zoomIndex, onChange:(e:any)=> setZoomIndex(Number(e.target.value)) })
         ]),
         React.createElement('div',{ key:'act', role:'group', className:'mb-2 btn-group'}, [
-          React.createElement(Button,{ key:'refresh', className:'btn btn-secondary minimal', disabled:loading, title:'Refresh', onClick:manualRefresh }, '↻')
+          React.createElement(Button,{ key:'refresh', className:'btn btn-secondary minimal', disabled:loading, title:'Refresh', onClick:manualRefresh }, '↻'),
+          React.createElement(Button,{ key:'debug', className:`btn ${ showDebug ? 'btn-info' : 'btn-secondary' } minimal`, title:'Toggle recommendation debug info (score breakdown, matching tags)', onClick: toggleShowDebugRec }, showDebug ? 'Debug ✓' : 'Debug')
         ])
       ])
     ]);
@@ -1672,7 +2003,8 @@
       renderConfigPanel(),
       React.createElement(PaginationControl,{ key:'pgt', position:'top'}),
       grid,
-      React.createElement(PaginationControl,{ key:'pgb', position:'bottom'})
+      React.createElement(PaginationControl,{ key:'pgb', position:'bottom'}),
+      detailScene ? React.createElement(ScoreDetailModal, { key:'detail-modal', scene: detailScene, onClose: () => setDetailScene(null) }) : null,
     ]);
   };
 
