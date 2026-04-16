@@ -39,11 +39,13 @@ def setup_sqlite_fdw(engine: Engine) -> None:
 
             # Ensure server uses the latest DB path (drop/recreate is simplest and safe for foreign tables we manage)
             conn.execute(text(f"DROP SERVER IF EXISTS {FDW_SERVER} CASCADE"))
+            # DDL statements don't support bind parameters, so we must interpolate.
+            # Escape single quotes to prevent SQL injection.
+            safe_path = str(db_path).replace("'", "''")
             conn.execute(
                 text(
-                    f"CREATE SERVER {FDW_SERVER} FOREIGN DATA WRAPPER sqlite_fdw OPTIONS (database :dbpath)"
-                ),
-                {"dbpath": str(db_path)},
+                    f"CREATE SERVER {FDW_SERVER} FOREIGN DATA WRAPPER sqlite_fdw OPTIONS (database '{safe_path}')"
+                )
             )
 
             # Drop and recreate foreign tables we rely on for recommendations
