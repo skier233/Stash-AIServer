@@ -28,8 +28,8 @@ from fastapi import APIRouter
 
 _log = logging.getLogger("stash_ai_server.plugins.loader")
 
-# Plugin router registry: maps plugin_name -> APIRouter
-_plugin_routers: Dict[str, APIRouter] = {}
+# Plugin router registry: maps plugin_name -> list of APIRouter instances
+_plugin_routers: Dict[str, list[APIRouter]] = {}
 
 
 def _sanitize_dependency_list(raw: Any) -> List[str]:
@@ -887,15 +887,15 @@ def register_plugin_router(plugin_name: str, router: APIRouter) -> None:
     Plugins can call this during their register() function to register
     custom API routes that will be mounted at /api/v1/plugins/{plugin_name}/...
     """
-    _plugin_routers[plugin_name] = router
-    _log.info("Registered router for plugin %s", plugin_name)
+    _plugin_routers.setdefault(plugin_name, []).append(router)
+    _log.info("Registered router for plugin %s (total: %d)", plugin_name, len(_plugin_routers[plugin_name]))
 
 
-def get_plugin_routers() -> Dict[str, APIRouter]:
+def get_plugin_routers() -> Dict[str, list[APIRouter]]:
     """Get all registered plugin routers.
     
     Returns:
-        Dictionary mapping plugin names to their APIRouter instances.
+        Dictionary mapping plugin names to lists of APIRouter instances.
     """
     return _plugin_routers.copy()
 

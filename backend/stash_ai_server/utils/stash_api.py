@@ -85,6 +85,30 @@ class StashAPI:
         else:
             _log.info("Stash API client configured host=%s", self.stash_url)
 
+    _generated_path_cache: str | None = None
+
+    def get_stash_generated_path(self) -> str | None:
+        """Return the Stash generated directory path by querying Stash's config.
+
+        Caches the result for the lifetime of the StashAPI instance.
+        Returns ``None`` if Stash is unreachable or the config is missing.
+        """
+        if self._generated_path_cache is not None:
+            return self._generated_path_cache
+        if not self.stash_interface:
+            return None
+        try:
+            config = self.stash_interface.get_configuration()
+            general = config.get("general", {}) if isinstance(config, dict) else {}
+            generated = general.get("generatedPath") or general.get("generated_path")
+            if generated:
+                self._generated_path_cache = str(generated)
+                _log.info("Resolved Stash generated path: %s", generated)
+                return self._generated_path_cache
+        except Exception:
+            _log.debug("Could not query Stash for generated path", exc_info=True)
+        return None
+
     # Tags
     
     def fetch_tag_id(self, tag_name: str, parent_id: int | None = None, create_if_missing: bool = False, use_cache: bool = True, add_to_cache: Dict[str, int] = None) -> int | None:
@@ -370,7 +394,235 @@ class StashAPI:
             },
         }
         self.stash_interface.update_scenes(payload)
-    
+
+    # Performers
+
+    def add_performer_to_scenes(self, scene_ids: list[int], performer_id: int) -> None:
+        """Add a performer to one or more scenes in Stash (idempotent ADD mode)."""
+        if not scene_ids or not performer_id:
+            return
+        try:
+            self.stash_interface.update_scenes({
+                "ids": scene_ids,
+                "performer_ids": {"ids": [performer_id], "mode": "ADD"},
+            })
+            _log.info("Added performer %s to %d scene(s)", performer_id, len(scene_ids))
+        except Exception:
+            _log.exception("Failed to add performer %s to scenes %s", performer_id, scene_ids)
+
+    async def add_performer_to_scenes_async(self, scene_ids: list[int], performer_id: int) -> None:
+        await asyncio.to_thread(self.add_performer_to_scenes, scene_ids, performer_id)
+
+    def add_performer_to_images(self, image_ids: list[int], performer_id: int) -> None:
+        """Add a performer to one or more images in Stash (idempotent ADD mode)."""
+        if not image_ids or not performer_id:
+            return
+        try:
+            self.stash_interface.update_images({
+                "ids": image_ids,
+                "performer_ids": {"ids": [performer_id], "mode": "ADD"},
+            })
+            _log.info("Added performer %s to %d image(s)", performer_id, len(image_ids))
+        except Exception:
+            _log.exception("Failed to add performer %s to images %s", performer_id, image_ids)
+
+    async def add_performer_to_images_async(self, image_ids: list[int], performer_id: int) -> None:
+        await asyncio.to_thread(self.add_performer_to_images, image_ids, performer_id)
+
+    def remove_performer_from_scenes(self, scene_ids: list[int], performer_id: int) -> None:
+        """Remove a performer from one or more scenes in Stash (REMOVE mode)."""
+        if not scene_ids or not performer_id:
+            return
+        try:
+            self.stash_interface.update_scenes({
+                "ids": scene_ids,
+                "performer_ids": {"ids": [performer_id], "mode": "REMOVE"},
+            })
+            _log.info("Removed performer %s from %d scene(s)", performer_id, len(scene_ids))
+        except Exception:
+            _log.exception("Failed to remove performer %s from scenes %s", performer_id, scene_ids)
+
+    async def remove_performer_from_scenes_async(self, scene_ids: list[int], performer_id: int) -> None:
+        await asyncio.to_thread(self.remove_performer_from_scenes, scene_ids, performer_id)
+
+    def remove_performer_from_images(self, image_ids: list[int], performer_id: int) -> None:
+        """Remove a performer from one or more images in Stash (REMOVE mode)."""
+        if not image_ids or not performer_id:
+            return
+        try:
+            self.stash_interface.update_images({
+                "ids": image_ids,
+                "performer_ids": {"ids": [performer_id], "mode": "REMOVE"},
+            })
+            _log.info("Removed performer %s from %d image(s)", performer_id, len(image_ids))
+        except Exception:
+            _log.exception("Failed to remove performer %s from images %s", performer_id, image_ids)
+
+    async def remove_performer_from_images_async(self, image_ids: list[int], performer_id: int) -> None:
+        await asyncio.to_thread(self.remove_performer_from_images, image_ids, performer_id)
+
+    def create_performer(
+        self,
+        name: str,
+        *,
+        stash_ids: list[dict] | None = None,
+        disambiguation: str | None = None,
+    ) -> int | None:
+        """Create a new performer in Stash and return its ID.
+
+        If *stash_ids* is provided, they are attached to the performer for
+        StashDB / TPDB integration, e.g.
+        ``[{"stash_id": "uuid", "endpoint": "https://stashdb.org/graphql"}]``.
+        """
+        try:
+            data: dict[str, Any] = {"name": name}
+            if stash_ids:
+                data["stash_ids"] = stash_ids
+            if disambiguation:
+                data["disambiguation"] = disambiguation
+            result = self.stash_interface.create_performer(data)
+            pid = result.get("id") if isinstance(result, dict) else None
+            if pid is not None:
+                pid = int(pid)
+                _log.info("Created performer '%s' with id %s", name, pid)
+            return pid
+        except Exception:
+            _log.exception("Failed to create performer '%s'", name)
+            return None
+
+    async def create_performer_async(
+        self,
+        name: str,
+        *,
+        stash_ids: list[dict] | None = None,
+        disambiguation: str | None = None,
+    ) -> int | None:
+        return await asyncio.to_thread(
+            self.create_performer, name, stash_ids=stash_ids, disambiguation=disambiguation,
+        )
+
+    def update_performer_image(self, performer_id: int, image_data: str) -> bool:
+        """Update a performer's image in Stash.
+
+        ``image_data`` should be a base64-encoded data URI
+        (``data:image/jpeg;base64,...``) or raw base64 string.
+        """
+        try:
+            self.stash_interface.update_performer({
+                "id": performer_id,
+                "image": image_data,
+            })
+            _log.info("Updated performer %s image", performer_id)
+            return True
+        except Exception:
+            _log.exception("Failed to update performer %s image", performer_id)
+            return False
+
+    def update_performer(
+        self,
+        performer_id: int,
+        *,
+        stash_ids: list[dict] | None = None,
+        disambiguation: str | None = None,
+        image: str | None = None,
+    ) -> bool:
+        """Update a performer using Stash's native performer mutation."""
+        try:
+            data: dict[str, Any] = {"id": performer_id}
+            if stash_ids:
+                data["stash_ids"] = stash_ids
+            if disambiguation:
+                data["disambiguation"] = disambiguation
+            if image:
+                data["image"] = image
+            self.stash_interface.update_performer(data)
+            _log.info("Updated performer %s with StashDB metadata", performer_id)
+            return True
+        except Exception:
+            _log.exception("Failed to update performer %s", performer_id)
+            return False
+
+    async def update_performer_async(
+        self,
+        performer_id: int,
+        *,
+        stash_ids: list[dict] | None = None,
+        disambiguation: str | None = None,
+        image: str | None = None,
+    ) -> bool:
+        return await asyncio.to_thread(
+            self.update_performer,
+            performer_id,
+            stash_ids=stash_ids,
+            disambiguation=disambiguation,
+            image=image,
+        )
+
+    async def update_performer_image_async(self, performer_id: int, image_data: str) -> bool:
+        return await asyncio.to_thread(self.update_performer_image, performer_id, image_data)
+
+    def full_update_performer(self, update_data: dict) -> bool:
+        """Update a performer with an arbitrary dict of fields via GraphQL.
+
+        *update_data* must contain ``"id"`` and any other valid
+        ``PerformerUpdateInput`` fields.
+        """
+        if not self.stash_interface:
+            return False
+        try:
+            self.stash_interface.update_performer(update_data)
+            _log.info("Updated performer %s (%d fields)", update_data.get("id"), len(update_data) - 1)
+            return True
+        except Exception:
+            _log.exception("Failed to update performer %s", update_data.get("id"))
+            return False
+
+    async def full_update_performer_async(self, update_data: dict) -> bool:
+        return await asyncio.to_thread(self.full_update_performer, update_data)
+
+    def scrape_performer_from_stashbox(
+        self,
+        performer_id: int,
+        stash_box_endpoint: str,
+    ) -> dict | None:
+        """Scrape a performer's metadata from a stash-box endpoint.
+
+        The performer must already have a ``stash_id`` matching
+        *stash_box_endpoint* so Stash can locate them on the remote
+        stash-box.
+
+        Returns the raw scraped-performer dict or ``None``.
+        """
+        if not self.stash_interface:
+            return None
+        try:
+            source = {"stash_box_endpoint": stash_box_endpoint}
+            result = self.stash_interface.scrape_performer(source, performer_id)
+            if result:
+                _log.info(
+                    "Scraped performer %s from stash-box %s",
+                    performer_id, stash_box_endpoint,
+                )
+            return result
+        except Exception:
+            _log.debug(
+                "Failed to scrape performer %s from %s",
+                performer_id, stash_box_endpoint,
+                exc_info=True,
+            )
+        return None
+
+    async def scrape_performer_from_stashbox_async(
+        self,
+        performer_id: int,
+        stash_box_endpoint: str,
+    ) -> dict | None:
+        return await asyncio.to_thread(
+            self.scrape_performer_from_stashbox,
+            performer_id,
+            stash_box_endpoint,
+        )
+
     # Scene Markers
 
     async def destroy_scene_markers_async(self, marker_ids: list[int]):

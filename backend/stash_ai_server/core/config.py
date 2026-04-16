@@ -122,7 +122,7 @@ class Settings(BaseModel):
     }
     # Logging level for the backend (DEBUG, INFO, WARNING, ERROR, CRITICAL)
     # Can be set via the environment variable AI_SERVER_LOG_LEVEL
-    log_level: str = os.getenv('AI_SERVER_LOG_LEVEL', 'DEBUG')
+    log_level: str = os.getenv('AI_SERVER_LOG_LEVEL', 'INFO')
     docker_mode: bool = _docker_mode
     diagnostics: list[str] | None = _diagnostics
     legacy_sqlite_path: Path = data_dir / 'app.db'

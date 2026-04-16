@@ -18,8 +18,11 @@ def get_engine():
         pool_pre_ping=True,
         pool_size=int(settings.db_credentials['pool_size']),
         max_overflow=int(settings.db_credentials['max_overflow']),
+        pool_recycle=1800,   # recycle connections after 30 min
+        pool_timeout=60,     # wait up to 60s for a connection
         echo=bool(settings.db_credentials['echo']),
         future=True,
+        connect_args={"client_encoding": "utf8"},
     )
 
 
@@ -57,4 +60,4 @@ def get_session_local():
 
 # Legacy compatibility - these should be phased out
 engine = property(lambda self: get_engine())
-SessionLocal = get_session_factory
+SessionLocal = get_session_factory()

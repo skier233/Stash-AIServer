@@ -69,6 +69,17 @@
     dlog('Registered /plugins/ai-settings route (event)');
   } catch(e){ if (debug) console.warn('[AIIntegration] settings route register failed', e); }
 
+  // Register Faces hub route
+  try {
+    PluginApi.register.route('/plugins/ai-faces', () => {
+      const Hub = (g as any).FacesHub;
+      return Hub
+        ? React.createElement(Hub, {})
+        : React.createElement('div', { style:{padding:16}}, 'Loading Faces...');
+    });
+    dlog('Registered /plugins/ai-faces route');
+  } catch(e){ if (debug) console.warn('[AIIntegration] faces route register failed', e); }
+
   // Settings tools entry
   try {
     PluginApi.patch.before('SettingsToolsSection', function(props:any){
@@ -81,6 +92,9 @@
         } />
         <Setting heading={
           Link ? <Link to="/plugins/ai-settings"><Button>AI Overhaul Settings</Button></Link> : React.createElement(Button, { onClick:()=> (location.href = '/plugins/ai-settings') }, 'AI Overhaul Settings')
+        } />
+        <Setting heading={
+          Link ? <Link to="/plugins/ai-faces"><Button>Faces</Button></Link> : React.createElement(Button, { onClick:()=> (location.href = '/plugins/ai-faces') }, 'Faces')
         } />
       </>)}];
     });
