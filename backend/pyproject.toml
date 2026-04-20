@@ -18,7 +18,7 @@ dependencies = [
   "uvicorn[standard]==0.40.0",
   "SQLAlchemy==2.0.45",
   "alembic==1.17.2",
-  "psycopg[binary]==3.3.2",
+  "psycopg[binary]==3.3.3",
   "pgvector==0.4.2",
   "pydantic==2.12.5",
   "python-dotenv==1.2.1",
