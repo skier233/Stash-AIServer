@@ -2580,7 +2580,7 @@ const PluginSettings = () => {
       push('warn', 'Backend version check in progress.');
     }
 
-    compatibilityWarnings.forEach((msg) => push('error', msg));
+    compatibilityWarnings.forEach((msg: string) => push('error', msg));
 
     if (systemHealthError) {
       push('warn', systemHealthError);
@@ -2650,7 +2650,7 @@ const PluginSettings = () => {
               </div>
             </div>
             <ul style={summaryListStyle}>
-              {overallStatus.details.map((detail, idx) => (
+              {overallStatus.details.map((detail: string, idx: number) => (
                 <li key={`overall-detail-${idx}`}>{detail}</li>
               ))}
             </ul>
@@ -2740,7 +2740,7 @@ const PluginSettings = () => {
               <button
                 style={smallBtn}
                 type="button"
-                onClick={() => setSharedKeyReveal(v => !v)}
+                onClick={() => setSharedKeyReveal((v: boolean) => !v)}
                 disabled={!selfSettingsInitialized}
               >{sharedKeyReveal ? 'Hide' : 'Show'}</button>
               <button

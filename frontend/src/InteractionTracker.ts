@@ -1279,8 +1279,9 @@ export class InteractionTracker {
       const snapshot = this.getPlaybackSnapshot(state);
       // If we attached mid-autoplay with no segments yet, backfill start time from current position
       const now = Date.now();
-      const backfill = snapshot.position !== undefined && snapshot.position > 0.5 && state.segments.length === 0;
-      state.lastPlayTs = backfill ? now - snapshot.position * 1000 : now;
+      const snapshotPosition = snapshot.position;
+      const backfill = snapshotPosition !== undefined && snapshotPosition > 0.5 && state.segments.length === 0;
+      state.lastPlayTs = backfill ? now - (snapshotPosition ?? 0) * 1000 : now;
       if (snapshot.position !== undefined) state.lastPosition = snapshot.position;
       this.trackInternal('scene_watch_start','scene',sceneId,{
         position: snapshot.position ?? state.lastPosition ?? (isFinite(video.currentTime) ? video.currentTime : undefined),

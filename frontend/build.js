@@ -83,7 +83,7 @@ for (const file of files) {
       if (!compileAvailable) {
         if (verbose) console.log('skipping compile of', file);
       } else {
-        const jsxFlag = file.endsWith('.tsx') ? '--jsx react' : '';
+        const jsxFlag = file.endsWith('.tsx') ? '--jsx react --types react' : '';
         execSync(`npx tsc ${file} --target es2019 --module commonjs --lib es2019,dom ${jsxFlag} --esModuleInterop --outDir dist --declaration false --skipLibCheck true`, { stdio: 'inherit' });
       }
       const out = path.join('dist', path.basename(file).replace(/\.tsx?$/, '.js'));

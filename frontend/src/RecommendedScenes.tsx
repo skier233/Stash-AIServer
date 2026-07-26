@@ -1436,7 +1436,7 @@
             nextId = defaultDef.id;
           }
           if(nextId){
-            setRecommenderId((prev)=> prev === nextId ? prev : nextId);
+            setRecommenderId((prev: string | null) => prev === nextId ? prev : nextId);
           }
           if (backendHealthApi && typeof backendHealthApi.reportOk === 'function') {
             try { backendHealthApi.reportOk(backendBase); } catch (_) {}

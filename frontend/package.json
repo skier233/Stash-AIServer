@@ -9,6 +9,6 @@
   },
   "devDependencies": {
     "@types/react": "^19.1.9",
-    "typescript": "^5.9.2"
+    "typescript": "^6.0.2"
   }
 }
