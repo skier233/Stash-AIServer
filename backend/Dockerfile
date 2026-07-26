@@ -1,25 +1,18 @@
 #############################
 # Simple runtime image that installs the package from PyPI
 #############################
-ARG STASH_AI_VERSION=latest
-
 #############################
 # Base stage with dependencies
 #############################
 FROM python:3.14-slim AS base
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-ARG STASH_AI_VERSION
 RUN pip install --no-cache-dir --upgrade pip
 COPY requirements.txt ./
-RUN set -eux; \
-	constraint_file=/tmp/constraints.txt; \
-	if [ "$STASH_AI_VERSION" != "latest" ]; then \
-		echo "stash-ai-server==${STASH_AI_VERSION}" > "$constraint_file"; \
-	else \
-		: > "$constraint_file"; \
-	fi; \
-	pip install --no-cache-dir -r requirements.txt --constraint "$constraint_file"
+# The dev stage mounts the local package source. Installing the released package
+# here would duplicate it and can conflict with dependency updates under test.
+RUN sed '/^stash-ai-server/d' requirements.txt > /tmp/base-requirements.txt \
+	&& pip install --no-cache-dir -r /tmp/base-requirements.txt
 
 #############################
 # Dev stage for live reload
