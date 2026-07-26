@@ -36,30 +36,6 @@ class ConnectionManager:
 ws_manager = ConnectionManager()
 
 
-def _task_event_listener(event: str, task, extra):
-    """Forward task events to connected websockets asynchronously."""
-    payload = {'type': f'task.{event}', 'task': task.summary()}
-
-    async def _do_send():
-        await ws_manager.broadcast(payload)
-
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    if loop and loop.is_running():
-        loop.create_task(_do_send())
-    else:
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.run_coroutine_threadsafe(_do_send(), loop)
-            else:
-                loop.run_until_complete(_do_send())
-        except Exception:
-            asyncio.run(_do_send())
-
-
 # Task event listener registration - will be done when WebSocket connects
 _listener_registered = False
 _task_manager_ref = None
